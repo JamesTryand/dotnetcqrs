@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\DotnetCqrs\DotnetCqrs.csproj" />
+    <ProjectReference Include="..\..\samples\OrderFulfillment\OrderFulfillment.csproj" />
   </ItemGroup>
 
 </Project>

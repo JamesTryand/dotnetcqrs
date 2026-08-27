@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/OrderFulfillment/OrderFulfillment.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/DotnetCqrs/DotnetCqrs.csproj" />
   </Folder>
