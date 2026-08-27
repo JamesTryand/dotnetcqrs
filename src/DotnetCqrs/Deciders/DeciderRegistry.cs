@@ -1,3 +1,4 @@
+using System.Text.Json;
 using DotnetCqrs.EventStore;
 
 namespace DotnetCqrs.Deciders;
@@ -30,11 +31,34 @@ public sealed class DeciderRegistry(SqliteEventStore store)
     /// throws to reject the command, or <see cref="ConcurrencyException"/> if the
     /// stream changed between load and append.
     /// </summary>
-    public async Task<IReadOnlyList<Event>> HandleAsync(
+    public Task<IReadOnlyList<Event>> HandleAsync(
         string aggregate, string aggregateId, Command command, CancellationToken ct = default)
+        => HandleWithMetaAsync(aggregate, aggregateId, command, null, ct);
+
+    /// <summary>
+    /// <see cref="HandleAsync"/> with caller-supplied metadata (e.g. the authenticated
+    /// actor, or a reactor/extcaller's causationId/correlationId) merged into every
+    /// appended event's metadata — caller-supplied keys win over decider-supplied ones.
+    /// Stamps "now" (UTC, ISO 8601) into meta if absent before deciding, and fills
+    /// <see cref="Command.Actor"/>/<see cref="Command.Now"/>/<see cref="Command.Provenance"/>
+    /// from the resolved meta before <c>Decide</c> sees it.
+    /// </summary>
+    public async Task<IReadOnlyList<Event>> HandleWithMetaAsync(
+        string aggregate, string aggregateId, Command command, IReadOnlyDictionary<string, object>? meta, CancellationToken ct = default)
     {
         if (!_deciders.TryGetValue(aggregate, out var decider))
             throw new UnknownAggregateException(aggregate);
+
+        var resolvedMeta = meta is null ? new Dictionary<string, object>() : new Dictionary<string, object>(meta);
+        if (!resolvedMeta.ContainsKey("now"))
+            resolvedMeta["now"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+
+        var cmd = command with
+        {
+            Actor = MetaString(resolvedMeta, "actor") ?? command.Actor,
+            Now = MetaString(resolvedMeta, "now") ?? command.Now,
+            Provenance = MetaString(resolvedMeta, "provenance") ?? command.Provenance,
+        };
 
         var stream = await store.LoadStreamAsync(aggregate, aggregateId, ct);
 
@@ -42,10 +66,33 @@ public sealed class DeciderRegistry(SqliteEventStore store)
         foreach (var ev in stream)
             state = decider.Evolve(state, ev);
 
-        var newEvents = decider.Decide(state, command);
+        var newEvents = decider.Decide(state, cmd);
         if (newEvents.Count == 0) return [];
 
-        return await store.AppendAsync(aggregate, aggregateId, stream.Count, newEvents, ct);
+        var withMeta = newEvents.Select(ne => ne with { Metadata = MergeMeta(ne.Metadata, resolvedMeta) }).ToList();
+
+        return await store.AppendAsync(aggregate, aggregateId, stream.Count, withMeta, ct);
+    }
+
+    private static string? MetaString(IReadOnlyDictionary<string, object> meta, string key) =>
+        meta.TryGetValue(key, out var value) ? value?.ToString() : null;
+
+    /// <summary>Overlays <paramref name="extra"/> onto the event's existing metadata:
+    /// existing keys are kept unless also present in <paramref name="extra"/>, in which
+    /// case <paramref name="extra"/> wins.</summary>
+    private static string MergeMeta(string existingMetadataJson, IReadOnlyDictionary<string, object> extra)
+    {
+        var merged = new Dictionary<string, object?>();
+        if (!string.IsNullOrEmpty(existingMetadataJson) && existingMetadataJson != "{}")
+        {
+            var existing = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(existingMetadataJson);
+            if (existing is not null)
+                foreach (var (key, value) in existing)
+                    merged[key] = value;
+        }
+        foreach (var (key, value) in extra)
+            merged[key] = value;
+        return JsonSerializer.Serialize(merged);
     }
 
     private sealed record ErasedDecider(

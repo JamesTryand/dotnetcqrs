@@ -20,9 +20,15 @@ public sealed class ReactorConsumer(IReactor reactor, DeciderRegistry registry, 
     {
         foreach (var reaction in reactor.React(ev))
         {
+            var meta = new Dictionary<string, object>
+            {
+                ["actor"] = Name,
+                ["causationId"] = ev.Id,
+                ["correlationId"] = EventMeta.CorrelationId(ev),
+            };
             try
             {
-                await registry.HandleAsync(reaction.Aggregate, reaction.Id, reaction.Command, ct);
+                await registry.HandleWithMetaAsync(reaction.Aggregate, reaction.Id, reaction.Command, meta, ct);
                 _log($"reaction dispatched: reactor={reactor.Name} cause={ev.Id} " +
                      $"target={reaction.Aggregate}/{reaction.Id} command={reaction.Command.Name}");
             }

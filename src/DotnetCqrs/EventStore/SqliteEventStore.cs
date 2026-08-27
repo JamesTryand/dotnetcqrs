@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using DotnetCqrs.Consumers;
 
@@ -31,6 +32,18 @@ public sealed class SqliteEventStore : IAsyncDisposable, IPollSource, ICheckpoin
         CREATE TABLE IF NOT EXISTS consumer_checkpoints (
             name     TEXT PRIMARY KEY,
             position INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS dead_letters (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            consumer     TEXT NOT NULL,
+            event_pos    INTEGER NOT NULL,
+            event        TEXT NOT NULL,
+            error        TEXT NOT NULL,
+            attempts     INTEGER NOT NULL DEFAULT 1,
+            first_failed TEXT NOT NULL,
+            last_failed  TEXT NOT NULL,
+            resolved     INTEGER NOT NULL DEFAULT 0
         );
         """;
 
@@ -233,6 +246,57 @@ public sealed class SqliteEventStore : IAsyncDisposable, IPollSource, ICheckpoin
         var created = reader.GetString(1);
 
         return new Event(position, id, aggregate, aggregateId, sequence, newEvent.Type, newEvent.Data, metadata, created);
+    }
+
+    /// <summary>Records a permanently failed delivery of <paramref name="ev"/> to
+    /// <paramref name="consumer"/> — captured for inspection/manual resolution rather
+    /// than blocking the log.</summary>
+    public async Task AddDeadLetterAsync(string consumer, Event ev, string error, CancellationToken ct = default)
+    {
+        var now = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+        await using var command = _connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO dead_letters (consumer, event_pos, event, error, first_failed, last_failed)
+            VALUES ($consumer, $eventPos, $event, $error, $now, $now)
+            """;
+        command.Parameters.AddWithValue("$consumer", consumer);
+        command.Parameters.AddWithValue("$eventPos", ev.Position);
+        command.Parameters.AddWithValue("$event", JsonSerializer.Serialize(ev));
+        command.Parameters.AddWithValue("$error", error);
+        command.Parameters.AddWithValue("$now", now);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>Lists dead letters, pending only unless <paramref name="includeResolved"/>.</summary>
+    public async Task<IReadOnlyList<DeadLetter>> ListDeadLettersAsync(bool includeResolved = false, CancellationToken ct = default)
+    {
+        await using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT id, consumer, event_pos, event, error, attempts, first_failed, last_failed, resolved FROM dead_letters"
+            + (includeResolved ? " ORDER BY id" : " WHERE resolved = 0 ORDER BY id");
+
+        var results = new List<DeadLetter>();
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            var ev = JsonSerializer.Deserialize<Event>(reader.GetString(3))!;
+            results.Add(new DeadLetter(
+                reader.GetInt64(0), reader.GetString(1), reader.GetInt64(2), ev,
+                reader.GetString(4), reader.GetInt64(5), reader.GetString(6), reader.GetString(7),
+                reader.GetInt64(8) != 0));
+        }
+        return results;
+    }
+
+    /// <summary>Marks a dead letter resolved (retry succeeded, or dismissed). Throws
+    /// <see cref="KeyNotFoundException"/> if <paramref name="id"/> doesn't exist.</summary>
+    public async Task ResolveDeadLetterAsync(long id, CancellationToken ct = default)
+    {
+        await using var command = _connection.CreateCommand();
+        command.CommandText = "UPDATE dead_letters SET resolved = 1 WHERE id = $id";
+        command.Parameters.AddWithValue("$id", id);
+        var affected = await command.ExecuteNonQueryAsync(ct);
+        if (affected == 0)
+            throw new KeyNotFoundException($"dead letter {id} not found");
     }
 
     private static Event ReadEvent(SqliteDataReader reader) => new(
