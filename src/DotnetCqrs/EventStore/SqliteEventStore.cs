@@ -1,13 +1,17 @@
 using Microsoft.Data.Sqlite;
+using DotnetCqrs.Consumers;
 
 namespace DotnetCqrs.EventStore;
 
 /// <summary>
 /// An append-only event log backed by a single SQLite file. Appending IS the
 /// commit; a per-aggregate sequence gives optimistic concurrency, a global
-/// auto-increment position gives a total order.
+/// auto-increment position gives a total order. Also satisfies
+/// <see cref="IPollSource"/> and <see cref="ICheckpointStore"/>, the ports a
+/// <see cref="ConsumerEngine"/> needs — checkpoints normally live in the same
+/// store being polled.
 /// </summary>
-public sealed class SqliteEventStore : IAsyncDisposable
+public sealed class SqliteEventStore : IAsyncDisposable, IPollSource, ICheckpointStore
 {
     private const string Schema = """
         CREATE TABLE IF NOT EXISTS events (
@@ -23,6 +27,11 @@ public sealed class SqliteEventStore : IAsyncDisposable
             UNIQUE (aggregate, aggregate_id, sequence)
         );
         CREATE INDEX IF NOT EXISTS idx_events_stream ON events (aggregate, aggregate_id, sequence);
+
+        CREATE TABLE IF NOT EXISTS consumer_checkpoints (
+            name     TEXT PRIMARY KEY,
+            position INTEGER NOT NULL DEFAULT 0
+        );
         """;
 
     private readonly SqliteConnection _connection;
@@ -31,6 +40,9 @@ public sealed class SqliteEventStore : IAsyncDisposable
     // atomic from the store's point of view (one writer, same as SQLite itself
     // wants for a single file).
     private readonly SemaphoreSlim _appendLock = new(1, 1);
+
+    private readonly Lock _subscribersLock = new();
+    private readonly List<Action<Event>> _subscribers = [];
 
     private SqliteEventStore(SqliteConnection connection) => _connection = connection;
 
@@ -84,12 +96,77 @@ public sealed class SqliteEventStore : IAsyncDisposable
             }
 
             await transaction.CommitAsync(ct);
+            foreach (var ev in appended)
+                Publish(ev);
             return appended;
         }
         finally
         {
             _appendLock.Release();
         }
+    }
+
+    /// <summary>Returns up to <paramref name="limit"/> events with position &gt; <paramref name="after"/>,
+    /// in position order — the catch-up feed a <see cref="ConsumerEngine"/> polls.</summary>
+    public async Task<IReadOnlyList<Event>> PollAsync(long after, int limit, CancellationToken ct = default)
+    {
+        await using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT position, id, aggregate, aggregate_id, sequence, type, data, metadata, created
+            FROM events WHERE position > $after ORDER BY position LIMIT $limit
+            """;
+        command.Parameters.AddWithValue("$after", after);
+        command.Parameters.AddWithValue("$limit", limit);
+
+        var results = new List<Event>();
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            results.Add(ReadEvent(reader));
+        return results;
+    }
+
+    /// <summary>Registers <paramref name="handler"/> to be called (best-effort, in-process)
+    /// with each event right after it commits. A consumer needing guaranteed delivery
+    /// should poll via <see cref="PollAsync"/> with a durable checkpoint instead.</summary>
+    public void Subscribe(Action<Event> handler)
+    {
+        lock (_subscribersLock)
+            _subscribers.Add(handler);
+    }
+
+    private void Publish(Event ev)
+    {
+        List<Action<Event>> subscribers;
+        lock (_subscribersLock)
+            subscribers = [.. _subscribers];
+        foreach (var handler in subscribers)
+            _ = Task.Run(() =>
+            {
+                try { handler(ev); } catch { /* best-effort */ }
+            });
+    }
+
+    /// <summary>Returns the durable position of a named consumer (0 if none).</summary>
+    public async Task<long> CheckpointAsync(string name, CancellationToken ct = default)
+    {
+        await using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT position FROM consumer_checkpoints WHERE name = $name";
+        command.Parameters.AddWithValue("$name", name);
+        var result = await command.ExecuteScalarAsync(ct);
+        return result is null ? 0 : (long)result;
+    }
+
+    /// <summary>Durably stores the position of a named consumer.</summary>
+    public async Task SaveCheckpointAsync(string name, long position, CancellationToken ct = default)
+    {
+        await using var command = _connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO consumer_checkpoints (name, position) VALUES ($name, $position)
+            ON CONFLICT (name) DO UPDATE SET position = excluded.position
+            """;
+        command.Parameters.AddWithValue("$name", name);
+        command.Parameters.AddWithValue("$position", position);
+        await command.ExecuteNonQueryAsync(ct);
     }
 
     /// <summary>Returns all events of one stream in sequence order.</summary>
