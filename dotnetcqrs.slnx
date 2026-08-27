@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/samples/">
     <Project Path="samples/OrderFulfillment/OrderFulfillment.csproj" />
+    <Project Path="samples/OrderFulfillmentGenerated/OrderFulfillmentGenerated.csproj" />
     <Project Path="samples/OrderFulfillmentHost/OrderFulfillmentHost.csproj" />
   </Folder>
   <Folder Name="/src/">
