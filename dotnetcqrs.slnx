@@ -3,6 +3,7 @@
     <Project Path="samples/OrderFulfillment/OrderFulfillment.csproj" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/DotnetCqrs.Host/DotnetCqrs.Host.csproj" />
     <Project Path="src/DotnetCqrs/DotnetCqrs.csproj" />
   </Folder>
   <Folder Name="/test/">
