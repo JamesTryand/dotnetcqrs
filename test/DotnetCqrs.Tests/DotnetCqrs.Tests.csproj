@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.11" />
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.11" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
@@ -23,6 +24,11 @@
     <ProjectReference Include="..\..\src\DotnetCqrs\DotnetCqrs.csproj" />
     <ProjectReference Include="..\..\samples\OrderFulfillment\OrderFulfillment.csproj" />
     <ProjectReference Include="..\..\src\DotnetCqrs.Host\DotnetCqrs.Host.csproj" />
+  </ItemGroup>
+
+  <!-- For CqrsGatewayAuthTests: JwtBearerDefaults, AddJwtBearer, TokenValidationParameters. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
 </Project>
