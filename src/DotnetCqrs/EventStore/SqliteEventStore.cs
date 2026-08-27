@@ -49,7 +49,11 @@ public sealed class SqliteEventStore : IAsyncDisposable, IPollSource, ICheckpoin
     /// <summary>Opens (creating if necessary) the event store at <paramref name="path"/>.</summary>
     public static async Task<SqliteEventStore> OpenAsync(string path, CancellationToken ct = default)
     {
-        var connection = new SqliteConnection($"Data Source={path}");
+        // Pooling=False: a pooled connection keeps the underlying OS file handle open
+        // past DisposeAsync, so a caller that deletes/replaces the file right after
+        // closing the store (tests included) hits "file in use" -- this store already
+        // holds one dedicated connection for its whole lifetime, so pooling buys nothing.
+        var connection = new SqliteConnection($"Data Source={path};Pooling=False");
         await connection.OpenAsync(ct);
 
         await using (var pragma = connection.CreateCommand())

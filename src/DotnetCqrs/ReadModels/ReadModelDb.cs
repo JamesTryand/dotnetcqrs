@@ -13,7 +13,9 @@ public static class ReadModelDb
 {
     public static async Task<SqliteConnection> OpenAsync(string path, CancellationToken ct = default)
     {
-        var connection = new SqliteConnection($"Data Source={path}");
+        // Pooling=False: see SqliteEventStore.OpenAsync's identical comment -- a
+        // pooled connection keeps the OS file handle open past DisposeAsync.
+        var connection = new SqliteConnection($"Data Source={path};Pooling=False");
         await connection.OpenAsync(ct);
 
         await using var pragma = connection.CreateCommand();
