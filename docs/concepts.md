@@ -109,12 +109,14 @@ The next question is "what stops something writing to the `tasks` table
 directly, the CRUD way, and skipping all of this?" In `pocketcqrs`,
 PocketBase enforces this for free: any direct write to a projection-owned
 collection is rejected with 403. `dotnetcqrs` has no such framework
-underneath it, so this is a mechanism the library has to provide itself
-(tracked as its own milestone) rather than something that comes for free —
-until it exists, "don't write to read-model tables except from a
-projection" is a convention, not an enforced guarantee. State changes
+underneath it, so this is a mechanism the library provides itself: a SQL
+trigger installed on every guarded table (`WriteGuard.InstallAsync`)
+rejects any write on any connection except the one currently inside a
+connection-scoped bypass (`WriteGuard.BeginBypassAsync`) — which is exactly
+what a projection's own `ApplyAsync` opens before it writes. State changes
 should be commands; commands become events; events become read models.
-There should be exactly one path in, and it should go through a decider.
+There is exactly one path in, and the write-guard is what makes that an
+enforced guarantee rather than just a convention.
 
 ## Reactors: sagas, or "triggers that dispatch commands, not SQL"
 
@@ -182,12 +184,18 @@ stays pure and testable.
 | `WHERE version = ?` optimistic lock | per-stream optimistic concurrency on append |
 | schema migration | projection rebuild (read side) — deciders don't have "schema" the way rows do |
 | DB trigger cascading a second write | reactor dispatching a follow-up command |
-| direct table write | should be rejected by the write-guard (mechanism not yet built — see Milestones) |
+| direct table write | rejected by the write-guard (a SQL trigger, bypassed only inside a projection's own scoped write) |
 | audit log bolted on afterward | not needed — the event log already *is* the full history |
 
 ## Where next
 
-This doc is Milestone 1 of the build-out tracked in the `platform/dotnet-cqrs-baseline`
-delegation. See that issue's `README.md` for the full milestone plan (write-side core,
-consumer/subscription plumbing, projections + search, reactors, write-guard, FaaS/extcaller,
-worked example, EventModeling codegen integration).
+- [Getting started](getting-started.md) — run a hand-written domain over HTTP, send
+  a real command, see a real rejection.
+- [Tutorial](tutorial.md) — the other direction: an EventModeling document, generated
+  code, a running slice.
+
+This doc started as Milestone 1 of the build-out tracked in the
+`platform/dotnet-cqrs-baseline` delegation; everything it describes (write-side core,
+consumer/subscription plumbing, projections, reactors, write-guard, extcaller) is now
+built, along with a runnable host (`platform/dotnetcqrs-host`) and EventModeling
+codegen (`platform/eventmodeling-codegen`) on top of it.
