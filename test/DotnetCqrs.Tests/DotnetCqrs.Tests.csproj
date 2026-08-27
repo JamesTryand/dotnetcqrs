@@ -24,11 +24,16 @@
     <ProjectReference Include="..\..\src\DotnetCqrs\DotnetCqrs.csproj" />
     <ProjectReference Include="..\..\samples\OrderFulfillment\OrderFulfillment.csproj" />
     <ProjectReference Include="..\..\src\DotnetCqrs.Host\DotnetCqrs.Host.csproj" />
+    <ProjectReference Include="..\..\src\DotnetCqrs.Codegen\DotnetCqrs.Codegen.csproj" />
   </ItemGroup>
 
   <!-- For CqrsGatewayAuthTests: JwtBearerDefaults, AddJwtBearer, TokenValidationParameters. -->
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Codegen\TestData\*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

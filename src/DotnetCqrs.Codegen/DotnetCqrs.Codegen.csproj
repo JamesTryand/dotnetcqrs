@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="JsonSchema.Net" Version="9.4.0" />
+  </ItemGroup>
+
+  <!-- Pinned copy of eventmodelschema's eventmodeling.schema.json (v2.0.0, fetched
+       2026-08-27 from github.com/jamestryand/eventmodelschema): vendored rather than
+       fetched at runtime, so validation works offline and deterministically. Update by
+       re-fetching from that repo when a new schema version is needed. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Schema\eventmodeling.schema.json" />
+  </ItemGroup>
+
+</Project>
