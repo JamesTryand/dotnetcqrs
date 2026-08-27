@@ -1,0 +1,257 @@
+// Fixed, reusable scenario-verification harness -- copied verbatim into a scratch
+// project alongside generated deciders/projections by ScenarioVerifier (never
+// generated per-document). Reads a HarnessInput JSON file (args[0]), runs every
+// scenario against the real, compiled generated code (in-memory SQLite, no live
+// state touched), and writes a JSON array of ScenarioResult to args[1].
+//
+// This is dotnetcqrs's answer to pocketcqrs's "dry-run the JS source in a sandboxed
+// VM" (functions.DryRunDecide/DryRunProjectionOver): there is no equivalent to
+// evaluating source text without compiling it for C#, so verification here means
+// actually compiling this harness together with the generated code once (a real
+// `dotnet build`/`dotnet run`, same infrastructure Milestone 3's own tests proved
+// out) and driving every scenario through the resulting assembly via reflection.
+
+using System.Reflection;
+using System.Text.Json;
+using DotnetCqrs.Deciders;
+using DotnetCqrs.EventStore;
+using DotnetCqrs.Projections;
+using DotnetCqrs.ReadModels;
+using Microsoft.Data.Sqlite;
+
+var input = JsonSerializer.Deserialize<HarnessInput>(await File.ReadAllTextAsync(args[0]))!;
+var results = new List<ScenarioResultDto>();
+
+foreach (var scenario in input.CommandScenarios)
+    results.Add(await RunCommandScenarioAsync(scenario));
+foreach (var scenario in input.ViewScenarios)
+    results.Add(await RunViewScenarioAsync(scenario));
+
+await File.WriteAllTextAsync(args[1], JsonSerializer.Serialize(results));
+
+static async Task<ScenarioResultDto> RunCommandScenarioAsync(CommandScenarioInput scenario)
+{
+    try
+    {
+        await using var store = await SqliteEventStore.OpenAsync(":memory:");
+        var registry = new DeciderRegistry(store);
+        RegisterDecider(registry, scenario.DeciderTypeName, scenario.Aggregate);
+
+        if (scenario.Given.Count > 0)
+        {
+            var seed = scenario.Given.Select(g => new NewEvent(g.Type, g.Data)).ToList();
+            await store.AppendAsync(scenario.Aggregate, scenario.StreamId, 0, seed);
+        }
+
+        try
+        {
+            var produced = await registry.HandleAsync(scenario.Aggregate, scenario.StreamId, new Command(scenario.CommandName, scenario.CommandPayload));
+
+            if (scenario.Kind == "error")
+                return Result(scenario, passed: false, $"expected a refusal but the command was accepted and produced {produced.Count} event(s)");
+
+            var got = produced.Select(e => e.Type).ToList();
+            var want = scenario.ExpectedEventTypes;
+            if (!got.SequenceEqual(want))
+                return Result(scenario, passed: false, $"expected [{string.Join(", ", want)}], got [{string.Join(", ", got)}]");
+
+            return Result(scenario, passed: true, $"would append {string.Join(", ", got)}");
+        }
+        catch (Exception ex)
+        {
+            if (scenario.Kind == "error")
+                return Result(scenario, passed: true, "refused: " + ex.Message);
+            return Result(scenario, passed: false, "the decider refused the command: " + ex.Message);
+        }
+    }
+    catch (Exception ex)
+    {
+        return Result(scenario, passed: false, "verification error: " + ex.Message);
+    }
+}
+
+static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scenario)
+{
+    try
+    {
+        await using var readModel = await ReadModelDb.OpenAsync(":memory:");
+        var projectionType = Type.GetType(scenario.ProjectionTypeName)
+            ?? throw new InvalidOperationException($"projection type not found: {scenario.ProjectionTypeName}");
+        var projection = (IProjection)Activator.CreateInstance(projectionType, readModel)!;
+        await CallInitAsync(projection);
+
+        long position = 0;
+        foreach (var g in scenario.Given)
+        {
+            position++;
+            var ev = new Event(position, $"scenario-{position}", scenario.Aggregate, scenario.StreamId, position, g.Type, g.Data, "{}", "1970-01-01T00:00:00.000Z");
+            await projection.ApplyAsync(ev, CancellationToken.None);
+        }
+
+        var row = await SelectRowAsync(readModel, scenario.TableName, scenario.KeyColumn, scenario.StreamId, scenario.QueryParams);
+        if (row is null)
+            return ViewResult(scenario, passed: false, "no row matched the query");
+
+        var diff = SubsetDiff(scenario.ExpectedResult, row);
+        return diff is null
+            ? ViewResult(scenario, passed: true, "the projected row matches")
+            : ViewResult(scenario, passed: false, "result: " + diff);
+    }
+    catch (Exception ex)
+    {
+        return ViewResult(scenario, passed: false, "verification error: " + ex.Message);
+    }
+}
+
+static void RegisterDecider(DeciderRegistry registry, string typeName, string aggregate)
+{
+    var deciderType = Type.GetType(typeName) ?? throw new InvalidOperationException($"decider type not found: {typeName}");
+    var createMethod = deciderType.GetMethod("Create", BindingFlags.Public | BindingFlags.Static)
+        ?? throw new InvalidOperationException($"{typeName}.Create() not found");
+    var decider = createMethod.Invoke(null, null)!;
+    var stateType = decider.GetType().GetGenericArguments()[0];
+    var registerMethod = typeof(DeciderRegistry).GetMethods().Single(m => m.Name == "Register" && m.IsGenericMethodDefinition)
+        .MakeGenericMethod(stateType);
+    registerMethod.Invoke(registry, [aggregate, decider]);
+}
+
+static async Task CallInitAsync(object projection)
+{
+    var method = projection.GetType().GetMethod("InitAsync");
+    if (method is null) return;
+    await (Task)method.Invoke(projection, [CancellationToken.None])!;
+}
+
+static async Task<Dictionary<string, object?>?> SelectRowAsync(SqliteConnection db, string table, string keyColumn, string streamId, string? queryParamsJson)
+{
+    string sql;
+    var parameters = new Dictionary<string, object?>();
+    if (string.IsNullOrEmpty(queryParamsJson) || queryParamsJson == "{}")
+    {
+        sql = $"SELECT * FROM {table} WHERE {keyColumn} = $id";
+        parameters["$id"] = streamId;
+    }
+    else
+    {
+        var query = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(queryParamsJson)!;
+        var clauses = new List<string>();
+        var i = 0;
+        foreach (var (key, value) in query)
+        {
+            var column = ToSnakeCase(key);
+            var paramName = $"$p{i++}";
+            clauses.Add($"{column} = {paramName}");
+            parameters[paramName] = value.ValueKind switch
+            {
+                JsonValueKind.Number => value.GetDouble(),
+                JsonValueKind.True or JsonValueKind.False => value.GetBoolean(),
+                _ => value.GetString(),
+            };
+        }
+        sql = clauses.Count == 0 ? $"SELECT * FROM {table}" : $"SELECT * FROM {table} WHERE {string.Join(" AND ", clauses)}";
+    }
+
+    await using var command = db.CreateCommand();
+    command.CommandText = sql;
+    foreach (var (name, value) in parameters)
+        command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+
+    Dictionary<string, object?>? match = null;
+    var count = 0;
+    await using (var reader = await command.ExecuteReaderAsync())
+    {
+        while (await reader.ReadAsync())
+        {
+            count++;
+            var row = new Dictionary<string, object?>();
+            for (var i = 0; i < reader.FieldCount; i++)
+                row[reader.GetName(i)] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+            match = row;
+        }
+    }
+    // an ambiguous query (0 or >1 rows) returns nothing rather than an arbitrary
+    // row, matching pocketcqrs's own selectRow -- picking one would make the
+    // assertion depend on row order.
+    return count == 1 ? match : null;
+}
+
+// A subset comparison, not equality: a scenario states the fields it cares about,
+// and the generated code legitimately carries more. Requiring equality would fail
+// every scenario for a reason that isn't about the domain.
+static string? SubsetDiff(string expectedJson, Dictionary<string, object?> actual)
+{
+    var expected = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(expectedJson);
+    if (expected is null) return "expected value is not an object";
+
+    var diffs = new List<string>();
+    foreach (var (key, want) in expected.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+    {
+        var column = ToSnakeCase(key);
+        if (!actual.TryGetValue(column, out var got))
+        {
+            diffs.Add($"{key} missing");
+            continue;
+        }
+        if (!ValuesEqual(got, want))
+            diffs.Add($"{key} = {got}, expected {want}");
+    }
+    return diffs.Count > 0 ? string.Join("; ", diffs) : null;
+}
+
+static bool ValuesEqual(object? actual, JsonElement expected)
+{
+    var actualText = actual switch
+    {
+        null => "null",
+        bool b => b ? "true" : "false",
+        long l => l.ToString(),
+        double d => d.ToString("G17"),
+        _ => actual.ToString(),
+    };
+    var expectedText = expected.ValueKind switch
+    {
+        JsonValueKind.True => "true",
+        JsonValueKind.False => "false",
+        JsonValueKind.Number => expected.GetDouble().ToString("G17"),
+        JsonValueKind.Null => "null",
+        _ => expected.GetString(),
+    };
+    return actualText == expectedText;
+}
+
+static string ToSnakeCase(string name)
+{
+    var b = new System.Text.StringBuilder();
+    for (var i = 0; i < name.Length; i++)
+    {
+        var c = name[i];
+        if (char.IsUpper(c))
+        {
+            if (i > 0) b.Append('_');
+            b.Append(char.ToLowerInvariant(c));
+        }
+        else
+        {
+            b.Append(c);
+        }
+    }
+    return b.ToString();
+}
+
+// Local functions do NOT support overloading in C# (unlike ordinary methods) --
+// two local functions named Result with different parameter types are a compile
+// error ("already defined in this scope"), not a valid overload set. Named
+// separately instead.
+static ScenarioResultDto Result(CommandScenarioInput s, bool passed, string detail) =>
+    new(s.SliceId, s.ScenarioId, s.Name, s.Kind, passed, Skipped: false, detail);
+
+static ScenarioResultDto ViewResult(ViewScenarioInput s, bool passed, string detail) =>
+    new(s.SliceId, s.ScenarioId, s.Name, "stateView", passed, Skipped: false, detail);
+
+record HarnessInput(List<CommandScenarioInput> CommandScenarios, List<ViewScenarioInput> ViewScenarios);
+record GivenEventInput(string Type, string Data);
+record CommandScenarioInput(string SliceId, string ScenarioId, string Name, string Kind, string DeciderTypeName,
+    string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes);
+record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,
+    string TableName, string KeyColumn, string StreamId, List<GivenEventInput> Given, string? QueryParams, string ExpectedResult);
+record ScenarioResultDto(string SliceId, string ScenarioId, string Name, string Kind, bool Passed, bool Skipped, string Detail);

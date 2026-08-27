@@ -18,4 +18,20 @@
     <EmbeddedResource Include="Schema\eventmodeling.schema.json" />
   </ItemGroup>
 
+  <!-- The fixed scenario-verification harness (see its own header comment): copied
+       verbatim into a scratch project by ScenarioVerifier, never compiled as part of
+       this assembly itself: .txt so the C# compiler here ignores it, and
+       EmbeddedResource so it ships inside DotnetCqrs.Codegen.dll rather than needing
+       to be found on disk relative to wherever the assembly happens to run from.
+       Named HarnessProgram.txt, NOT Harness.cs.txt: MSBuild's AssignCulture task
+       treats a "Name.xx.ext" filename as a satellite resource for culture "xx" when
+       "xx" is a recognized ISO language code: "cs" is Czech, so "Harness.cs.txt"
+       silently vanished from the main assembly's manifest resources into culture
+       handling instead of embedding normally. Confirmed via `dotnet msbuild
+       -getItem:EmbeddedResource` (the item WAS recognized) plus
+       Assembly.GetManifestResourceNames() (it wasn't there) before renaming. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Verification\HarnessProgram.txt" />
+  </ItemGroup>
+
 </Project>
