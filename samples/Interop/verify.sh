@@ -49,6 +49,9 @@ pass() { echo "  PASS: $1"; }
 fail() { echo "  FAIL: $1"; FAILED=1; }
 assert_eq() { [ "$1" = "$2" ] && pass "$3" || fail "$3 (want '$2', got '$1')"; }
 assert_contains() { case "$1" in *"$2"*) pass "$3";; *) fail "$3 (got: $1)";; esac; }
+# `|| true`: a sqlite3 failure (locked/missing db) must surface as a failed assertion
+# below, not kill the script under `set -e` before the diagnostics block runs.
+q() { sqlite3 "$1" "$2" 2>&1 || true; }
 wait_for() { # url label
   for _ in $(seq 1 120); do curl -sf "$1" >/dev/null 2>&1 && return 0; sleep 0.5; done
   echo "timed out waiting for $2 ($1)" >&2; return 1
@@ -109,8 +112,8 @@ SVC_TOKEN="$SVC_TOKEN" POCKETCQRS_URL="http://$PC_ADDR" \
 CAUSATION_ID="interop-cause-A1" CORRELATION_ID="interop-corr-A1" \
   dotnet "$WORK/into-pc/IntoPocketCqrs.dll" t-A1 "from dotnetcqrs" \
   && pass "GatewayFollowUpDispatcher dispatch accepted" || fail "GatewayFollowUpDispatcher dispatch"
-a_type="$(sqlite3 "$PC_EVENTS" "SELECT type FROM events WHERE aggregate='task' AND aggregate_id='t-A1' ORDER BY sequence LIMIT 1")"
-a_meta="$(sqlite3 "$PC_EVENTS" "SELECT metadata FROM events WHERE aggregate='task' AND aggregate_id='t-A1' ORDER BY sequence LIMIT 1")"
+a_type="$(q "$PC_EVENTS" "SELECT type FROM events WHERE aggregate='task' AND aggregate_id='t-A1' ORDER BY sequence LIMIT 1")"
+a_meta="$(q "$PC_EVENTS" "SELECT metadata FROM events WHERE aggregate='task' AND aggregate_id='t-A1' ORDER BY sequence LIMIT 1")"
 assert_eq "$a_type" "TaskCreated" "command landed as a real event on pocketcqrs"
 assert_contains "$a_meta" '"actor":"extcall:dotnetcqrs"' "pocketcqrs stamped the external-caller actor"
 assert_contains "$a_meta" '"causationId":"interop-cause-A1"' "pocketcqrs honoured Causation-Id from the recognized caller"
@@ -118,14 +121,16 @@ assert_contains "$a_meta" '"correlationId":"interop-corr-A1"' "pocketcqrs honour
 SVC_TOKEN="$SVC_TOKEN" POCKETCQRS_URL="http://$PC_ADDR" \
   dotnet "$WORK/into-pc/IntoPocketCqrs.dll" t-A1 "from dotnetcqrs" --expect-reject \
   && pass "duplicate CreateTask refused (400) by pocketcqrs" || fail "duplicate CreateTask should 400"
+assert_eq "$(q "$PC_EVENTS" "SELECT count(*) FROM events WHERE aggregate='task' AND aggregate_id='t-A1'")" "1" \
+  "duplicate was refused by the decider, not partially applied (exactly one t-A1 event)"
 
 echo "== direction B: pocketcqrs -> dotnetcqrs =="
 DOTNETCQRS_URL="http://$DC_ADDR" INTEROP_JWT_KEY="$JWT_KEY" \
 CAUSATION_ID="interop-cause-B1" CORRELATION_ID="interop-corr-B1" \
   "$DC_BIN" t-B1 "from pocketcqrs" \
   && pass "gatewayclient-shaped dispatch accepted" || fail "gatewayclient-shaped dispatch"
-b_type="$(sqlite3 "$DC_EVENTS" "SELECT type FROM events WHERE aggregate='task' AND aggregate_id='t-B1' ORDER BY sequence LIMIT 1")"
-b_meta="$(sqlite3 "$DC_EVENTS" "SELECT metadata FROM events WHERE aggregate='task' AND aggregate_id='t-B1' ORDER BY sequence LIMIT 1")"
+b_type="$(q "$DC_EVENTS" "SELECT type FROM events WHERE aggregate='task' AND aggregate_id='t-B1' ORDER BY sequence LIMIT 1")"
+b_meta="$(q "$DC_EVENTS" "SELECT metadata FROM events WHERE aggregate='task' AND aggregate_id='t-B1' ORDER BY sequence LIMIT 1")"
 assert_eq "$b_type" "TaskCreated" "command landed as a real event on dotnetcqrs"
 assert_contains "$b_meta" '"actor":"pocketcqrs-extcaller"' "dotnetcqrs derived actor from the shared-issuer JWT sub"
 assert_contains "$b_meta" '"causationId":"interop-cause-B1"' "dotnetcqrs threaded Causation-Id (no allow-list gate)"
@@ -133,6 +138,8 @@ assert_contains "$b_meta" '"correlationId":"interop-corr-B1"' "dotnetcqrs thread
 DOTNETCQRS_URL="http://$DC_ADDR" INTEROP_JWT_KEY="$JWT_KEY" \
   "$DC_BIN" t-B1 "from pocketcqrs" --expect-reject \
   && pass "duplicate CreateTask refused (400) by dotnetcqrs" || fail "duplicate CreateTask should 400"
+assert_eq "$(q "$DC_EVENTS" "SELECT count(*) FROM events WHERE aggregate='task' AND aggregate_id='t-B1'")" "1" \
+  "duplicate was refused by the decider, not partially applied (exactly one t-B1 event)"
 
 echo
 if [ "$FAILED" = "0" ]; then
