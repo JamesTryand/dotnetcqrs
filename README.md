@@ -51,6 +51,10 @@ Go/PocketBase to C#/.NET rather than wrapping it.
 - [Cross-host replication](docs/cross-host-replication.md) — a same-host
   read-only secondary plus write-forwarding, extended across real hosts
   via LiteFS (dotnetcqrs-multi-node Milestone 3)
+- [dotnetcqrs ↔ pocketcqrs interop](docs/interop.md) — dispatching commands
+  between the two runtimes' gateways both ways: what matches for free, and
+  the auth alignment that is the actual work (dotnetcqrs-multi-node
+  Milestone 5)
 
 ## Samples
 
@@ -64,6 +68,9 @@ Go/PocketBase to C#/.NET rather than wrapping it.
 - [`samples/MultiNode`](samples/MultiNode) — a primary/secondary pair for
   the cross-host replication smoke test (see `ops/litefs/` and
   [Cross-host replication](docs/cross-host-replication.md))
+- [`samples/Interop`](samples/Interop) — a verification harness dispatching
+  `CreateTask` both ways between a real `dotnetcqrs` gateway and a real
+  `pocketcqrs` one (see [interop](docs/interop.md))
 
 ## Development
 

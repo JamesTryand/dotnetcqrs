@@ -5,6 +5,8 @@
     <Project Path="samples/OrderFulfillmentHost/OrderFulfillmentHost.csproj" />
     <Project Path="samples/MultiNode/MultiNode.Primary/MultiNode.Primary.csproj" />
     <Project Path="samples/MultiNode/MultiNode.Secondary/MultiNode.Secondary.csproj" />
+    <Project Path="samples/Interop/DotnetCqrsHost/DotnetCqrsHost.csproj" />
+    <Project Path="samples/Interop/IntoPocketCqrs/IntoPocketCqrs.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/DotnetCqrs.Codegen/DotnetCqrs.Codegen.csproj" />

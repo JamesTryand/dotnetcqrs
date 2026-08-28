@@ -235,3 +235,7 @@ Session.vim
 .netrwhist
 *~
 
+
+# Milestone 5 interop Go driver, if built in-tree (verify.sh builds to a temp dir)
+/samples/Interop/into-dotnetcqrs/into-dotnetcqrs
+/samples/Interop/into-dotnetcqrs/into-dotnetcqrs.exe
