@@ -1,0 +1,16 @@
+# Static-lease replica. Same file as litefs-primary.yml apart from `candidate: false`
+# and which binary `exec` runs -- advertise-url still points at "primary" (that's how
+# a static-lease replica finds the primary; see litefs-primary.yml's comment).
+fuse:
+  dir: "/litefs"
+
+data:
+  dir: "/var/lib/litefs"
+
+lease:
+  type: "static"
+  advertise-url: "http://primary:20202"
+  candidate: false
+
+exec:
+  - cmd: "dotnet /app/MultiNode.Secondary.dll"

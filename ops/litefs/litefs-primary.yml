@@ -1,0 +1,21 @@
+# Static-lease primary. Modeled directly on superfly/litefs-example's own verified
+# docker-config/etc/litefs.static-lease.yml (fetched and checked against the real repo
+# while writing this, not guessed) -- both nodes' advertise-url points at THIS node
+# ("primary", the docker-compose service name), since that is what a replica needs to
+# find the primary; only `candidate` differs between the two files. See
+# docs/cross-host-replication.md for why no `hostname` or `http:` block is set (the
+# verified example doesn't use either -- LiteFS derives its internal API listener from
+# advertise-url's port).
+fuse:
+  dir: "/litefs"
+
+data:
+  dir: "/var/lib/litefs"
+
+lease:
+  type: "static"
+  advertise-url: "http://primary:20202"
+  candidate: true
+
+exec:
+  - cmd: "dotnet /app/MultiNode.Primary.dll"

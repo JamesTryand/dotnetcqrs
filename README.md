@@ -48,6 +48,9 @@ Go/PocketBase to C#/.NET rather than wrapping it.
   the generator leaves for you
 - [Concepts](docs/concepts.md) — coming from CRUD: commands vs. events,
   deciders, aggregates, projections, the write-guard, reactors
+- [Cross-host replication](docs/cross-host-replication.md) — a same-host
+  read-only secondary plus write-forwarding, extended across real hosts
+  via LiteFS (dotnetcqrs-multi-node Milestone 3)
 
 ## Samples
 
@@ -58,6 +61,9 @@ Go/PocketBase to C#/.NET rather than wrapping it.
 - [`samples/OrderFulfillmentGenerated`](samples/OrderFulfillmentGenerated) —
   the actual output of running `DotnetCqrs.Codegen` against an EventModeling
   document, committed so it's provably compilable, not just illustrative
+- [`samples/MultiNode`](samples/MultiNode) — a primary/secondary pair for
+  the cross-host replication smoke test (see `ops/litefs/` and
+  [Cross-host replication](docs/cross-host-replication.md))
 
 ## Development
 

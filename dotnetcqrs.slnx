@@ -3,6 +3,8 @@
     <Project Path="samples/OrderFulfillment/OrderFulfillment.csproj" />
     <Project Path="samples/OrderFulfillmentGenerated/OrderFulfillmentGenerated.csproj" />
     <Project Path="samples/OrderFulfillmentHost/OrderFulfillmentHost.csproj" />
+    <Project Path="samples/MultiNode/MultiNode.Primary/MultiNode.Primary.csproj" />
+    <Project Path="samples/MultiNode/MultiNode.Secondary/MultiNode.Secondary.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/DotnetCqrs.Codegen/DotnetCqrs.Codegen.csproj" />

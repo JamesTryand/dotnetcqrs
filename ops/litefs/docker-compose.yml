@@ -1,0 +1,50 @@
+# dotnetcqrs-multi-node Milestone 3 smoke test: two containers standing in for two
+# real hosts (a genuine second host was not available -- see this issue's NEEDS.md).
+# `primary` runs MultiNode.Primary as the write master; `secondary` runs
+# MultiNode.Secondary, reading LiteFS's replicated copy of events.db and forwarding
+# writes back to `primary` over the compose network (a real HTTP hop between two
+# containers, not the in-memory TestServer plumbing Milestones 1-2's own tests use).
+#
+# `privileged: true` matches Fly.io's own "Getting Started with LiteFS in Docker"
+# guide's documented simple path for enabling FUSE; narrow to
+# `cap_add: [SYS_ADMIN]` + `devices: ["/dev/fuse"]` if running this anywhere less
+# throwaway than a local smoke test.
+#
+# Run from this directory: `docker compose up --build`, then `./verify.sh`.
+
+services:
+  primary:
+    build:
+      context: ../..
+      dockerfile: ops/litefs/Dockerfile
+      args:
+        PROJECT: MultiNode.Primary
+        LITEFS_CONFIG: litefs-primary.yml
+    hostname: primary
+    privileged: true
+    ports:
+      - "8081:8080"
+    volumes:
+      - primary-litefs-data:/var/lib/litefs
+
+  secondary:
+    build:
+      context: ../..
+      dockerfile: ops/litefs/Dockerfile
+      args:
+        PROJECT: MultiNode.Secondary
+        LITEFS_CONFIG: litefs-secondary.yml
+    hostname: secondary
+    privileged: true
+    ports:
+      - "8082:8080"
+    environment:
+      PRIMARY_URL: "http://primary:8080"
+    depends_on:
+      - primary
+    volumes:
+      - secondary-litefs-data:/var/lib/litefs
+
+volumes:
+  primary-litefs-data:
+  secondary-litefs-data:
