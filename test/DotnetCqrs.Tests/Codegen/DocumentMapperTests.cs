@@ -104,6 +104,9 @@ public class DocumentMapperTests
         var reactor = Assert.Single(order.Reactors, r => r.Command == "ShipOrder");
         Assert.Equal(["OrderPlaced"], reactor.On);
         Assert.Equal("order", reactor.Aggregate);
+        // No IdPrefix: the target is the triggering order's own existing stream, not a
+        // new one -- a prefix here would dispatch to an id nothing ever created.
+        Assert.Null(reactor.IdPrefix);
     }
 
     [Fact]

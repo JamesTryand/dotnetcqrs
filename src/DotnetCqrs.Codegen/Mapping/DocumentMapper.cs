@@ -278,12 +278,17 @@ public sealed class DocumentMapper
             _report.Warn($"automation \"{slice.Id}\" consults read model \"{slice.ReadModelId}\"; the generated " +
                 "reaction does not read it -- the author adds that access if the rule needs it");
 
+        // Same-aggregate automations (auto-ship: order -> order) dispatch back into the
+        // stream that already exists -- prefixing it would build an id nothing ever
+        // created. Only a cross-aggregate dispatch needs a prefix, both to derive a new
+        // target instance per trigger and to avoid colliding with another trigger stream
+        // that happens to share the same raw id.
         var reactor = new Reactor
         {
             Name = Names.LowerFirst(Names.SanitizeName(Names.TypeName(slice.Name, slice.Id))),
             Aggregate = aggregate,
             Command = CommandName(slice.CommandId),
-            IdPrefix = Names.DeriveId(Names.TypeName(slice.Name, slice.Id)) + "-",
+            IdPrefix = crossAggregate ? Names.DeriveId(Names.TypeName(slice.Name, slice.Id)) + "-" : null,
         };
         reactor.On.AddRange(triggers);
         GetOrCreateDomain(source).Reactors.Add(reactor);

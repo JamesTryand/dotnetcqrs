@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
+using DotnetCqrs.EventStore;
 
 namespace DotnetCqrs.Tests.Codegen;
 
@@ -156,6 +157,23 @@ public class HostGenerationTests : IDisposable
             var events = await response.Content.ReadFromJsonAsync<JsonElement>();
             Assert.Equal(1, events.GetArrayLength());
             Assert.Equal("OrderPlaced", events[0].GetProperty("type").GetString());
+
+            // auto-ship-pending-orders is a same-aggregate reactor (order-placed ->
+            // ship-order, both "order"): it must dispatch back into the SAME order's
+            // stream, not a derived one nothing created (the Milestone 5 finding this
+            // regression-tests). ConsumerEngine polls every ~1s, so poll the real
+            // events.db -- written by the live host process, opened here as a second
+            // WAL reader -- for OrderShipped to land on stream ("order", "o1").
+            var eventsDbPath = Directory.GetFiles(_scratchDir, "events.db", SearchOption.AllDirectories).Single();
+            var shipped = false;
+            for (var attempt = 0; attempt < 30 && !shipped; attempt++)
+            {
+                await Task.Delay(500);
+                await using var store = await SqliteEventStore.OpenAsync(eventsDbPath);
+                var stream = await store.LoadStreamAsync("order", "o1");
+                shipped = stream.Any(e => e.Type == "OrderShipped");
+            }
+            Assert.True(shipped, "auto-ship reactor never dispatched OrderShipped onto the triggering order's own stream");
         }
         finally
         {

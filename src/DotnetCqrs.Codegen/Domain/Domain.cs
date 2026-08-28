@@ -103,6 +103,9 @@ public sealed class Reactor
 
     /// <summary>Prefixes the source aggregate id to build the target id (e.g.
     /// <c>"fulfill-"</c> → <c>"fulfill-&lt;orderId&gt;"</c>). Deterministic on purpose: a
-    /// replay then hits the target's own "already exists" rule.</summary>
+    /// replay then hits the target's own "already exists" rule. Null for a same-aggregate
+    /// automation (e.g. auto-ship: order -> order) — the target is the trigger's own
+    /// existing stream, so the id must be the bare source aggregate id, not a derived
+    /// one nothing created.</summary>
     public string? IdPrefix { get; init; }
 }
