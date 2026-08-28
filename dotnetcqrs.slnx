@@ -13,6 +13,7 @@
     <Project Path="src/DotnetCqrs.Codegen/DotnetCqrs.Codegen.csproj" />
     <Project Path="src/DotnetCqrs.Codegen.Cli/DotnetCqrs.Codegen.Cli.csproj" />
     <Project Path="src/DotnetCqrs.Host/DotnetCqrs.Host.csproj" />
+    <Project Path="src/DotnetCqrs.Postgres/DotnetCqrs.Postgres.csproj" />
     <Project Path="src/DotnetCqrs/DotnetCqrs.csproj" />
   </Folder>
   <Folder Name="/test/">

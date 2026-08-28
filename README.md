@@ -12,15 +12,18 @@ Go/PocketBase to C#/.NET rather than wrapping it.
   it returns — the only database write in the whole path.
 - **Event store**: `SqliteEventStore` — append-only, per-stream optimistic
   concurrency, a global position for catch-up subscriptions, dead-letter
-  tracking for consumers that fail.
-- **Read side**: `IProjection` folds events into plain SQLite tables you
-  query however you query SQLite — no ORM or REST layer bundled in (unlike
-  pocketcqrs's PocketBase collections; see [Concepts](docs/concepts.md)
-  for what that trade-off actually means).
-- **Write-guard**: a SQL trigger rejects direct writes to a guarded table
-  on every connection except the one currently inside a projection's own
-  scoped bypass — the read-model tables really can only be written by the
-  projection that owns them.
+  tracking for consumers that fail. The write path is provider-neutral
+  (`DotnetCqrs.Abstractions`' `IEventStore`); `DotnetCqrs.Postgres`'
+  `PostgresEventStore` is a second implementation (see
+  [Postgres backend](docs/postgres-backend.md)).
+- **Read side**: `IProjection` folds events into plain read-model tables you
+  query however you query the database — no ORM or REST layer bundled in
+  (unlike pocketcqrs's PocketBase collections; see [Concepts](docs/concepts.md)
+  for what that trade-off actually means). SQLite by default;
+  `PostgresReadModelStore` behind the same `IReadModelStore` contract.
+- **Write-guard**: the read-model tables really can only be written by the
+  projection that owns them — a SQL trigger + connection-scoped bypass on
+  SQLite, the database's own table-privilege system on Postgres.
 - **Reactors**: durable consumers that map a committed event to a
   follow-up command, dispatched back through the same registry a human
   caller would use — the multi-aggregate "saga" pattern, with
@@ -55,6 +58,10 @@ Go/PocketBase to C#/.NET rather than wrapping it.
   between the two runtimes' gateways both ways: what matches for free, and
   the auth alignment that is the actual work (dotnetcqrs-multi-node
   Milestone 5)
+- [Postgres backend](docs/postgres-backend.md) — `DotnetCqrs.Postgres`, a
+  second `IEventStore` / `IReadModelStore` implementation behind the
+  Milestone 6 abstractions: advisory-lock append serialization, a
+  grant-based write-guard (dotnetcqrs-multi-node Milestone 7)
 
 ## Samples
 

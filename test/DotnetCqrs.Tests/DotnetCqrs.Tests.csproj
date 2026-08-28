@@ -13,6 +13,7 @@
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.11" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.23" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
   </ItemGroup>
 
@@ -23,6 +24,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\DotnetCqrs.Abstractions\DotnetCqrs.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\DotnetCqrs\DotnetCqrs.csproj" />
+    <ProjectReference Include="..\..\src\DotnetCqrs.Postgres\DotnetCqrs.Postgres.csproj" />
     <ProjectReference Include="..\..\samples\OrderFulfillment\OrderFulfillment.csproj" />
     <ProjectReference Include="..\..\src\DotnetCqrs.Host\DotnetCqrs.Host.csproj" />
     <ProjectReference Include="..\..\src\DotnetCqrs.Codegen\DotnetCqrs.Codegen.csproj" />

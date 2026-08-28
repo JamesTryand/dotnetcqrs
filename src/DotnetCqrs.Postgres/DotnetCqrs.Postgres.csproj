@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- Npgsql is the only PackageReference: this is the Postgres implementation of the
+       provider-neutral contracts in DotnetCqrs.Abstractions (Milestone 6), the sibling of
+       DotnetCqrs (SQLite). Nothing else in the solution references Npgsql. -->
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DotnetCqrs.Abstractions\DotnetCqrs.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>
