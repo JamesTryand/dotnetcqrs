@@ -6,6 +6,7 @@
 // LiteFS owns that, this app has no LiteFS-specific code at all. Writes are forwarded
 // to the primary over a real network hop via Milestone 2's
 // CqrsGatewayEndpoints.ForwardTo, also unchanged. See docs/cross-host-replication.md.
+using System.Data.Common;
 using System.Text.Json;
 using DotnetCqrs.Consumers;
 using DotnetCqrs.Deciders;
@@ -13,7 +14,6 @@ using DotnetCqrs.EventStore;
 using DotnetCqrs.Host;
 using DotnetCqrs.Projections;
 using DotnetCqrs.ReadModels;
-using Microsoft.Data.Sqlite;
 
 var eventsPath = Environment.GetEnvironmentVariable("EVENTS_DB_PATH") ?? "/litefs/events.db";
 var checkpointsPath = Environment.GetEnvironmentVariable("CHECKPOINTS_DB_PATH") ?? "/data/checkpoints.db";
@@ -24,7 +24,7 @@ Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(readModelPath))
 
 var replica = await SqliteEventStore.OpenReadOnlyAsync(eventsPath);
 var checkpoints = await SqliteEventStore.OpenAsync(checkpointsPath);
-var readModel = await ReadModelDb.OpenAsync(readModelPath);
+var readModel = await SqliteReadModelStore.OpenAsync(readModelPath);
 var projection = new TasksProjection(readModel);
 await projection.InitAsync();
 
@@ -49,30 +49,30 @@ _ = engine.StartAsync(replicationCts.Token);
 app.MapCqrsGateway(forward: CqrsGatewayEndpoints.ForwardTo(forwardClient));
 app.MapGet("/tasks/{id}", async (string id) =>
 {
-    var title = await FindTaskTitleAsync(readModel, id);
+    var title = await FindTaskTitleAsync(readModel.Connection, id);
     return title is null ? Results.NotFound() : Results.Ok(new { id, title });
 });
 app.MapGet("/healthz", () => Results.Ok("secondary"));
 app.Run();
 
-static async Task<string?> FindTaskTitleAsync(SqliteConnection connection, string taskId)
+static async Task<string?> FindTaskTitleAsync(DbConnection connection, string taskId)
 {
     await using var command = connection.CreateCommand();
-    command.CommandText = "SELECT title FROM tasks WHERE task_id = $id";
-    command.Parameters.AddWithValue("$id", taskId);
+    command.CommandText = "SELECT title FROM tasks WHERE task_id = @id";
+    command.AddParam("@id", taskId);
     return (string?)await command.ExecuteScalarAsync();
 }
 
 // Same fixture shape as ReadOnlyReplicaTests' own TasksProjection -- kept local
 // rather than shared, matching this project's existing per-file-fixture convention.
-sealed class TasksProjection(SqliteConnection connection) : IProjection
+sealed class TasksProjection(IReadModelStore store) : IProjection
 {
     public string Name => "tasks";
     public IReadOnlyList<string> Tables => ["tasks"];
 
     public async Task InitAsync(CancellationToken ct = default)
     {
-        await using var command = connection.CreateCommand();
+        await using var command = store.Connection.CreateCommand();
         command.CommandText = "CREATE TABLE IF NOT EXISTS tasks (task_id TEXT PRIMARY KEY, title TEXT NOT NULL)";
         await command.ExecuteNonQueryAsync(ct);
     }
@@ -83,10 +83,10 @@ sealed class TasksProjection(SqliteConnection connection) : IProjection
     {
         if (ev.Type != "TaskCreated") return;
         var data = JsonSerializer.Deserialize<JsonElement>(ev.Data);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "INSERT INTO tasks (task_id, title) VALUES ($id, $title) ON CONFLICT (task_id) DO NOTHING";
-        command.Parameters.AddWithValue("$id", ev.AggregateId);
-        command.Parameters.AddWithValue("$title", data.GetProperty("title").GetString());
+        await using var command = store.Connection.CreateCommand();
+        command.CommandText = "INSERT INTO tasks (task_id, title) VALUES (@id, @title) ON CONFLICT (task_id) DO NOTHING";
+        command.AddParam("@id", ev.AggregateId);
+        command.AddParam("@title", data.GetProperty("title").GetString());
         await command.ExecuteNonQueryAsync(ct);
     }
 }

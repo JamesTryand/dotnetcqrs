@@ -11,13 +11,13 @@
 // `dotnet build`/`dotnet run`, same infrastructure Milestone 3's own tests proved
 // out) and driving every scenario through the resulting assembly via reflection.
 
+using System.Data.Common;
 using System.Reflection;
 using System.Text.Json;
 using DotnetCqrs.Deciders;
 using DotnetCqrs.EventStore;
 using DotnetCqrs.Projections;
 using DotnetCqrs.ReadModels;
-using Microsoft.Data.Sqlite;
 
 var input = JsonSerializer.Deserialize<HarnessInput>(await File.ReadAllTextAsync(args[0]))!;
 var results = new List<ScenarioResultDto>();
@@ -74,7 +74,7 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
 {
     try
     {
-        await using var readModel = await ReadModelDb.OpenAsync(":memory:");
+        await using var readModel = await SqliteReadModelStore.OpenAsync(":memory:");
         var projectionType = Type.GetType(scenario.ProjectionTypeName)
             ?? throw new InvalidOperationException($"projection type not found: {scenario.ProjectionTypeName}");
         var projection = (IProjection)Activator.CreateInstance(projectionType, readModel)!;
@@ -88,7 +88,7 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
             await projection.ApplyAsync(ev, CancellationToken.None);
         }
 
-        var row = await SelectRowAsync(readModel, scenario.TableName, scenario.KeyColumn, scenario.StreamId, scenario.QueryParams);
+        var row = await SelectRowAsync(readModel.Connection, scenario.TableName, scenario.KeyColumn, scenario.StreamId, scenario.QueryParams);
         if (row is null)
             return ViewResult(scenario, passed: false, "no row matched the query");
 
@@ -122,14 +122,14 @@ static async Task CallInitAsync(object projection)
     await (Task)method.Invoke(projection, [CancellationToken.None])!;
 }
 
-static async Task<Dictionary<string, object?>?> SelectRowAsync(SqliteConnection db, string table, string keyColumn, string streamId, string? queryParamsJson)
+static async Task<Dictionary<string, object?>?> SelectRowAsync(DbConnection db, string table, string keyColumn, string streamId, string? queryParamsJson)
 {
     string sql;
     var parameters = new Dictionary<string, object?>();
     if (string.IsNullOrEmpty(queryParamsJson) || queryParamsJson == "{}")
     {
-        sql = $"SELECT * FROM {table} WHERE {keyColumn} = $id";
-        parameters["$id"] = streamId;
+        sql = $"SELECT * FROM {table} WHERE {keyColumn} = @id";
+        parameters["@id"] = streamId;
     }
     else
     {
@@ -139,7 +139,7 @@ static async Task<Dictionary<string, object?>?> SelectRowAsync(SqliteConnection 
         foreach (var (key, value) in query)
         {
             var column = ToSnakeCase(key);
-            var paramName = $"$p{i++}";
+            var paramName = $"@p{i++}";
             clauses.Add($"{column} = {paramName}");
             parameters[paramName] = value.ValueKind switch
             {
@@ -154,7 +154,7 @@ static async Task<Dictionary<string, object?>?> SelectRowAsync(SqliteConnection 
     await using var command = db.CreateCommand();
     command.CommandText = sql;
     foreach (var (name, value) in parameters)
-        command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        command.AddParam(name, value);
 
     Dictionary<string, object?>? match = null;
     var count = 0;

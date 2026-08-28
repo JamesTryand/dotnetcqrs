@@ -17,6 +17,6 @@ public sealed class AutoShipPendingOrdersReactor : IReactor
     {
         if (ev.Type is not ("OrderPlaced")) return [];
 
-        return [new Reaction("order", "auto-ship-pending-orders-" + ev.AggregateId, new Command("ShipOrder", ev.Data))];
+        return [new Reaction("order", "" + ev.AggregateId, new Command("ShipOrder", ev.Data))];
     }
 }

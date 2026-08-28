@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- Deliberately zero PackageReference: this project is the provider-neutral
+       contract (envelope types, store interfaces, the consumer/decider surface).
+       Microsoft.Data.Sqlite lives in DotnetCqrs, Npgsql will live in the Postgres
+       backend (Milestone 7); neither belongs here. System.Data.Common (DbConnection,
+       the read-model seam) is in the BCL, so no reference is needed for it. -->
+
+</Project>

@@ -10,7 +10,7 @@ namespace DotnetCqrs.Codegen.Generation;
 /// code), this wires every aggregate's generated code into one process: a
 /// <c>.csproj</c>, and a <c>Program.cs</c> that builds a <c>DeciderRegistry</c> (one
 /// decider per aggregate), one projection per read model, a combined
-/// <c>WriteGuard.InstallAsync</c>, a <c>ConsumerEngine</c> (every projection plus one
+/// <c>IReadModelStore.InstallWriteGuardAsync</c>, a <c>ConsumerEngine</c> (every projection plus one
 /// <c>ReactorConsumer</c> per reactor), and an unauthenticated <c>MapCqrsGateway()</c> —
 /// the exact pattern <c>samples/OrderFulfillment/Program.cs</c> hand-wires. See
 /// README.md's "Host scaffolding" milestone for the resolved design questions
@@ -89,7 +89,6 @@ public static class HostProjectGenerator
         b.AppendLine("using DotnetCqrs.Host;");
         b.AppendLine("using DotnetCqrs.ReadModels;");
         b.AppendLine("using DotnetCqrs.Reactors;");
-        b.AppendLine("using DotnetCqrs.WriteGuards;");
         foreach (var ns in mapped.Domains.Select(d => GenerationSupport.ExportName(d.Aggregate)).Distinct())
             b.AppendLine($"using Generated.{ns};");
         b.AppendLine();
@@ -122,7 +121,7 @@ public static class HostProjectGenerator
         b.AppendLine("var builder = WebApplication.CreateBuilder(args);");
         b.AppendLine();
         b.AppendLine("var eventStore = await SqliteEventStore.OpenAsync(eventsPath);");
-        b.AppendLine("var readModelDb = await ReadModelDb.OpenAsync(readModelPath);");
+        b.AppendLine("var readModelDb = await SqliteReadModelStore.OpenAsync(readModelPath);");
         b.AppendLine();
         b.AppendLine("var registry = new DeciderRegistry(eventStore);");
         foreach (var domain in mapped.Domains)
@@ -153,7 +152,7 @@ public static class HostProjectGenerator
         var tablesExpr = projectionVars.Count == 0
             ? "[]"
             : "[" + string.Join(", ", projectionVars.Select(v => $".. {v}.Tables")) + "]";
-        b.AppendLine($"await WriteGuard.InstallAsync(readModelDb, {tablesExpr});");
+        b.AppendLine($"await readModelDb.InstallWriteGuardAsync({tablesExpr});");
         b.AppendLine();
 
         b.AppendLine("var engine = new ConsumerEngine(eventStore, eventStore);");

@@ -10,4 +10,8 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\DotnetCqrs.Abstractions\DotnetCqrs.Abstractions.csproj" />
+  </ItemGroup>
+
 </Project>

@@ -9,6 +9,7 @@
     <Project Path="samples/Interop/IntoPocketCqrs/IntoPocketCqrs.csproj" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/DotnetCqrs.Abstractions/DotnetCqrs.Abstractions.csproj" />
     <Project Path="src/DotnetCqrs.Codegen/DotnetCqrs.Codegen.csproj" />
     <Project Path="src/DotnetCqrs.Codegen.Cli/DotnetCqrs.Codegen.Cli.csproj" />
     <Project Path="src/DotnetCqrs.Host/DotnetCqrs.Host.csproj" />

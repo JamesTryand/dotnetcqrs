@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Text.Json;
 using DotnetCqrs.Consumers;
 using DotnetCqrs.Deciders;
@@ -30,14 +31,14 @@ public sealed class ReadOnlyReplicaTests : IDisposable
     // A minimal projection folding task events into a "tasks" read-model table --
     // same shape as ProjectionTests' own fixture, kept local to this file rather than
     // shared, matching this project's existing per-file-fixture convention.
-    private sealed class TasksProjection(SqliteConnection connection) : IProjection
+    private sealed class TasksProjection(IReadModelStore store) : IProjection
     {
         public string Name => "tasks";
         public IReadOnlyList<string> Tables => ["tasks"];
 
         public async Task InitAsync(CancellationToken ct = default)
         {
-            await using var command = connection.CreateCommand();
+            await using var command = store.Connection.CreateCommand();
             command.CommandText = "CREATE TABLE IF NOT EXISTS tasks (task_id TEXT PRIMARY KEY, title TEXT NOT NULL)";
             await command.ExecuteNonQueryAsync(ct);
         }
@@ -48,10 +49,10 @@ public sealed class ReadOnlyReplicaTests : IDisposable
         {
             if (ev.Type != "TaskCreated") return;
             var data = JsonSerializer.Deserialize<JsonElement>(ev.Data);
-            await using var command = connection.CreateCommand();
-            command.CommandText = "INSERT INTO tasks (task_id, title) VALUES ($id, $title) ON CONFLICT (task_id) DO NOTHING";
-            command.Parameters.AddWithValue("$id", ev.AggregateId);
-            command.Parameters.AddWithValue("$title", data.GetProperty("title").GetString());
+            await using var command = store.Connection.CreateCommand();
+            command.CommandText = "INSERT INTO tasks (task_id, title) VALUES (@id, @title) ON CONFLICT (task_id) DO NOTHING";
+            command.AddParam("@id", ev.AggregateId);
+            command.AddParam("@title", data.GetProperty("title").GetString());
             await command.ExecuteNonQueryAsync(ct);
         }
     }
@@ -63,11 +64,11 @@ public sealed class ReadOnlyReplicaTests : IDisposable
         Evolve = (_, _) => true,
     };
 
-    private static async Task<string?> FindTaskTitleAsync(SqliteConnection connection, string taskId)
+    private static async Task<string?> FindTaskTitleAsync(DbConnection connection, string taskId)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT title FROM tasks WHERE task_id = $id";
-        command.Parameters.AddWithValue("$id", taskId);
+        command.CommandText = "SELECT title FROM tasks WHERE task_id = @id";
+        command.AddParam("@id", taskId);
         return (string?)await command.ExecuteScalarAsync();
     }
 
@@ -88,7 +89,7 @@ public sealed class ReadOnlyReplicaTests : IDisposable
         // writes), plus its own local read model.
         await using var replica = await SqliteEventStore.OpenReadOnlyAsync(eventsPath);
         await using var secondaryCheckpoints = await SqliteEventStore.OpenAsync(checkpointsPath);
-        await using var readModel = await ReadModelDb.OpenAsync(":memory:");
+        await using var readModel = await SqliteReadModelStore.OpenAsync(":memory:");
 
         var projection = new TasksProjection(readModel);
         await projection.InitAsync();
@@ -96,14 +97,14 @@ public sealed class ReadOnlyReplicaTests : IDisposable
         engine.Register(projection);
 
         await engine.RunOnceAsync();
-        Assert.Equal("write the docs", await FindTaskTitleAsync(readModel, "t1"));
+        Assert.Equal("write the docs", await FindTaskTitleAsync(readModel.Connection, "t1"));
 
         // Prove this is genuine ongoing replication, not a one-shot snapshot taken at
         // open time: the master appends AFTER the secondary already opened its
         // read-only handle, and a second catch-up pass must still see it.
         await registry.HandleAsync("task", "t2", new Command("CreateTask", """{"title":"ship it"}"""));
         await engine.RunOnceAsync();
-        Assert.Equal("ship it", await FindTaskTitleAsync(readModel, "t2"));
+        Assert.Equal("ship it", await FindTaskTitleAsync(readModel.Connection, "t2"));
     }
 
     [Fact]

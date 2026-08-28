@@ -12,7 +12,7 @@ namespace DotnetCqrs.EventStore;
 /// <see cref="ConsumerEngine"/> needs — checkpoints normally live in the same
 /// store being polled.
 /// </summary>
-public sealed class SqliteEventStore : IAsyncDisposable, IPollSource, ICheckpointStore
+public sealed class SqliteEventStore : IEventStore, IDeadLetterStore
 {
     private const string Schema = """
         CREATE TABLE IF NOT EXISTS events (

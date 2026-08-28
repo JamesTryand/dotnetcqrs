@@ -10,9 +10,10 @@ public sealed class UnknownAggregateException(string aggregate)
     public string Aggregate { get; } = aggregate;
 }
 
-/// <summary>Maps aggregate names to their deciders and executes commands against a
-/// <see cref="SqliteEventStore"/>.</summary>
-public sealed class DeciderRegistry(SqliteEventStore store)
+/// <summary>Maps aggregate names to their deciders and executes commands against an
+/// <see cref="IEventStore"/> (SQLite today, Postgres under Milestone 7 — this type
+/// no longer names a provider).</summary>
+public sealed class DeciderRegistry(IEventStore store)
 {
     private readonly Dictionary<string, ErasedDecider> _deciders = [];
 

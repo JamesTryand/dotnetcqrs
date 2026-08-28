@@ -1,9 +1,9 @@
+using System.Data.Common;
 using DotnetCqrs.Consumers;
 using DotnetCqrs.Deciders;
 using DotnetCqrs.EventStore;
 using DotnetCqrs.ReadModels;
 using DotnetCqrs.Reactors;
-using DotnetCqrs.WriteGuards;
 using Microsoft.Data.Sqlite;
 using OrderFulfillment;
 
@@ -21,14 +21,14 @@ public class OrderFulfillmentSampleTests
     private sealed class Harness : IAsyncDisposable
     {
         public required SqliteEventStore EventStore { get; init; }
-        public required SqliteConnection ReadModelConnection { get; init; }
+        public required IReadModelStore ReadModel { get; init; }
         public required DeciderRegistry Registry { get; init; }
         public required ConsumerEngine Engine { get; init; }
 
         public static async Task<Harness> BuildAsync()
         {
             var eventStore = await SqliteEventStore.OpenAsync(":memory:");
-            var readModelDb = await ReadModelDb.OpenAsync(":memory:");
+            var readModelDb = await SqliteReadModelStore.OpenAsync(":memory:");
 
             var registry = new DeciderRegistry(eventStore);
             registry.Register(Orders.Aggregate, Orders.Decider());
@@ -38,38 +38,38 @@ public class OrderFulfillmentSampleTests
             var tasksProjection = new TasksProjection(readModelDb);
             await ordersProjection.InitAsync();
             await tasksProjection.InitAsync();
-            await WriteGuard.InstallAsync(readModelDb, [.. ordersProjection.Tables, .. tasksProjection.Tables]);
+            await readModelDb.InstallWriteGuardAsync([.. ordersProjection.Tables, .. tasksProjection.Tables]);
 
             var engine = new ConsumerEngine(eventStore, eventStore);
             engine.Register(ordersProjection);
             engine.Register(tasksProjection);
             engine.Register(new ReactorConsumer(new FulfillmentReactor(), registry));
 
-            return new Harness { EventStore = eventStore, ReadModelConnection = readModelDb, Registry = registry, Engine = engine };
+            return new Harness { EventStore = eventStore, ReadModel = readModelDb, Registry = registry, Engine = engine };
         }
 
         public async ValueTask DisposeAsync()
         {
             await EventStore.DisposeAsync();
-            await ReadModelConnection.DisposeAsync();
+            await ReadModel.DisposeAsync();
         }
     }
 
-    private static async Task<(string? Title, bool Confirmed)?> FindOrderAsync(SqliteConnection db, string orderId)
+    private static async Task<(string? Title, bool Confirmed)?> FindOrderAsync(DbConnection db, string orderId)
     {
         await using var command = db.CreateCommand();
-        command.CommandText = "SELECT title, confirmed FROM orders WHERE order_id = $id";
-        command.Parameters.AddWithValue("$id", orderId);
+        command.CommandText = "SELECT title, confirmed FROM orders WHERE order_id = @id";
+        command.AddParam("@id", orderId);
         await using var reader = await command.ExecuteReaderAsync();
         if (!await reader.ReadAsync()) return null;
         return (reader.GetString(0), reader.GetInt64(1) != 0);
     }
 
-    private static async Task<(string? Title, bool Completed)?> FindTaskAsync(SqliteConnection db, string taskId)
+    private static async Task<(string? Title, bool Completed)?> FindTaskAsync(DbConnection db, string taskId)
     {
         await using var command = db.CreateCommand();
-        command.CommandText = "SELECT title, completed FROM tasks WHERE task_id = $id";
-        command.Parameters.AddWithValue("$id", taskId);
+        command.CommandText = "SELECT title, completed FROM tasks WHERE task_id = @id";
+        command.AddParam("@id", taskId);
         await using var reader = await command.ExecuteReaderAsync();
         if (!await reader.ReadAsync()) return null;
         return (reader.GetString(0), reader.GetInt64(1) != 0);
@@ -88,13 +88,13 @@ public class OrderFulfillmentSampleTests
         // projection already ran its own catch-up earlier in this same pass, so it
         // hasn't seen that new event yet (see Program.cs's comment on this).
         await system.Engine.RunOnceAsync();
-        var order = await FindOrderAsync(system.ReadModelConnection, "o1");
+        var order = await FindOrderAsync(system.ReadModel.Connection, "o1");
         Assert.Equal(("widget x 3", true), order);
-        Assert.Null(await FindTaskAsync(system.ReadModelConnection, "fulfill-o1"));
+        Assert.Null(await FindTaskAsync(system.ReadModel.Connection, "fulfill-o1"));
 
         // Second pass: the tasks projection catches up on the reactor's TaskCreated.
         await system.Engine.RunOnceAsync();
-        var task = await FindTaskAsync(system.ReadModelConnection, "fulfill-o1");
+        var task = await FindTaskAsync(system.ReadModel.Connection, "fulfill-o1");
         Assert.Equal(("fulfil order o1", false), task);
     }
 
@@ -107,11 +107,11 @@ public class OrderFulfillmentSampleTests
         await system.Engine.RunOnceAsync();
         await system.Engine.RunOnceAsync();
 
-        await using var direct = system.ReadModelConnection.CreateCommand();
+        await using var direct = system.ReadModel.Connection.CreateCommand();
         direct.CommandText = "UPDATE tasks SET completed = 1 WHERE task_id = 'fulfill-o1'";
         await Assert.ThrowsAsync<SqliteException>(() => direct.ExecuteNonQueryAsync());
 
-        var task = await FindTaskAsync(system.ReadModelConnection, "fulfill-o1");
+        var task = await FindTaskAsync(system.ReadModel.Connection, "fulfill-o1");
         Assert.False(task!.Value.Completed); // the blocked write did not sneak through
     }
 

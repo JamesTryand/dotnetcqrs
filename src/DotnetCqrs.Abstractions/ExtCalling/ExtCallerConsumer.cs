@@ -30,7 +30,7 @@ public sealed class ExtCallerConfig
 
     /// <summary>Records permanent per-event failures. Point this at a store this
     /// component owns outright.</summary>
-    public required SqliteEventStore DeadLetters { get; init; }
+    public required IDeadLetterStore DeadLetters { get; init; }
 
     /// <summary>Bounds the outbound call attempts. Defaults to exactly one attempt.</summary>
     public RetryPolicy Retry { get; init; } = new();
