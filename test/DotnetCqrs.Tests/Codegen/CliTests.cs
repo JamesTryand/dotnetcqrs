@@ -130,4 +130,78 @@ public class CliTests : IDisposable
         Assert.NotEqual(0, exitCode);
         Assert.Contains("--input", output);
     }
+
+    /// <summary>Same document ScenarioVerifierTests proves the library against: one
+    /// scenario per slice, and "view-order-summary-after-placement" is EXPECTED to
+    /// fail (see that test's own comment -- "status" isn't literally carried by any
+    /// event's JSON, so the generic field-merge projection can't produce it without an
+    /// author writing the real rule). Milestone 7's whole point is reporting that
+    /// failure, not hiding it, so a non-zero exit here IS the passing assertion.</summary>
+    [Fact(Timeout = 120000)]
+    public async Task Verify_prints_every_scenario_result_and_exits_non_zero_on_a_real_failure()
+    {
+        var (exitCode, output) = await RunCliAsync(
+            "verify",
+            "--input", TestDataPath("order-fulfillment.json"),
+            "--dotnetcqrs-project", DotnetCqrsProjectPath(),
+            "--aggregate-override", "notify-shipping-partner=ShippingNotification");
+
+        Assert.NotEqual(0, exitCode);
+        Assert.Contains("PASS [stateChange]", output);
+        Assert.Contains("place-order-slice/place-order-happy-path", output);
+        Assert.Contains("FAIL [stateView]", output);
+        Assert.Contains("view-order-summary-after-placement", output);
+        Assert.DoesNotContain("at DotnetCqrs.Codegen", output);
+    }
+
+    [Fact(Timeout = 120000)]
+    public async Task Verify_exits_zero_when_every_scenario_passes()
+    {
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "2.0.0", "id": "error-test", "name": "Error Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {"order-placed": {"name": "Order Placed", "swimlaneId": "s"}},
+              "commands": {"place-order": {"name": "Place Order"}},
+              "screens": {"scr": {"name": "Screen"}},
+              "slices": [{
+                "id": "place-order-slice", "name": "Place Order", "pattern": "stateChange",
+                "swimlaneId": "s", "status": "created",
+                "screenId": "scr", "commandId": "place-order", "eventIds": ["order-placed"],
+                "scenarios": [
+                  {
+                    "id": "create-scenario", "name": "Creates the order", "kind": "stateChange",
+                    "given": [], "when": {"commandId": "place-order"}, "then": {"events": [{"eventId": "order-placed"}]}
+                  },
+                  {
+                    "id": "duplicate-rejected", "name": "A second PlaceOrder is refused", "kind": "error",
+                    "given": [{"eventId": "order-placed"}], "when": {"commandId": "place-order"},
+                    "then": {"error": {"message": "order already exists"}}
+                  }
+                ]
+              }]
+            }
+            """;
+        var inputPath = Path.Combine(_scratchDir, "error-test.json");
+        await File.WriteAllTextAsync(inputPath, json);
+
+        var (exitCode, output) = await RunCliAsync(
+            "verify",
+            "--input", inputPath,
+            "--dotnetcqrs-project", DotnetCqrsProjectPath(),
+            "--aggregate-override", "place-order=Order");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("PASS [stateChange]", output);
+        Assert.Contains("PASS [error]", output);
+    }
+
+    [Fact(Timeout = 60000)]
+    public async Task Verify_requires_input_and_dotnetcqrs_project_flags()
+    {
+        var (exitCode, output) = await RunCliAsync("verify", "--input", TestDataPath("order-fulfillment.json"));
+
+        Assert.NotEqual(0, exitCode);
+        Assert.Contains("--dotnetcqrs-project", output);
+    }
 }
