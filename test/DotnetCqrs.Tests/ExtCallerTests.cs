@@ -60,7 +60,7 @@ public class ExtCallerTests
         var http = new HttpClient(handler);
         var consumer = new ExtCallerConsumer(new ExtCallerConfig
         {
-            Name = "verify", Rules = [EchoRule()], Http = http, Registry = registry, DeadLetters = store,
+            Name = "verify", Rules = [EchoRule()], Http = http, Dispatcher = new InProcessFollowUpDispatcher(registry), DeadLetters = store,
         });
 
         var appended = await store.AppendAsync("order", "o1", 0, [new NewEvent("OrderPlaced", "{}")]);
@@ -80,7 +80,7 @@ public class ExtCallerTests
         var handler = new FakeHandler(_ => throw new InvalidOperationException("must not be called"));
         var consumer = new ExtCallerConsumer(new ExtCallerConfig
         {
-            Name = "verify", Rules = [EchoRule()], Http = new HttpClient(handler), Registry = registry, DeadLetters = store,
+            Name = "verify", Rules = [EchoRule()], Http = new HttpClient(handler), Dispatcher = new InProcessFollowUpDispatcher(registry), DeadLetters = store,
         });
 
         var appended = await store.AppendAsync("order", "o1", 0, [new NewEvent("SomethingElse", "{}")]);
@@ -100,7 +100,7 @@ public class ExtCallerTests
             Name = "verify",
             Rules = [EchoRule()],
             Http = new HttpClient(handler),
-            Registry = registry,
+            Dispatcher = new InProcessFollowUpDispatcher(registry),
             DeadLetters = store,
             Retry = new RetryPolicy(MaxAttempts: 3, Backoff: TimeSpan.FromMilliseconds(1)),
         });
@@ -129,7 +129,7 @@ public class ExtCallerTests
         };
         var consumer = new ExtCallerConsumer(new ExtCallerConfig
         {
-            Name = "verify", Rules = [rule], Http = new HttpClient(handler), Registry = registry, DeadLetters = store,
+            Name = "verify", Rules = [rule], Http = new HttpClient(handler), Dispatcher = new InProcessFollowUpDispatcher(registry), DeadLetters = store,
         });
 
         var appended = await store.AppendAsync("order", "o1", 0, [new NewEvent("OrderPlaced", "{}")]);
@@ -150,7 +150,7 @@ public class ExtCallerTests
         var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("y") });
         var consumer = new ExtCallerConsumer(new ExtCallerConfig
         {
-            Name = "verify", Rules = [EchoRule()], Http = new HttpClient(handler), Registry = registry, DeadLetters = store,
+            Name = "verify", Rules = [EchoRule()], Http = new HttpClient(handler), Dispatcher = new InProcessFollowUpDispatcher(registry), DeadLetters = store,
         });
 
         var appended = await store.AppendAsync("order", "o1", 0, [new NewEvent("OrderPlaced", "{}")]);
@@ -169,7 +169,7 @@ public class ExtCallerTests
             Name = "verify",
             Rules = [rule, rule],
             Http = new HttpClient(),
-            Registry = null!,
+            Dispatcher = null!,
             DeadLetters = null!,
         }));
     }
@@ -179,8 +179,100 @@ public class ExtCallerTests
     {
         var consumer = new ExtCallerConsumer(new ExtCallerConfig
         {
-            Name = "verify", Rules = [], Http = new HttpClient(), Registry = null!, DeadLetters = null!,
+            Name = "verify", Rules = [], Http = new HttpClient(), Dispatcher = null!, DeadLetters = null!,
         });
         Assert.Equal("extcall:verify", consumer.Name);
+    }
+
+    // --- GatewayFollowUpDispatcher (dotnetcqrs-multi-node Milestone 4) ---
+
+    private static FollowUpDispatch SampleDispatch(string payload = """{"title":"x"}""") => new(
+        "task", "verify-o1", "CreateTask", payload,
+        Actor: "extcall:verify", CausationId: "ev-1", CorrelationId: "corr-1", CommandId: "extcall-abc123");
+
+    [Fact]
+    public async Task Gateway_dispatcher_posts_the_follow_up_to_the_gateway_route_with_headers_and_body()
+    {
+        HttpRequestMessage? seen = null;
+        string? body = null;
+        string? contentType = null;
+        var handler = new FakeHandler(req =>
+        {
+            seen = req;
+            body = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            contentType = req.Content.Headers.ContentType?.MediaType;
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"events":[]}""") };
+        });
+        var http = new HttpClient(handler) { BaseAddress = new Uri("http://gateway.invalid/") };
+        var dispatcher = new GatewayFollowUpDispatcher(http);
+
+        await dispatcher.DispatchAsync(SampleDispatch(), CancellationToken.None);
+
+        Assert.NotNull(seen);
+        Assert.Equal(HttpMethod.Post, seen!.Method);
+        Assert.Equal("http://gateway.invalid/api/cqrs/task/verify-o1/CreateTask", seen.RequestUri!.ToString());
+        Assert.Equal("ev-1", seen.Headers.GetValues("Causation-Id").Single());
+        Assert.Equal("corr-1", seen.Headers.GetValues("Correlation-Id").Single());
+        Assert.Equal("extcall-abc123", seen.Headers.GetValues("Idempotency-Key").Single());
+        Assert.Equal("application/json", contentType);
+        Assert.Equal("""{"title":"x"}""", body);
+    }
+
+    [Fact]
+    public async Task Gateway_dispatcher_sends_an_empty_payload_as_an_empty_json_object()
+    {
+        string? body = null;
+        var handler = new FakeHandler(req =>
+        {
+            body = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+        var http = new HttpClient(handler) { BaseAddress = new Uri("http://gateway.invalid/") };
+        var dispatcher = new GatewayFollowUpDispatcher(http);
+
+        await dispatcher.DispatchAsync(SampleDispatch(payload: ""), CancellationToken.None);
+
+        Assert.Equal("{}", body);
+    }
+
+    [Fact]
+    public async Task Gateway_dispatcher_omits_the_provenance_headers_when_their_ids_are_empty()
+    {
+        HttpRequestMessage? seen = null;
+        var handler = new FakeHandler(req => { seen = req; return new HttpResponseMessage(HttpStatusCode.OK); });
+        var http = new HttpClient(handler) { BaseAddress = new Uri("http://host.invalid/gw/") };
+        var dispatcher = new GatewayFollowUpDispatcher(http);
+
+        await dispatcher.DispatchAsync(
+            new FollowUpDispatch("task", "t1", "CreateTask", "{}", "extcall:x", "", "", ""), CancellationToken.None);
+
+        // a BaseAddress that carries its own path prefix is preserved
+        Assert.Equal("http://host.invalid/gw/api/cqrs/task/t1/CreateTask", seen!.RequestUri!.ToString());
+        Assert.False(seen.Headers.Contains("Causation-Id"));
+        Assert.False(seen.Headers.Contains("Correlation-Id"));
+        Assert.False(seen.Headers.Contains("Idempotency-Key"));
+    }
+
+    [Fact]
+    public async Task Gateway_dispatcher_throws_GatewayDispatchException_preserving_the_status_on_non_2xx()
+    {
+        var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent("task already exists"),
+        });
+        var http = new HttpClient(handler) { BaseAddress = new Uri("http://gateway.invalid/") };
+        var dispatcher = new GatewayFollowUpDispatcher(http);
+
+        var ex = await Assert.ThrowsAsync<GatewayDispatchException>(
+            () => dispatcher.DispatchAsync(SampleDispatch(), CancellationToken.None));
+
+        Assert.Equal(400, ex.StatusCode);
+        Assert.Contains("task already exists", ex.Body);
+    }
+
+    [Fact]
+    public void Gateway_dispatcher_ctor_rejects_an_HttpClient_with_no_base_address()
+    {
+        Assert.Throws<ArgumentException>(() => new GatewayFollowUpDispatcher(new HttpClient()));
     }
 }

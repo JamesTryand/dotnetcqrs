@@ -132,11 +132,29 @@ public static class CqrsGatewayEndpoints
             payload = "{}";
 
         var actor = resolveActor(httpContext.User);
-        var meta = string.IsNullOrEmpty(actor) ? null : new Dictionary<string, object> { ["actor"] = actor };
+        var meta = new Dictionary<string, object>();
+        if (!string.IsNullOrEmpty(actor))
+            meta["actor"] = actor;
+
+        // Provenance headers an out-of-process dispatcher sends -- dotnetcqrs-multi-node
+        // Milestone 4's GatewayFollowUpDispatcher, or pocketcqrs's gatewayclient -- so a
+        // reaction chain keeps its causation/correlation across the HTTP hop. Honoured
+        // for any authenticated caller: dotnetcqrs has no ExternalCallerCollection
+        // allow-list the way pocketcqrs gates this (see its gateway.actorMeta), and this
+        // is strictly provenance -- `actor` above stays token-derived and is never
+        // caller-settable. An Idempotency-Key header, if sent, is ignored: this gateway
+        // has no idempotency store yet (see the Host survey).
+        var causationId = request.Headers["Causation-Id"].ToString();
+        if (!string.IsNullOrEmpty(causationId))
+            meta["causationId"] = causationId;
+        var correlationId = request.Headers["Correlation-Id"].ToString();
+        if (!string.IsNullOrEmpty(correlationId))
+            meta["correlationId"] = correlationId;
 
         try
         {
-            var events = await registry.HandleWithMetaAsync(aggregate, aggregateId, new Command(command, payload), meta, ct);
+            var metaArg = meta.Count == 0 ? null : meta;
+            var events = await registry.HandleWithMetaAsync(aggregate, aggregateId, new Command(command, payload), metaArg, ct);
             return Results.Ok(events);
         }
         catch (UnknownAggregateException ex)

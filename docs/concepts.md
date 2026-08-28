@@ -173,6 +173,14 @@ handling a command or reacting to an event, kept as a distinct concern from
 the decider/projection/reactor logic itself so that pure decision logic
 stays pure and testable.
 
+The follow-up command `extcaller` produces from a third-party response is
+dispatched through an `IFollowUpDispatcher`: `InProcessFollowUpDispatcher`
+applies it against a local `DeciderRegistry`, or `GatewayFollowUpDispatcher`
+POSTs it to a configured command gateway — another `dotnetcqrs` instance, or a
+`pocketcqrs` one — which is how a reaction chain crosses an instance boundary.
+Either way the target decider still gets to accept or reject it; `extcaller`
+never appends a raw event.
+
 ## A CRUD → `dotnetcqrs` glossary
 
 | CRUD instinct | `dotnetcqrs` equivalent |

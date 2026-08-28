@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using DotnetCqrs.Consumers;
-using DotnetCqrs.Deciders;
+using DotnetCqrs.Deciders; // referenced only from doc-comment crefs now
 using DotnetCqrs.EventStore;
 
 namespace DotnetCqrs.ExtCalling;
@@ -20,9 +20,13 @@ public sealed class ExtCallerConfig
     /// <summary>Makes the outbound HTTP call.</summary>
     public required HttpClient Http { get; init; }
 
-    /// <summary>Dispatches follow-up commands in-process — this baseline has no remote
-    /// gateway concept to dispatch through, unlike pocketcqrs's HTTP-based Gateway.</summary>
-    public required DeciderRegistry Registry { get; init; }
+    /// <summary>Applies the follow-up commands a <see cref="Rule"/> produces. Use
+    /// <see cref="InProcessFollowUpDispatcher"/> to keep dispatching straight into a
+    /// local <see cref="Deciders.DeciderRegistry"/> (this baseline's original mode), or
+    /// <see cref="GatewayFollowUpDispatcher"/> to POST them to a configured command
+    /// gateway — another dotnetcqrs instance or a pocketcqrs one
+    /// (dotnetcqrs-multi-node Milestone 4).</summary>
+    public required IFollowUpDispatcher Dispatcher { get; init; }
 
     /// <summary>Records permanent per-event failures. Point this at a store this
     /// component owns outright.</summary>
@@ -38,10 +42,13 @@ public sealed class ExtCallerConfig
 /// <summary>
 /// A <see cref="IConsumer"/> that matches committed events against configured
 /// <see cref="Rule"/>s, calls a third-party REST API, and dispatches the response as a
-/// follow-up command through <see cref="DeciderRegistry"/> — never appends a raw event,
-/// so the target decider keeps authority to accept or reject the result. Porting
-/// pocketcqrs's <c>extcaller</c> package, adapted for in-process dispatch since this
-/// baseline has no remote gateway to dispatch through.
+/// follow-up command through an <see cref="IFollowUpDispatcher"/> — never appends a raw
+/// event, so the target decider keeps authority to accept or reject the result. Porting
+/// pocketcqrs's <c>extcaller</c> package. The dispatcher is either
+/// <see cref="InProcessFollowUpDispatcher"/> (this baseline's original mode, straight
+/// into a local <see cref="DeciderRegistry"/>) or <see cref="GatewayFollowUpDispatcher"/>
+/// (dotnetcqrs-multi-node Milestone 4 — an HTTP POST to a remote command gateway,
+/// matching pocketcqrs's own <c>extcaller.Gateway</c>).
 ///
 /// <see cref="ApplyAsync"/> never throws: a permanently failing rule dead-letters and
 /// the checkpoint still advances, so one stuck integration can never block the rest of
@@ -57,7 +64,8 @@ public sealed class ExtCallerConfig
 /// — and unlike a reactor, that rejection currently dead-letters the (otherwise
 /// harmless, already-applied) redelivery rather than being recognized as expected. The
 /// derived commandId is still stamped into dispatch metadata below so a future dedup
-/// index has something to key off.
+/// index has something to key off — and <see cref="GatewayFollowUpDispatcher"/> sends
+/// it as an <c>Idempotency-Key</c> header, which a pocketcqrs target already honours.
 /// </summary>
 public sealed class ExtCallerConsumer : IConsumer
 {
@@ -113,27 +121,27 @@ public sealed class ExtCallerConsumer : IConsumer
             for (var i = 0; i < followUps.Count; i++)
             {
                 var followUp = followUps[i];
-                var meta = new Dictionary<string, object>
-                {
-                    ["actor"] = Name,
-                    ["causationId"] = ev.Id,
-                    ["correlationId"] = EventMeta.CorrelationId(ev),
-                    ["commandId"] = DeriveCommandId(ev.Id, i),
-                };
+                var dispatch = new FollowUpDispatch(
+                    followUp.Aggregate, followUp.Id, followUp.Name, followUp.Payload,
+                    Actor: Name,
+                    CausationId: ev.Id,
+                    CorrelationId: EventMeta.CorrelationId(ev),
+                    CommandId: DeriveCommandId(ev.Id, i));
                 try
                 {
-                    await _config.Registry.HandleWithMetaAsync(
-                        followUp.Aggregate, followUp.Id, new Command(followUp.Name, followUp.Payload), meta, ct);
+                    await _config.Dispatcher.DispatchAsync(dispatch, ct);
                     _log($"follow-up dispatched: consumer={Name} event={ev.Id} " +
                          $"command={followUp.Name} target={followUp.Aggregate}/{followUp.Id}");
                 }
                 catch (Exception ex)
                 {
-                    // A follow-up dispatch failure (domain rejection, concurrency
-                    // conflict, ...) dead-letters the SOURCE event rather than
-                    // retrying just this follow-up: partial application (an earlier
-                    // follow-up in this batch already succeeded) needs operator
-                    // visibility, not silent papering-over.
+                    // A follow-up dispatch failure -- a domain rejection or concurrency
+                    // conflict from the target decider, or (remote dispatch, Milestone 4)
+                    // the target gateway unreachable or answering non-2xx -- dead-letters
+                    // the SOURCE event rather than retrying just this follow-up:
+                    // RetryPolicy bounds the outbound third-party call, not the dispatch,
+                    // and partial application (an earlier follow-up in this batch already
+                    // succeeded) needs operator visibility, not silent papering-over.
                     await DeadLetterAsync(ev,
                         $"dispatching follow-up {i + 1}/{followUps.Count} ({followUp.Name} {followUp.Aggregate}/{followUp.Id}): {ex.Message}", ct);
                     return;
