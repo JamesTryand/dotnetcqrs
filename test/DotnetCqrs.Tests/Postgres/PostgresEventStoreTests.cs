@@ -76,26 +76,46 @@ public class PostgresEventStoreTests(PostgresFixture fx)
     }
 
     [SkippableFact]
-    public async Task Concurrent_pooled_appends_produce_gapless_commit_ordered_positions()
+    public async Task A_poller_running_during_concurrent_appends_never_steps_over_a_position()
     {
         Skip.IfNot(fx.Available, fx.SkipReason);
         await using var store = await OpenAsync();
 
-        const int writers = 25;
-        // Each writer appends to its own stream, so nothing here is a real concurrency
-        // conflict -- the point is that the identity-assigned `position` values still
-        // come out contiguous and in commit order despite overlapping transactions on
-        // pooled connections. Without pg_advisory_xact_lock a later txn could commit
-        // first and ConsumerEngine's `position > checkpoint` poll would skip the earlier
-        // one for good.
+        // This is the failure the advisory lock exists to prevent, reproduced the way
+        // ConsumerEngine would hit it. Identity assigns `position` at INSERT time, but
+        // without pg_advisory_xact_lock two overlapping transactions can COMMIT out of
+        // that order. A consumer polling `WHERE position > seen ORDER BY position` mid-run
+        // then advances `seen` past the higher position while the lower one is still
+        // uncommitted -- and never sees the lower one again. The lock makes commit order
+        // equal position order, so this poll loop sees every position exactly once.
+        const int writers = 60;
+        using var done = new CancellationTokenSource();
+
+        var seenPositions = new List<long>();
+        var poller = Task.Run(async () =>
+        {
+            long seen = 0;
+            while (!done.IsCancellationRequested)
+            {
+                foreach (var ev in await store.PollAsync(seen, 1000))
+                {
+                    seenPositions.Add(ev.Position);
+                    seen = ev.Position;
+                }
+                await Task.Delay(5);
+            }
+            foreach (var ev in await store.PollAsync(seen, 1000)) // final drain
+                seenPositions.Add(ev.Position);
+        });
+
         await Task.WhenAll(Enumerable.Range(0, writers).Select(i =>
             store.AppendAsync("task", $"t{i}", 0, [new NewEvent("TaskCreated", $$"""{"n":{{i}}}""")])));
+        await Task.Delay(100);
+        done.Cancel();
+        await poller;
 
-        var all = await store.PollAsync(0, 1000);
-
-        Assert.Equal(writers, all.Count);
-        // Fresh schema => identity starts at 1 => positions are exactly 1..writers,
-        // already in ascending order (PollAsync orders by position), no gaps, no dupes.
-        Assert.Equal(Enumerable.Range(1, writers).Select(n => (long)n), all.Select(e => e.Position));
+        // Fresh schema => positions are exactly 1..writers. The poll loop must have seen
+        // every one, in ascending order, with no gap and no duplicate.
+        Assert.Equal(Enumerable.Range(1, writers).Select(n => (long)n), seenPositions);
     }
 }

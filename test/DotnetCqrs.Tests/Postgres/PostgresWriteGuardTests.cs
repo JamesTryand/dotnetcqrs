@@ -119,6 +119,45 @@ public class PostgresWriteGuardTests(PostgresFixture fx)
     }
 
     [SkippableFact]
+    public async Task The_whole_flow_works_on_a_connection_string_with_no_search_path_override()
+    {
+        Skip.IfNot(fx.Available, fx.SkipReason);
+        // Every other test opens the store on a fixture connection string that pins
+        // `Search Path` to a throwaway schema. A real consumer's connection string has
+        // no such override and lands in `public` -- and InstallWriteGuardAsync's
+        // unqualified REVOKE resolves the table name through exactly that search path.
+        // This proves the default path, matching the doc's "point it at any Postgres".
+        var table = "wg_default_" + Guid.NewGuid().ToString("N");
+        await using var store = await PostgresReadModelStore.OpenAsync(fx.BaseConnectionString);
+        try
+        {
+            await using (var ddl = store.Connection.CreateCommand())
+            {
+                ddl.CommandText = $"CREATE TABLE \"{table}\" (task_id text PRIMARY KEY, title text NOT NULL)";
+                await ddl.ExecuteNonQueryAsync();
+            }
+
+            await store.InstallWriteGuardAsync([table]);
+
+            await using (var insert = store.Connection.CreateCommand())
+            {
+                insert.CommandText = $"INSERT INTO \"{table}\" (task_id, title) VALUES ('t1', 'x')";
+                await insert.ExecuteNonQueryAsync();
+            }
+
+            await using var count = store.Connection.CreateCommand();
+            count.CommandText = $"SELECT COUNT(*) FROM \"{table}\"";
+            Assert.Equal(1L, (long)(await count.ExecuteScalarAsync())!);
+        }
+        finally
+        {
+            await using var drop = store.Connection.CreateCommand();
+            drop.CommandText = $"DROP TABLE IF EXISTS \"{table}\"";
+            await drop.ExecuteNonQueryAsync();
+        }
+    }
+
+    [SkippableFact]
     public async Task Installing_with_no_tables_guards_nothing()
     {
         Skip.IfNot(fx.Available, fx.SkipReason);

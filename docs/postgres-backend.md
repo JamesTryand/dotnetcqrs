@@ -1,6 +1,6 @@
 # Postgres backend (dotnetcqrs-multi-node Milestone 7)
 
-> **Status: verified 2026-08-28** on one machine against `postgres:17-alpine` — 16
+> **Status: verified 2026-08-28** on one machine against `postgres:17-alpine` — 17
 > in-suite tests under `test/DotnetCqrs.Tests/Postgres/`, `[SkippableFact]`-gated on
 > `DOTNETCQRS_PG`. See "Verification run" at the bottom.
 
@@ -57,6 +57,15 @@ across every connection and process and **commit order equals position order**. 
 existing `IPollSource` / `ConsumerEngine` poll stays correct with zero changes to the
 abstractions.
 
+`PostgresEventStoreTests.A_poller_running_during_concurrent_appends_never_steps_over_a_position`
+reproduces the bug directly: a poll loop advancing `WHERE position > seen` runs while 60
+transactions append concurrently on pooled connections, and asserts the loop sees every
+position 1..60 with no gap. With the lock in place it passes every run; with the
+`pg_advisory_xact_lock` line commented out it fails every run (checked 5/5 on
+2026-08-28), e.g. the poller sees `…22, 23, 25, 26…` — position 24 committed after 25,
+so `seen` advanced past it and 24 was gone for good. So the lock is load-bearing, not
+belt-and-braces.
+
 **Scope correction — stated plainly:** Milestone 7 does **not** deliver unrestricted
 concurrent multi-writer append. Append throughput is single-writer, exactly as it is on
 SQLite — the gain over SQLite is the client-server model (many machines, managed
@@ -91,6 +100,14 @@ Any out-of-band writer — a stray `psql`, app code taking a shortcut, a comprom
 read-only credential — simply has no `INSERT`/`UPDATE`/`DELETE` privilege and is refused
 by the database with `SQLSTATE 42501` (`insufficient_privilege`). This is enforced by
 Postgres itself, not an application trigger.
+
+The names in `IProjection.Tables` are unqualified; `InstallWriteGuardAsync` resolves them
+through the store connection's `search_path` — the same schema `InitAsync` created the
+tables in (the connection string's `Search Path`, or `public` by default). A name that
+doesn't resolve there raises `PostgresException` `42P01` rather than silently guarding
+nothing. Both the schema-scoped path (the test fixture pins `Search Path` per test) and
+the plain `public` path (`PostgresWriteGuardTests.The_whole_flow_works_on_a_connection_string_with_no_search_path_override`)
+are covered.
 
 **Consequence: `BeginBypassAsync` is a genuine no-op** on the Postgres store (it returns
 a shared do-nothing `IAsyncDisposable`). The store's own connection is always the owning
@@ -161,21 +178,21 @@ See `ops/postgres/README.md`.
 ## Verification run
 
 **2026-08-28**, one Windows machine: .NET SDK 10.0.400, Npgsql 10.0.3, `podman` 5.3.2
-running `postgres:17-alpine`. dotnetcqrs @ `<PENDING>` (this milestone's commit).
+running `postgres:17-alpine`. dotnetcqrs @ `d2ab799`.
 
 `DOTNETCQRS_PG` **set** — the Postgres tests execute:
 
 ```
 $ DOTNETCQRS_PG="Host=localhost;Port=55432;Username=postgres;Password=dev;Database=postgres" \
     dotnet test dotnetcqrs.slnx
-Passed!  - Failed:     0, Passed:   123, Skipped:     0, Total:   123, Duration: 57 s
+Passed!  - Failed:     0, Passed:   124, Skipped:     0, Total:   124, Duration: 56 s
 ```
 
 `DOTNETCQRS_PG` **unset** — the same tests skip, nothing else changes:
 
 ```
 $ dotnet test dotnetcqrs.slnx
-Passed!  - Failed:     0, Passed:   107, Skipped:    16, Total:   123, Duration: 54 s
+Passed!  - Failed:     0, Passed:   107, Skipped:    17, Total:   124, Duration: 54 s
 ```
 
 `ops/postgres/verify.sh` (podman, `postgres:17-alpine`) runs the gated subset hands-off:
@@ -187,11 +204,12 @@ starting postgres:17-alpine on :55432 ...
 waiting for it to accept connections ...
 /var/run/postgresql:5432 - accepting connections
 running the Postgres backend tests (should execute, not skip) ...
-Passed!  - Failed:     0, Passed:    16, Skipped:     0, Total:    16, Duration: 44 s
+Passed!  - Failed:     0, Passed:    17, Skipped:     0, Total:    17, Duration: 46 s
 PASS: Postgres backend suite ran against a real Postgres.
 ```
 
-16 new tests (107 → 123): `PostgresEventStoreTests` (4 parity + 1 concurrent-append
-gaplessness), `PostgresProjectionTests` (3), `PostgresWriteGuardTests` (4),
-`PostgresDeadLetterTests` (3), `PostgresAddParamTests` (1). No `src/DotnetCqrs*/` file
-outside the new project changed; `DotnetCqrs.Abstractions` is untouched.
+17 new tests (107 → 124): `PostgresEventStoreTests` (4 parity + 1 poll-loop
+gaplessness), `PostgresProjectionTests` (3), `PostgresWriteGuardTests` (4 + 1
+no-`search_path`-override), `PostgresDeadLetterTests` (3), `PostgresAddParamTests` (1).
+No `src/DotnetCqrs*/` file outside the new project changed; `DotnetCqrs.Abstractions` is
+untouched.

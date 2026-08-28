@@ -60,7 +60,14 @@ public sealed class PostgresReadModelStore : IReadModelStore
     /// was supplied to <see cref="OpenAsync(string, string?, CancellationToken)"/>. The
     /// owning role — this store's connection — is unaffected and still writes freely,
     /// which is why <see cref="BeginBypassAsync"/> need do nothing. An empty list guards
-    /// nothing.</summary>
+    /// nothing.
+    ///
+    /// <para>The names in <paramref name="tables"/> are unqualified and are resolved
+    /// through this connection's <c>search_path</c> — the same schema the projection's
+    /// <c>InitAsync</c> created the tables in (whatever the connection string's
+    /// <c>Search Path</c> selects, or <c>public</c> by default). A name that does not
+    /// resolve there surfaces as a <c>PostgresException</c> (<c>42P01</c>) rather than
+    /// silently guarding nothing.</para></summary>
     public async Task InstallWriteGuardAsync(IReadOnlyList<string> tables, CancellationToken ct = default)
     {
         foreach (var table in tables)

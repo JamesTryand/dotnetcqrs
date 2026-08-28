@@ -27,6 +27,11 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     public bool Available => _baseConnectionString is not null;
 
+    /// <summary>The raw <c>DOTNETCQRS_PG</c> value — no schema override, so a store
+    /// opened on it lands in the default search path (<c>public</c>), the way an
+    /// ordinary consumer's connection string does.</summary>
+    public string BaseConnectionString => _baseConnectionString!;
+
     /// <summary>Reason string for <c>Skip.If</c> — non-null exactly when the tests must skip.</summary>
     public string? SkipReason => Available ? null : "DOTNETCQRS_PG is not set (no reachable Postgres)";
 
