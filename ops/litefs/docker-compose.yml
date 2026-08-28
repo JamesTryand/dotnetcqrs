@@ -24,6 +24,8 @@ services:
     privileged: true
     ports:
       - "8081:8080"
+    environment:
+      LITEFS_ADVERTISE_URL: "http://primary:20202"
     volumes:
       - primary-litefs-data:/var/lib/litefs
 
@@ -40,6 +42,7 @@ services:
       - "8082:8080"
     environment:
       PRIMARY_URL: "http://primary:8080"
+      LITEFS_ADVERTISE_URL: "http://primary:20202"
     depends_on:
       - primary
     volumes:

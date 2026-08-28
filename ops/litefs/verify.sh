@@ -11,8 +11,10 @@
 #      ConsumerEngine -- not a stale/empty file
 set -euo pipefail
 
-PRIMARY_URL="http://localhost:8081"
-SECONDARY_URL="http://localhost:8082"
+# Default to the docker-compose port mapping; override both for the two-host setup
+# (ops/litefs/two-host/), e.g. PRIMARY_URL=http://10.0.0.14:8080 SECONDARY_URL=http://10.0.0.15:8082 ./verify.sh
+PRIMARY_URL="${PRIMARY_URL:-http://localhost:8081}"
+SECONDARY_URL="${SECONDARY_URL:-http://localhost:8082}"
 TASK_ID="verify-$(date +%s)"
 
 wait_healthy() {

@@ -1,6 +1,7 @@
 # Static-lease replica. Same file as litefs-primary.yml apart from `candidate: false`
-# and which binary `exec` runs -- advertise-url still points at "primary" (that's how
-# a static-lease replica finds the primary; see litefs-primary.yml's comment).
+# and which binary `exec` runs -- advertise-url still points at the primary (that's how
+# a static-lease replica finds it; see litefs-primary.yml's comment), sourced the same
+# way from $LITEFS_ADVERTISE_URL.
 fuse:
   dir: "/litefs"
 
@@ -9,7 +10,7 @@ data:
 
 lease:
   type: "static"
-  advertise-url: "http://primary:20202"
+  advertise-url: "${LITEFS_ADVERTISE_URL}"
   candidate: false
 
 exec:

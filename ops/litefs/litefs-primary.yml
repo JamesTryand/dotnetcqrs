@@ -1,11 +1,16 @@
 # Static-lease primary. Modeled directly on superfly/litefs-example's own verified
 # docker-config/etc/litefs.static-lease.yml (fetched and checked against the real repo
 # while writing this, not guessed) -- both nodes' advertise-url points at THIS node
-# ("primary", the docker-compose service name), since that is what a replica needs to
-# find the primary; only `candidate` differs between the two files. See
-# docs/cross-host-replication.md for why no `hostname` or `http:` block is set (the
-# verified example doesn't use either -- LiteFS derives its internal API listener from
-# advertise-url's port).
+# (the primary), since that is what a replica needs to find the primary; only
+# `candidate` differs between the two files. See docs/cross-host-replication.md for why
+# no `hostname` or `http:` block is set (the verified example doesn't use either --
+# LiteFS derives its internal API listener from advertise-url's port).
+#
+# advertise-url comes from $LITEFS_ADVERTISE_URL (LiteFS expands ${...} in this file --
+# verified against LiteFS 0.5.14). docker-compose.yml sets it to the compose service
+# name (http://primary:20202); the two-host setup (ops/litefs/two-host/) sets it to the
+# primary host's real routable address. LiteFS has no ${VAR:-default} syntax, so the
+# variable must always be set by whoever launches the container.
 fuse:
   dir: "/litefs"
 
@@ -14,7 +19,7 @@ data:
 
 lease:
   type: "static"
-  advertise-url: "http://primary:20202"
+  advertise-url: "${LITEFS_ADVERTISE_URL}"
   candidate: true
 
 exec:
