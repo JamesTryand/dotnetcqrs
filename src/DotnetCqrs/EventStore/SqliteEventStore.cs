@@ -57,7 +57,15 @@ public sealed class SqliteEventStore : IAsyncDisposable, IPollSource, ICheckpoin
     private readonly Lock _subscribersLock = new();
     private readonly List<Action<Event>> _subscribers = [];
 
-    private SqliteEventStore(SqliteConnection connection) => _connection = connection;
+    // Marks a store opened via OpenReadOnlyAsync: every write method fails fast with
+    // ReadOnlyStoreException instead of surfacing an opaque SQLite error.
+    private readonly bool _readOnly;
+
+    private SqliteEventStore(SqliteConnection connection, bool readOnly = false)
+    {
+        _connection = connection;
+        _readOnly = readOnly;
+    }
 
     /// <summary>Opens (creating if necessary) the event store at <paramref name="path"/>.</summary>
     public static async Task<SqliteEventStore> OpenAsync(string path, CancellationToken ct = default)
@@ -85,6 +93,36 @@ public sealed class SqliteEventStore : IAsyncDisposable, IPollSource, ICheckpoin
     }
 
     /// <summary>
+    /// Opens the event store at <paramref name="path"/> for reading only — the entry
+    /// point a same-host secondary uses: it polls the master's own <c>events.db</c>
+    /// directly (both processes see the same file; <c>journal_mode = WAL</c>, already set
+    /// by the master's own <see cref="OpenAsync"/>, is what makes that concurrent read
+    /// safe) and must never append to it. Unlike <see cref="OpenAsync"/>, this creates no
+    /// schema and requests no journal mode — <paramref name="path"/> must already exist,
+    /// owned and migrated by a master's <see cref="OpenAsync"/>, and a reader has no
+    /// reason to ask for the mode the file is already in. Every write method
+    /// (<see cref="AppendAsync"/>, <see cref="SaveCheckpointAsync"/>,
+    /// <see cref="AddDeadLetterAsync"/>, <see cref="ResolveDeadLetterAsync"/>) throws
+    /// <see cref="ReadOnlyStoreException"/>. A secondary's own consumer checkpoints
+    /// cannot live in this store either, for the same reason — pass a second, ordinary
+    /// (locally writable) <see cref="SqliteEventStore"/> as the
+    /// <c>ConsumerEngine</c>'s checkpoint store instead of this one.
+    /// </summary>
+    public static async Task<SqliteEventStore> OpenReadOnlyAsync(string path, CancellationToken ct = default)
+    {
+        var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
+        await connection.OpenAsync(ct);
+
+        await using (var pragma = connection.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA busy_timeout = 10000;";
+            await pragma.ExecuteNonQueryAsync(ct);
+        }
+
+        return new SqliteEventStore(connection, readOnly: true);
+    }
+
+    /// <summary>
     /// Atomically validates <paramref name="expectedSequence"/> against the stream's
     /// current length and appends <paramref name="events"/>. Sequences are 1-based
     /// and contiguous, so the expected sequence equals the number of events already
@@ -93,6 +131,7 @@ public sealed class SqliteEventStore : IAsyncDisposable, IPollSource, ICheckpoin
     public async Task<IReadOnlyList<Event>> AppendAsync(
         string aggregate, string aggregateId, long expectedSequence, IReadOnlyList<NewEvent> events, CancellationToken ct = default)
     {
+        if (_readOnly) throw new ReadOnlyStoreException("append");
         if (events.Count == 0) return [];
 
         await _appendLock.WaitAsync(ct);
@@ -176,6 +215,7 @@ public sealed class SqliteEventStore : IAsyncDisposable, IPollSource, ICheckpoin
     /// <summary>Durably stores the position of a named consumer.</summary>
     public async Task SaveCheckpointAsync(string name, long position, CancellationToken ct = default)
     {
+        if (_readOnly) throw new ReadOnlyStoreException("save checkpoint");
         await using var command = _connection.CreateCommand();
         command.CommandText = """
             INSERT INTO consumer_checkpoints (name, position) VALUES ($name, $position)
@@ -253,6 +293,7 @@ public sealed class SqliteEventStore : IAsyncDisposable, IPollSource, ICheckpoin
     /// than blocking the log.</summary>
     public async Task AddDeadLetterAsync(string consumer, Event ev, string error, CancellationToken ct = default)
     {
+        if (_readOnly) throw new ReadOnlyStoreException("add dead letter");
         var now = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
         await using var command = _connection.CreateCommand();
         command.CommandText = """
@@ -291,6 +332,7 @@ public sealed class SqliteEventStore : IAsyncDisposable, IPollSource, ICheckpoin
     /// <see cref="KeyNotFoundException"/> if <paramref name="id"/> doesn't exist.</summary>
     public async Task ResolveDeadLetterAsync(long id, CancellationToken ct = default)
     {
+        if (_readOnly) throw new ReadOnlyStoreException("resolve dead letter");
         await using var command = _connection.CreateCommand();
         command.CommandText = "UPDATE dead_letters SET resolved = 1 WHERE id = $id";
         command.Parameters.AddWithValue("$id", id);
