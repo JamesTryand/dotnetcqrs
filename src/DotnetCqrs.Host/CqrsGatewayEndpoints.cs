@@ -34,16 +34,68 @@ public static class CqrsGatewayEndpoints
     /// the request body as the command's JSON payload (empty body → <c>"{}"</c>) and
     /// dispatching through a <see cref="DeciderRegistry"/> resolved from DI. Returns
     /// the route builder so the caller can chain <c>.RequireAuthorization()</c> and
-    /// friends.</summary>
+    /// friends.
+    ///
+    /// <para><paramref name="forward"/> is dotnetcqrs-multi-node Milestone 2's
+    /// write-forwarding: when set, every request is handed to it and proxied whole
+    /// instead of decided locally — the shape a same-host secondary
+    /// (<see cref="DotnetCqrs.EventStore.SqliteEventStore.OpenReadOnlyAsync"/>) uses to
+    /// reach its master, matching pocketcqrs's own <c>Config.Forward http.Handler</c>
+    /// (<c>gateway.go</c>) checked before any local Mode/auth/decide logic. Use
+    /// <see cref="ForwardTo"/> to build one from an <see cref="HttpClient"/> whose
+    /// <c>BaseAddress</c> is the master's gateway. Unlike pocketcqrs, this library does
+    /// not suppress <c>.RequireAuthorization()</c> when <paramref name="forward"/> is
+    /// set: dotnetcqrs's auth is a provider-agnostic bearer token validated
+    /// independently against an external issuer's OIDC metadata, not a
+    /// per-node-signed token only the master can verify (pocketcqrs's F-13), so a
+    /// secondary validating its own inbound request locally before forwarding is
+    /// correct, not broken — see this issue's README for the finding.</para></summary>
     public static RouteHandlerBuilder MapCqrsGateway(
-        this IEndpointRouteBuilder endpoints, string prefix = "/api/cqrs", Func<ClaimsPrincipal, string>? resolveActor = null)
+        this IEndpointRouteBuilder endpoints, string prefix = "/api/cqrs",
+        Func<ClaimsPrincipal, string>? resolveActor = null, RequestDelegate? forward = null)
     {
         resolveActor ??= DefaultResolveActor;
         return endpoints.MapPost($"{prefix}/{{aggregate}}/{{aggregateId}}/{{command}}",
-            (string aggregate, string aggregateId, string command, HttpRequest request, HttpContext httpContext,
+            async (string aggregate, string aggregateId, string command, HttpRequest request, HttpContext httpContext,
              DeciderRegistry registry, CancellationToken ct) =>
-                HandleAsync(aggregate, aggregateId, command, request, httpContext, registry, resolveActor, ct));
+            {
+                if (forward is not null)
+                {
+                    await forward(httpContext);
+                    return Results.Empty;
+                }
+                return await HandleAsync(aggregate, aggregateId, command, request, httpContext, registry, resolveActor, ct);
+            });
     }
+
+    /// <summary>Builds a <see cref="RequestDelegate"/> for <see cref="MapCqrsGateway"/>'s
+    /// <c>forward</c> parameter that proxies the whole request to
+    /// <paramref name="masterClient"/>'s <c>BaseAddress</c>: same method, path and query,
+    /// body, and <c>Authorization</c> header (the master authenticates it, not this
+    /// node — see <see cref="MapCqrsGateway"/>'s doc comment), copying the response back
+    /// verbatim. No reverse-proxy package for one route shape, matching this project's
+    /// own established call on hand-rolled code over a dependency for a small surface
+    /// (<c>System.CommandLine</c> aside, which is stdlib-adjacent) — see
+    /// dotnetcqrs-multi-node's Milestone 2 note.</summary>
+    public static RequestDelegate ForwardTo(HttpClient masterClient) => async httpContext =>
+    {
+        var request = httpContext.Request;
+        using var forwardRequest = new HttpRequestMessage(HttpMethod.Post, $"{request.Path}{request.QueryString}")
+        {
+            Content = new StreamContent(request.Body),
+        };
+        if (request.ContentType is not null)
+            forwardRequest.Content.Headers.TryAddWithoutValidation("Content-Type", request.ContentType);
+        if (request.Headers.Authorization.Count > 0)
+            forwardRequest.Headers.TryAddWithoutValidation("Authorization", (IEnumerable<string?>)request.Headers.Authorization);
+
+        using var response = await masterClient.SendAsync(
+            forwardRequest, HttpCompletionOption.ResponseHeadersRead, httpContext.RequestAborted);
+
+        httpContext.Response.StatusCode = (int)response.StatusCode;
+        httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "application/json";
+        await response.Content.CopyToAsync(httpContext.Response.Body, httpContext.RequestAborted);
+    };
 
     /// <summary>Checks well-known claim types rather than assuming one identity
     /// provider's shape: <c>oid</c> (Entra ID — the signed-in user's object id),
