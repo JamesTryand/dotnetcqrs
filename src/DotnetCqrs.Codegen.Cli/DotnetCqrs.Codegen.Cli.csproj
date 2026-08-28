@@ -6,6 +6,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>DotnetCqrs.Codegen.Cli</RootNamespace>
+
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>dotnetcqrs-codegen</ToolCommandName>
+    <PackageId>DotnetCqrs.Codegen.Cli</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Generates dotnetcqrs deciders/projections/reactors (and optionally a runnable host project) from an EventModeling document.</Description>
   </PropertyGroup>
 
   <ItemGroup>
