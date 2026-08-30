@@ -34,6 +34,12 @@ public sealed class DocumentMapper
     // aggregate that owns its events.
     private readonly Dictionary<string, string> _eventAggregate = [];
 
+    // Which aggregate's stream each event belongs to, resolved statically from every
+    // slice's own command tag (not the incremental `_eventAggregate`, which only knows
+    // about events from slices already mapped) -- IsCreate needs this for every given
+    // event up front, including ones from slices later in document order.
+    private Dictionary<string, string> _eventOwners = [];
+
     private DocumentMapper(Document document, MappingOptions options, MappingReport report)
     {
         _document = document;
@@ -225,6 +231,8 @@ public sealed class DocumentMapper
 
     private void MapSlices()
     {
+        _eventOwners = BuildEventOwners();
+
         // stateChange slices first: an automation's dispatched command is only a
         // create when its target aggregate has no other beginning (see
         // MapAutomation), so every stateChange-derived create must already be
@@ -237,13 +245,45 @@ public sealed class DocumentMapper
         // adds only a screen, which has no runtime concept here.
     }
 
+    /// <summary>Resolves, for every event a stateChange or automation slice produces,
+    /// which aggregate's stream it belongs to -- statically, from each slice's own
+    /// command tag, independent of document order. <see cref="IsCreate"/> needs this to
+    /// tell a scenario's own-aggregate `given` (real evidence the stream already
+    /// exists) apart from a cross-aggregate precondition (a different stream's event,
+    /// which says nothing about this one).</summary>
+    private Dictionary<string, string> BuildEventOwners()
+    {
+        var owners = new Dictionary<string, string>();
+
+        void Assign(string aggregate, IReadOnlyList<string> eventIds)
+        {
+            foreach (var id in eventIds)
+                owners[id] = aggregate;
+        }
+
+        foreach (var slice in _document.Slices.OfType<StateChangeSlice>())
+        {
+            if (!TryGetCommand(slice.CommandId, out var cmd)) continue;
+            var (aggregate, ok) = AggregateFor("command", slice.CommandId, cmd.Aggregate);
+            if (ok) Assign(aggregate, slice.EventIds);
+        }
+        foreach (var slice in _document.Slices.OfType<AutomationSlice>())
+        {
+            if (!TryGetCommand(slice.CommandId, out var cmd)) continue;
+            var (aggregate, ok) = AggregateFor("command", slice.CommandId, cmd.Aggregate);
+            if (ok) Assign(aggregate, slice.ResultEventIds);
+        }
+
+        return owners;
+    }
+
     private void MapStateChange(StateChangeSlice slice)
     {
         if (!TryGetCommand(slice.CommandId, out var cmd)) return;
         var (aggregate, ok) = AggregateFor("command", slice.CommandId, cmd.Aggregate);
         if (!ok) return;
 
-        GetOrCreateDomain(aggregate).Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.EventIds, IsCreate(slice)));
+        GetOrCreateDomain(aggregate).Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.EventIds, IsCreate(slice, aggregate)));
     }
 
     /// <summary>Turns an automation slice into a reactor plus the command it
@@ -267,15 +307,21 @@ public sealed class DocumentMapper
         }
 
         // An automation dispatching ACROSS aggregates derives the target id from the
-        // source event, so it opens a new target stream per fire -- but only when
-        // nothing else ever creates that aggregate (a notification raised per event).
-        // When the target IS created elsewhere (log an entry, then an invoice reaction
-        // locks it), the reaction fans out over streams that already exist, so the
-        // dispatched command is NOT a create. An automation whose target is its own
-        // trigger's aggregate (auto-ship an order) is never a create either.
+        // source event, so it opens a new target stream per fire -- but only when this
+        // slice's own scenario evidence says so, same rule as IsCreate uses for a
+        // directly-invoked command (see its doc comment): a `given` event on the
+        // TARGET aggregate's own stream is real evidence the stream already exists
+        // (the fan-out-lock case: log an entry, then an invoice reaction locks it);
+        // foreign-aggregate given events (the trigger's own history) are not. This
+        // also means two independent automations/commands can each genuinely create
+        // the same aggregate TYPE (e.g. two different triggers each raising a fresh
+        // "notification" instance) without one disqualifying the other -- unlike a
+        // single "has this aggregate got a create yet" flag would. An automation whose
+        // target is its own trigger's aggregate (auto-ship an order) is never a create
+        // either.
         var crossAggregate = source != aggregate;
         var target = GetOrCreateDomain(aggregate);
-        var isCreate = crossAggregate && !target.Commands.Any(c => c.Once);
+        var isCreate = crossAggregate && IsCreate(slice, aggregate);
         target.Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.ResultEventIds, isCreate));
 
         var triggers = slice.TriggerEventIds.Select(EventTypeName).ToList();
@@ -429,12 +475,19 @@ public sealed class DocumentMapper
     private string CommandName(string id) =>
         TryGetCommand(id, out var cmd) ? Names.TypeName(cmd.Name, id) : Names.TypeName(null, id);
 
-    /// <summary>A scenario with an EMPTY <c>given</c> is a command applied to a stream
-    /// that doesn't exist yet — the document's own statement that this is the
-    /// beginning. Where no scenario says so, the slice's command is not treated as the
-    /// create.</summary>
-    private static bool IsCreate(StateChangeSlice slice) =>
-        slice.Scenarios.OfType<StateChangeScenario>().Any(s => s.Given.Count == 0);
+    /// <summary>A scenario is evidence this command opens a fresh stream when none of
+    /// its `given` events belong to THIS slice's own aggregate -- an empty `given` is
+    /// the obvious case, but a `given` that's entirely a different aggregate's events
+    /// (a normal cross-aggregate precondition, e.g. "the project exists") says nothing
+    /// about whether this aggregate's own stream already has history. Only a given
+    /// event on the slice's own stream is real evidence against create. Where no
+    /// scenario qualifies, the slice's command is not treated as the create. Shared by
+    /// both a directly-invoked command (<see cref="MapStateChange"/>) and an
+    /// automation's dispatched command (<see cref="MapAutomation"/>) -- both slice
+    /// kinds carry the same `given`-bearing scenarios.</summary>
+    private bool IsCreate(Slice slice, string aggregate) =>
+        slice.Scenarios.OfType<StateChangeScenario>().Any(s =>
+            s.Given.All(g => !_eventOwners.TryGetValue(g.EventId, out var owner) || owner != aggregate));
 
     // ---- lossy notes ----
 
