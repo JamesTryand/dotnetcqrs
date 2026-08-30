@@ -225,15 +225,16 @@ public sealed class DocumentMapper
 
     private void MapSlices()
     {
-        foreach (var slice in _document.Slices)
-        {
-            switch (slice)
-            {
-                case StateChangeSlice s: MapStateChange(s); break;
-                case AutomationSlice s: MapAutomation(s); break;
-                case StateViewSlice: break; // the read model itself is mapped separately; the slice adds only a screen, which has no runtime concept here
-            }
-        }
+        // stateChange slices first: an automation's dispatched command is only a
+        // create when its target aggregate has no other beginning (see
+        // MapAutomation), so every stateChange-derived create must already be
+        // registered before the automation pass runs.
+        foreach (var slice in _document.Slices.OfType<StateChangeSlice>())
+            MapStateChange(slice);
+        foreach (var slice in _document.Slices.OfType<AutomationSlice>())
+            MapAutomation(slice);
+        // StateViewSlice: the read model itself is mapped separately; the slice
+        // adds only a screen, which has no runtime concept here.
     }
 
     private void MapStateChange(StateChangeSlice slice)
@@ -265,13 +266,17 @@ public sealed class DocumentMapper
             }
         }
 
-        // An automation dispatching ACROSS aggregates opens a new stream every time it
-        // fires -- the reactor derives the target id from the source event, so there's
-        // one target instance per trigger, which makes the dispatched command a create.
-        // An automation whose target is its own trigger's aggregate (auto-ship an
-        // order) is the opposite: the stream already exists.
+        // An automation dispatching ACROSS aggregates derives the target id from the
+        // source event, so it opens a new target stream per fire -- but only when
+        // nothing else ever creates that aggregate (a notification raised per event).
+        // When the target IS created elsewhere (log an entry, then an invoice reaction
+        // locks it), the reaction fans out over streams that already exist, so the
+        // dispatched command is NOT a create. An automation whose target is its own
+        // trigger's aggregate (auto-ship an order) is never a create either.
         var crossAggregate = source != aggregate;
-        GetOrCreateDomain(aggregate).Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.ResultEventIds, crossAggregate));
+        var target = GetOrCreateDomain(aggregate);
+        var isCreate = crossAggregate && !target.Commands.Any(c => c.Once);
+        target.Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.ResultEventIds, isCreate));
 
         var triggers = slice.TriggerEventIds.Select(EventTypeName).ToList();
         if (!string.IsNullOrEmpty(slice.ReadModelId))
