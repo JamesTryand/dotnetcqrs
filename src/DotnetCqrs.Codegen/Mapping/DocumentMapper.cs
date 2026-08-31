@@ -283,7 +283,17 @@ public sealed class DocumentMapper
         var (aggregate, ok) = AggregateFor("command", slice.CommandId, cmd.Aggregate);
         if (!ok) return;
 
-        GetOrCreateDomain(aggregate).Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.EventIds, IsCreate(slice, aggregate)));
+        // A command with scenario evidence for BOTH cases -- a fresh stream (see
+        // HasCreateEvidence) and an already-existing one (HasUpdateEvidence) -- is a
+        // real upsert: neither flag is set, so DeciderGenerator emits no existence
+        // check at all and the command always succeeds. Without update evidence it's
+        // the ordinary create-only rule (see IsCreate's doc comment); without create
+        // evidence, the pre-existing default (RequiresExisting) is unchanged.
+        var hasCreate = HasCreateEvidence(slice, aggregate);
+        var hasUpdate = HasUpdateEvidence(slice, aggregate);
+        var once = hasCreate && !hasUpdate;
+        var requiresExisting = !hasCreate;
+        GetOrCreateDomain(aggregate).Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.EventIds, once, requiresExisting));
     }
 
     /// <summary>Turns an automation slice into a reactor plus the command it
@@ -321,8 +331,8 @@ public sealed class DocumentMapper
         // either.
         var crossAggregate = source != aggregate;
         var target = GetOrCreateDomain(aggregate);
-        var isCreate = crossAggregate && IsCreate(slice, aggregate);
-        target.Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.ResultEventIds, isCreate));
+        var isCreate = crossAggregate && HasCreateEvidence(slice, aggregate);
+        target.Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.ResultEventIds, isCreate, requiresExisting: !isCreate));
 
         var triggers = slice.TriggerEventIds.Select(EventTypeName).ToList();
         if (!string.IsNullOrEmpty(slice.ReadModelId))
@@ -345,13 +355,13 @@ public sealed class DocumentMapper
         GetOrCreateDomain(source).Reactors.Add(reactor);
     }
 
-    private Domain.Command BuildCommand(string aggregate, string id, CommandDef cmd, IReadOnlyList<string> eventIds, bool once)
+    private Domain.Command BuildCommand(string aggregate, string id, CommandDef cmd, IReadOnlyList<string> eventIds, bool once, bool requiresExisting)
     {
         var command = new Domain.Command
         {
             Name = CommandName(id),
             Once = once,
-            RequiresExisting = !once,
+            RequiresExisting = requiresExisting,
         };
         command.Fields.AddRange(BuildFields($"command \"{id}\"", cmd.Fields ?? []));
 
@@ -481,13 +491,22 @@ public sealed class DocumentMapper
     /// (a normal cross-aggregate precondition, e.g. "the project exists") says nothing
     /// about whether this aggregate's own stream already has history. Only a given
     /// event on the slice's own stream is real evidence against create. Where no
-    /// scenario qualifies, the slice's command is not treated as the create. Shared by
-    /// both a directly-invoked command (<see cref="MapStateChange"/>) and an
-    /// automation's dispatched command (<see cref="MapAutomation"/>) -- both slice
-    /// kinds carry the same `given`-bearing scenarios.</summary>
-    private bool IsCreate(Slice slice, string aggregate) =>
+    /// scenario qualifies, there's no create evidence. Shared by both a
+    /// directly-invoked command (<see cref="MapStateChange"/>) and an automation's
+    /// dispatched command (<see cref="MapAutomation"/>) -- both slice kinds carry the
+    /// same `given`-bearing scenarios.</summary>
+    private bool HasCreateEvidence(Slice slice, string aggregate) =>
         slice.Scenarios.OfType<StateChangeScenario>().Any(s =>
             s.Given.All(g => !_eventOwners.TryGetValue(g.EventId, out var owner) || owner != aggregate));
+
+    /// <summary>The mirror of <see cref="HasCreateEvidence"/>: a scenario is evidence
+    /// this command can run against an ALREADY-existing stream when at least one of
+    /// its `given` events belongs to THIS slice's own aggregate. A command with BOTH
+    /// kinds of evidence is a genuine upsert (see <see cref="MapStateChange"/>) -- it
+    /// isn't strictly create-only or strictly update-only, so neither guard applies.</summary>
+    private bool HasUpdateEvidence(Slice slice, string aggregate) =>
+        slice.Scenarios.OfType<StateChangeScenario>().Any(s =>
+            s.Given.Any(g => _eventOwners.TryGetValue(g.EventId, out var owner) && owner == aggregate));
 
     // ---- lossy notes ----
 
