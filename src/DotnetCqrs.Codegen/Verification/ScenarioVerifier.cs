@@ -131,15 +131,6 @@ public static class ScenarioVerifier
         var aggregatePascal = GenerationSupport.ExportName(info.Aggregate);
         var projectionTypeName = $"Generated.{aggregatePascal}.{GenerationSupport.ExportName(info.Collection)}Projection";
 
-        // Unlike a command scenario, a view scenario's `given` is NOT split by
-        // aggregate: a projection is explicitly allowed to be cross-cutting (fold
-        // events from several aggregates), so every given event is real fixture
-        // history for it, whichever stream it actually came from.
-        var given = scenario.Given
-            .Select(g => new GivenEventInput(index.EventType.GetValueOrDefault(g.EventId, g.EventId), g.Data?.GetRawText() ?? "{}"))
-            .ToList();
-        var streamId = StreamId(document, scenario.Given);
-
         var queryParamNames = new HashSet<string>();
         if (scenario.When.QueryParams is { ValueKind: JsonValueKind.Object } qp)
             foreach (var prop in qp.EnumerateObject())
@@ -150,6 +141,7 @@ public static class ScenarioVerifier
         // none of these params and gets no semi-join, exactly as the runtime query
         // would.
         var scopes = new List<ViewScopeInput>();
+        var viaIdFieldNames = new Dictionary<string, string?>(); // via projection type name -> that read model's own idAttribute field name
         foreach (var scope in info.Scopes)
         {
             if (!queryParamNames.Contains(scope.Param)) continue;
@@ -163,12 +155,60 @@ public static class ScenarioVerifier
             var viaProjectionTypeName = $"Generated.{GenerationSupport.ExportName(via.Aggregate)}.{GenerationSupport.ExportName(via.Collection)}Projection";
             scopes.Add(new ViewScopeInput(scope.Param, viaProjectionTypeName, via.Collection,
                 ToSnakeCase(scope.MatchParamToField), ToSnakeCase(scope.SelectField), ToSnakeCase(scope.FilterLocalField)));
+            viaIdFieldNames[viaProjectionTypeName] = index.ReadModelIdByCollection.TryGetValue(scope.ViaCollection, out var viaId)
+                ? ReadModelIdFieldName(document, viaId)
+                : null;
         }
+
+        // Unlike a command scenario, a view scenario's `given` is NOT split by
+        // aggregate: a projection is explicitly allowed to be cross-cutting (fold
+        // events from several aggregates), so every given event is real fixture
+        // history for it, whichever stream it actually came from.
+        //
+        // Each given event needs its OWN row key per projection it's replayed into --
+        // NOT one key shared by the whole scenario (the pre-Finding-3 design): an
+        // unscoped "manager sees every flagged entry" scenario deliberately seeds two
+        // DIFFERENT entries and expects two DIFFERENT rows out, which one shared
+        // synthesized id can never produce (every given event would collapse onto the
+        // same row). See ReadModelIdFieldName's doc comment for the resolution rule.
+        var sharedDefault = StreamId(document, scenario.Given);
+        var mainIdFieldName = ReadModelIdFieldName(document, readModelId);
+        var given = scenario.Given
+            .Select(g => new ViewGivenEventInput(
+                index.EventType.GetValueOrDefault(g.EventId, g.EventId),
+                g.Data?.GetRawText() ?? "{}",
+                RowKey(mainIdFieldName, g.Data, sharedDefault),
+                scopes.ToDictionary(s => s.ViaProjectionTypeName, s => RowKey(viaIdFieldNames.GetValueOrDefault(s.ViaProjectionTypeName), g.Data, sharedDefault))))
+            .ToList();
 
         viewScenarios.Add(new ViewScenarioInput(
             slice.Id, scenario.Id, scenario.Name, projectionTypeName, info.Aggregate,
-            info.Collection, info.KeyColumn, streamId, given,
+            info.Collection, given,
             scenario.When.QueryParams?.GetRawText(), scenario.Then.Result.GetRawText(), scopes));
+    }
+
+    /// <summary>The schema field a read model itself declares <c>idAttribute: true</c>
+    /// on -- its own key/id column, as opposed to <see cref="StreamId"/>'s EVENT-level
+    /// idAttribute (only present on an aggregate's own creation event).</summary>
+    private static string? ReadModelIdFieldName(Document document, string readModelId) =>
+        document.ReadModels?.GetValueOrDefault(readModelId)?.Fields?.FirstOrDefault(f => f.IdAttribute == true)?.Name;
+
+    /// <summary>Resolves ONE given event's row key for ONE target projection: if the
+    /// event's own payload names that read model's own id field, use that value (lets
+    /// two given events about two different entities land on two different rows);
+    /// otherwise fall back to the scenario-wide default (keeps every given event on the
+    /// SAME row when the scenario doesn't distinguish them -- the common case, and the
+    /// pre-Finding-3 behaviour every existing flat-result scenario already relies
+    /// on).</summary>
+    private static string RowKey(string? idFieldName, JsonElement? data, string fallback)
+    {
+        if (idFieldName is null || data is not { } d) return fallback;
+        if (d.TryGetProperty(idFieldName, out var value) && value.ValueKind == JsonValueKind.String)
+        {
+            var str = value.GetString();
+            if (!string.IsNullOrEmpty(str)) return str;
+        }
+        return fallback;
     }
 
     private static (List<GivenEventInput> Own, List<GivenEventInput> Foreign) SplitGiven(
@@ -293,6 +333,7 @@ public static class ScenarioVerifier
         public required Dictionary<string, string> EventType; // schema event id -> generated event type
         public required Dictionary<string, (string Aggregate, string Collection, string KeyColumn, IReadOnlyList<Domain.ReadModelScope> Scopes)> ReadModel; // schema read model id -> info
         public required Dictionary<string, (string Aggregate, string Collection)> ReadModelByCollection; // physical collection name -> info, for resolving a scope's `via`
+        public required Dictionary<string, string> ReadModelIdByCollection; // physical collection name -> schema read model id, for looking a via-model's own idAttribute field back up in the document
 
         public static GeneratedIndex Build(Document document, IReadOnlyList<Domain.Domain> domains)
         {
@@ -336,6 +377,7 @@ public static class ScenarioVerifier
 
             var readModel = new Dictionary<string, (string, string, string, IReadOnlyList<Domain.ReadModelScope>)>();
             var readModelByCollection = new Dictionary<string, (string, string)>();
+            var readModelIdByCollection = new Dictionary<string, string>();
             if (document.ReadModels is not null)
             {
                 foreach (var (id, rm) in document.ReadModels)
@@ -347,6 +389,7 @@ public static class ScenarioVerifier
                         if (match is null) continue;
                         readModel[id] = (d.Aggregate, collection, ToSnakeCase(match.Key), match.Scopes);
                         readModelByCollection[collection] = (d.Aggregate, collection);
+                        readModelIdByCollection[collection] = id;
                         break;
                     }
                 }
@@ -360,6 +403,7 @@ public static class ScenarioVerifier
                 EventType = eventType,
                 ReadModel = readModel,
                 ReadModelByCollection = readModelByCollection,
+                ReadModelIdByCollection = readModelIdByCollection,
             };
         }
     }

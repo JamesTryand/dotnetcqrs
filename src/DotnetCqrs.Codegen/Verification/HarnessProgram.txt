@@ -97,24 +97,51 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
             viaProjections[scope.ViaProjectionTypeName] = viaProjection;
         }
 
+        // Each given event carries its OWN row key per target projection (resolved by
+        // ScenarioVerifier -- see ViewGivenEventInput's doc comment), rather than one
+        // key shared by the whole scenario: an unscoped multi-row view scenario
+        // deliberately seeds several different entities and expects several different
+        // rows out.
         long position = 0;
         foreach (var g in scenario.Given)
         {
             position++;
-            var ev = new Event(position, $"scenario-{position}", scenario.Aggregate, scenario.StreamId, position, g.Type, g.Data, "{}", "1970-01-01T00:00:00.000Z");
-            await projection.ApplyAsync(ev, CancellationToken.None);
-            foreach (var viaProjection in viaProjections.Values)
-                await viaProjection.ApplyAsync(ev, CancellationToken.None);
+            var mainEv = new Event(position, $"scenario-{position}", scenario.Aggregate, g.MainKey, position, g.Type, g.Data, "{}", "1970-01-01T00:00:00.000Z");
+            await projection.ApplyAsync(mainEv, CancellationToken.None);
+            foreach (var (viaTypeName, viaProjection) in viaProjections)
+            {
+                var viaKey = g.ViaKeys.GetValueOrDefault(viaTypeName, g.MainKey);
+                var viaEv = new Event(position, $"scenario-{position}", scenario.Aggregate, viaKey, position, g.Type, g.Data, "{}", "1970-01-01T00:00:00.000Z");
+                await viaProjection.ApplyAsync(viaEv, CancellationToken.None);
+            }
         }
 
-        var row = await SelectRowAsync(readModel.Connection, scenario.TableName, scenario.KeyColumn, scenario.StreamId, scenario.QueryParams, scenario.Scopes);
-        if (row is null)
-            return ViewResult(scenario, passed: false, "no row matched the query");
+        var rows = await SelectRowsAsync(readModel.Connection, scenario.TableName, scenario.QueryParams, scenario.Scopes);
 
-        var diff = SubsetDiff(scenario.ExpectedResult, row);
-        return diff is null
+        // Two `then.result` shapes are supported. A single-property object whose value
+        // is a JSON array (e.g. `{"entries": [...]}`) is a NAMED-LIST result: the query
+        // may return any number of rows, and each element of the array must match
+        // exactly one of them, with none left over on either side -- this is the shape
+        // every real scenario in practice uses (a view is a list of rows, even when
+        // there's only one). Anything else is a flat single-row result (the original,
+        // pre-Finding-3 shape, still used by this generator's own regression tests):
+        // the query must match EXACTLY one row, compared directly.
+        var (isList, expectedRows) = TryUnwrapExpectedList(scenario.ExpectedResult);
+        if (isList)
+        {
+            var diff = ListDiff(expectedRows!, rows);
+            return diff is null
+                ? ViewResult(scenario, passed: true, $"the projected rows match ({rows.Count})")
+                : ViewResult(scenario, passed: false, "result: " + diff);
+        }
+
+        if (rows.Count != 1)
+            return ViewResult(scenario, passed: false, rows.Count == 0 ? "no row matched the query" : $"the query is ambiguous: {rows.Count} rows matched");
+
+        var flatDiff = SubsetDiff(scenario.ExpectedResult, rows[0]);
+        return flatDiff is null
             ? ViewResult(scenario, passed: true, "the projected row matches")
-            : ViewResult(scenario, passed: false, "result: " + diff);
+            : ViewResult(scenario, passed: false, "result: " + flatDiff);
     }
     catch (Exception ex)
     {
@@ -141,15 +168,17 @@ static async Task CallInitAsync(object projection)
     await (Task)method.Invoke(projection, [CancellationToken.None])!;
 }
 
-static async Task<Dictionary<string, object?>?> SelectRowAsync(
-    DbConnection db, string table, string keyColumn, string streamId, string? queryParamsJson, List<ViewScopeInput> scopes)
+static async Task<List<Dictionary<string, object?>>> SelectRowsAsync(
+    DbConnection db, string table, string? queryParamsJson, List<ViewScopeInput> scopes)
 {
     string sql;
     var parameters = new Dictionary<string, object?>();
     if (string.IsNullOrEmpty(queryParamsJson) || queryParamsJson == "{}")
     {
-        sql = $"SELECT * FROM {table} WHERE {keyColumn} = @id";
-        parameters["@id"] = streamId;
+        // Unscoped: a manager-style "see everything" view. Each given event already
+        // carries its own resolved row key (see ScenarioVerifier), so the rows in the
+        // table already ARE exactly the fixture's distinct entities -- no WHERE needed.
+        sql = $"SELECT * FROM {table}";
     }
     else
     {
@@ -158,6 +187,13 @@ static async Task<Dictionary<string, object?>?> SelectRowAsync(
         var i = 0;
         foreach (var (key, value) in query)
         {
+            // Some queryParams (e.g. a date-range object) name filtering logic no
+            // generator emits -- there's no column or scope for them to become a SQL
+            // predicate. Skipping them (rather than erroring) still lets the ROW
+            // CONTENT comparison below report the real gap the scenario is describing,
+            // instead of a verifier crash unrelated to the domain.
+            if (value.ValueKind is JsonValueKind.Object or JsonValueKind.Array) continue;
+
             var paramName = $"@p{i++}";
             var paramValue = value.ValueKind switch
             {
@@ -184,23 +220,55 @@ static async Task<Dictionary<string, object?>?> SelectRowAsync(
     foreach (var (name, value) in parameters)
         command.AddParam(name, value);
 
-    Dictionary<string, object?>? match = null;
-    var count = 0;
+    var rows = new List<Dictionary<string, object?>>();
     await using (var reader = await command.ExecuteReaderAsync())
     {
         while (await reader.ReadAsync())
         {
-            count++;
             var row = new Dictionary<string, object?>();
             for (var i = 0; i < reader.FieldCount; i++)
                 row[reader.GetName(i)] = reader.IsDBNull(i) ? null : reader.GetValue(i);
-            match = row;
+            rows.Add(row);
         }
     }
-    // an ambiguous query (0 or >1 rows) returns nothing rather than an arbitrary
-    // row, matching pocketcqrs's own selectRow -- picking one would make the
-    // assertion depend on row order.
-    return count == 1 ? match : null;
+    return rows;
+}
+
+/// <summary>Detects the named-list `then.result` shape: an object with exactly one
+/// property whose value is a JSON array. Every real scenario in the model uses this
+/// shape (a view is a list of rows); this generator's own flat-object regression tests
+/// predate it and must keep working unchanged, which is why this is a narrow structural
+/// check rather than a required convention.</summary>
+static (bool IsList, List<JsonElement>? Rows) TryUnwrapExpectedList(string expectedJson)
+{
+    var expected = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(expectedJson);
+    if (expected is { Count: 1 } && expected.First().Value.ValueKind == JsonValueKind.Array)
+        return (true, expected.First().Value.EnumerateArray().ToList());
+    return (false, null);
+}
+
+/// <summary>Multiset comparison for a named-list result: every expected row must
+/// subset-match a distinct actual row (order-independent), and no actual row may be
+/// left over -- an extra row would mean an unscoped/scoped query returned something the
+/// scenario didn't ask for, which is as real a bug as a missing one.</summary>
+static string? ListDiff(List<JsonElement> expectedRows, List<Dictionary<string, object?>> actualRows)
+{
+    var unmatched = new List<Dictionary<string, object?>>(actualRows);
+    var problems = new List<string>();
+    foreach (var expected in expectedRows)
+    {
+        var expectedJson = expected.GetRawText();
+        var matchIndex = unmatched.FindIndex(a => SubsetDiff(expectedJson, a) is null);
+        if (matchIndex < 0)
+        {
+            problems.Add($"no row matched {expectedJson}");
+            continue;
+        }
+        unmatched.RemoveAt(matchIndex);
+    }
+    if (unmatched.Count > 0)
+        problems.Add($"{unmatched.Count} extra row(s) not expected by any element of the result list");
+    return problems.Count > 0 ? string.Join("; ", problems) : null;
 }
 
 // A subset comparison, not equality: a scenario states the fields it cares about,
@@ -296,10 +364,11 @@ static ScenarioResultDto ViewResult(ViewScenarioInput s, bool passed, string det
 
 record HarnessInput(List<CommandScenarioInput> CommandScenarios, List<ViewScenarioInput> ViewScenarios);
 record GivenEventInput(string Type, string Data);
+record ViewGivenEventInput(string Type, string Data, string MainKey, Dictionary<string, string> ViaKeys);
 record CommandScenarioInput(string SliceId, string ScenarioId, string Name, string Kind, string DeciderTypeName,
     string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes);
 record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,
-    string TableName, string KeyColumn, string StreamId, List<GivenEventInput> Given, string? QueryParams, string ExpectedResult,
+    string TableName, List<ViewGivenEventInput> Given, string? QueryParams, string ExpectedResult,
     List<ViewScopeInput> Scopes);
 record ViewScopeInput(string Param, string ViaProjectionTypeName, string ViaTableName, string MatchParamToColumn, string SelectColumn, string FilterLocalColumn);
 record ScenarioResultDto(string SliceId, string ScenarioId, string Name, string Kind, bool Passed, bool Skipped, string Detail);

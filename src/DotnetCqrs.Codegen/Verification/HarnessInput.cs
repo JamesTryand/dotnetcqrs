@@ -14,6 +14,18 @@ public sealed record HarnessInput(
 
 public sealed record GivenEventInput(string Type, string Data);
 
+/// <summary>A stateView scenario's given event, with a per-event row key already
+/// resolved for the main projection and each active scope's via-projection — see
+/// <see cref="ScenarioVerifier"/>'s row-key resolution doc comment. Distinct rows in the
+/// same table (e.g. two different flagged entries) need distinct keys; events about the
+/// same entity (or carrying no identifying data at all) need the SAME key so they fold
+/// onto one row, matching how a real event stream would replay.</summary>
+public sealed record ViewGivenEventInput(
+    string Type,
+    string Data,
+    string MainKey,
+    IReadOnlyDictionary<string, string> ViaKeys); // via-projection type name -> row key
+
 /// <summary>A stateChange or error scenario, ready for the harness to run without
 /// consulting the document again.</summary>
 public sealed record CommandScenarioInput(
@@ -38,9 +50,7 @@ public sealed record ViewScenarioInput(
     string ProjectionTypeName, // e.g. "Generated.Order.OrderSummaryProjection"
     string Aggregate,
     string TableName,
-    string KeyColumn,
-    string StreamId,
-    IReadOnlyList<GivenEventInput> Given,
+    IReadOnlyList<ViewGivenEventInput> Given,
     string? QueryParams,
     string ExpectedResult,
     IReadOnlyList<ViewScopeInput> Scopes); // only entries whose param is present in QueryParams
