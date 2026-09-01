@@ -36,9 +36,14 @@ public sealed class DocumentMapper
 
     // Which aggregate's stream each event belongs to, resolved statically from every
     // slice's own command tag (not the incremental `_eventAggregate`, which only knows
-    // about events from slices already mapped) -- IsCreate needs this for every given
-    // event up front, including ones from slices later in document order.
+    // about events from slices already mapped) -- ScenarioNetExists needs this for
+    // every given event up front, including ones from slices later in document order.
     private Dictionary<string, string> _eventOwners = [];
+
+    // Every event id the document marks `endsStream: true` -- ScenarioNetExists needs
+    // this to fold a scenario's `given` in order rather than merely scan it for any
+    // own-stream event (see its doc comment).
+    private HashSet<string> _endsStreamEvents = [];
 
     private DocumentMapper(Document document, MappingOptions options, MappingReport report)
     {
@@ -116,9 +121,15 @@ public sealed class DocumentMapper
 
         if (_document.ReadModels is not null)
             foreach (var (id, rm) in _document.ReadModels)
+            {
                 foreach (var eventId in rm.BuiltFromEventIds ?? [])
                     if (!EventExists(eventId))
                         _report.Error($"read model \"{id}\" is built from event \"{eventId}\", which does not exist");
+                foreach (var scope in rm.Scopes ?? [])
+                    if (!ReadModelExists(scope.Via.ReadModelId))
+                        _report.Error($"read model \"{id}\" scope on param \"{scope.Param}\" references " +
+                            $"read model \"{scope.Via.ReadModelId}\", which does not exist");
+            }
     }
 
     private bool EventExists(string id) => _document.Events?.ContainsKey(id) == true;
@@ -232,6 +243,7 @@ public sealed class DocumentMapper
     private void MapSlices()
     {
         _eventOwners = BuildEventOwners();
+        _endsStreamEvents = BuildEndsStreamEvents();
 
         // stateChange slices first: an automation's dispatched command is only a
         // create when its target aggregate has no other beginning (see
@@ -275,6 +287,18 @@ public sealed class DocumentMapper
         }
 
         return owners;
+    }
+
+    /// <summary>Every event id the document marks <c>endsStream: true</c> — see
+    /// <see cref="ScenarioNetExists"/>.</summary>
+    private HashSet<string> BuildEndsStreamEvents()
+    {
+        var ids = new HashSet<string>();
+        if (_document.Events is not null)
+            foreach (var (id, ev) in _document.Events)
+                if (ev.EndsStream == true)
+                    ids.Add(id);
+        return ids;
     }
 
     private void MapStateChange(StateChangeSlice slice)
@@ -371,7 +395,7 @@ public sealed class DocumentMapper
             _eventAggregate[eventId] = aggregate;
 
             var hasFields = eventDef.Fields is { Count: > 0 };
-            var domainEvent = new Domain.Event { Name = EventTypeName(eventId), NoFields = !hasFields };
+            var domainEvent = new Domain.Event { Name = EventTypeName(eventId), NoFields = !hasFields, EndsStream = eventDef.EndsStream == true };
             if (hasFields)
             {
                 domainEvent.Fields.AddRange(BuildFields($"event \"{eventId}\"", eventDef.Fields!));
@@ -388,16 +412,68 @@ public sealed class DocumentMapper
         return command;
     }
 
-    private List<Domain.Field> BuildFields(string owner, IReadOnlyList<Model.Field> fields)
+    /// <param name="defaultRowKeyField">The read model's own key field, used as
+    /// <c>rowKeyField</c>'s fallback for a <c>count</c>/<c>sum</c> derivation that
+    /// doesn't name one explicitly. Null for command/event fields, which never carry a
+    /// derivation in practice (nothing stops the schema from allowing one there too --
+    /// it's a structural, not semantic, constraint -- but a generator only ever
+    /// consults <see cref="Domain.Field.Derivation"/> on a read model's own fields).</summary>
+    private List<Domain.Field> BuildFields(string owner, IReadOnlyList<Model.Field> fields, string? defaultRowKeyField = null)
     {
         var result = new List<Domain.Field>(fields.Count);
         foreach (var field in fields)
         {
             var note = FieldTypeFolding.Note(owner, field);
             if (note is not null) _report.Warn(note);
-            result.Add(new Domain.Field(Names.SanitizeName(field.Name), FieldTypeFolding.Fold(field)));
+            var derivation = BuildDerivation(owner, field, defaultRowKeyField);
+            result.Add(new Domain.Field(Names.SanitizeName(field.Name), FieldTypeFolding.Fold(field), derivation));
         }
         return result;
+    }
+
+    /// <summary>Resolves a field's <see cref="Model.FieldDerivation"/> (raw schema ids,
+    /// an optional row key) into a <see cref="Domain.Derivation"/> (generated event type
+    /// names, a row key that's always present) -- once, here, so <see cref="Generation"/>
+    /// never re-consults the document.</summary>
+    private Domain.Derivation? BuildDerivation(string owner, Model.Field field, string? defaultRowKeyField)
+    {
+        switch (field.Derivation)
+        {
+            case null:
+                return null;
+            case Model.ToggleDerivation t:
+                return new Domain.ToggleDerivation(
+                    t.OnEventIds.Select(EventTypeName).ToList(),
+                    t.OffEventIds.Select(EventTypeName).ToList(),
+                    t.Initial ?? false);
+            case Model.CountDerivation c:
+                var countKey = ResolveRowKeyField(owner, field.Name, c.RowKeyField, defaultRowKeyField);
+                return countKey is null ? null : new Domain.CountDerivation(
+                    c.IncrementOnEventIds.Select(EventTypeName).ToList(),
+                    (c.DecrementOnEventIds ?? []).Select(EventTypeName).ToList(),
+                    countKey);
+            case Model.SumDerivation s:
+                var sumKey = ResolveRowKeyField(owner, field.Name, s.RowKeyField, defaultRowKeyField);
+                return sumKey is null ? null : new Domain.SumDerivation(
+                    s.AddOnEventIds.Select(EventTypeName).ToList(),
+                    (s.SubtractOnEventIds ?? []).Select(EventTypeName).ToList(),
+                    Names.SanitizeName(s.AmountField),
+                    sumKey);
+            default:
+                throw new InvalidOperationException($"unhandled field derivation kind: {field.Derivation.GetType().Name}");
+        }
+    }
+
+    private string? ResolveRowKeyField(string owner, string fieldName, string? explicitRowKeyField, string? defaultRowKeyField)
+    {
+        var rowKey = explicitRowKeyField ?? defaultRowKeyField;
+        if (rowKey is null)
+        {
+            _report.Error($"{owner}: field \"{fieldName}\" declares a count/sum derivation with no `rowKeyField` " +
+                "and no read-model key to default to -- name the payload field on the counted events that identifies this row");
+            return null;
+        }
+        return Names.SanitizeName(rowKey);
     }
 
     // ---- read models ----
@@ -414,18 +490,56 @@ public sealed class DocumentMapper
         {
             var rm = _document.ReadModels[id];
             var owners = new HashSet<string>();
-            var on = new List<string>();
-            foreach (var eventId in rm.BuiltFromEventIds ?? [])
+            var onEventIds = new List<string>();
+            var seedEventIds = new HashSet<string>();
+            var seenEventIds = new HashSet<string>();
+
+            // seed: true for an event whose OWN stream is this read model's row
+            // (ev.AggregateId is a valid row key for it) -- builtFromEventIds, and a
+            // toggle's on/off events (the schema gives toggle no rowKeyField, so it's
+            // only ever meaningful same-aggregate). seed: false for a count/sum
+            // derivation's events: those live on a DIFFERENT stream (that's the whole
+            // reason a roll-up needs declaring), so ev.AggregateId is not this table's
+            // key at all -- only the payload's own rowKeyField is.
+            void AddOnEvent(string eventId, bool seed)
             {
-                on.Add(EventTypeName(eventId));
+                if (seenEventIds.Add(eventId)) onEventIds.Add(eventId);
+                if (seed) seedEventIds.Add(eventId);
                 if (_eventAggregate.TryGetValue(eventId, out var owner))
                     owners.Add(owner);
             }
-            if (on.Count == 0)
+
+            foreach (var eventId in rm.BuiltFromEventIds ?? [])
+                AddOnEvent(eventId, seed: true);
+
+            foreach (var field in rm.Fields ?? [])
+            {
+                switch (field.Derivation)
+                {
+                    case Model.ToggleDerivation t:
+                        foreach (var eid in t.OnEventIds) AddOnEvent(eid, seed: true);
+                        foreach (var eid in t.OffEventIds) AddOnEvent(eid, seed: true);
+                        break;
+                    case Model.CountDerivation c:
+                        foreach (var eid in c.IncrementOnEventIds) AddOnEvent(eid, seed: false);
+                        foreach (var eid in c.DecrementOnEventIds ?? []) AddOnEvent(eid, seed: false);
+                        break;
+                    case Model.SumDerivation s:
+                        foreach (var eid in s.AddOnEventIds) AddOnEvent(eid, seed: false);
+                        foreach (var eid in s.SubtractOnEventIds ?? []) AddOnEvent(eid, seed: false);
+                        break;
+                }
+            }
+
+            if (onEventIds.Count == 0)
             {
                 _report.Warn($"read model \"{id}\" lists no builtFromEventIds, so the generated projection would never fire; skipped");
                 continue;
             }
+            if (seedEventIds.Count == 0)
+                _report.Warn($"read model \"{id}\" has no builtFromEventIds or toggle-derived event beyond its count/sum " +
+                    "derivations, so nothing seeds its row by aggregate id; a count/sum field written here has no row to " +
+                    "land on unless some other event already created one");
 
             var chosenOwner = owners.Count == 0 ? null : owners.OrderBy(o => o, StringComparer.Ordinal).First();
             if (chosenOwner is null)
@@ -441,8 +555,24 @@ public sealed class DocumentMapper
             if (keyNote is not null) _report.Warn(keyNote);
 
             var readModel = new Domain.ReadModel { Collection = Names.SanitizeName(CollectionName(rm.Name, id)), Key = key };
-            readModel.Fields.AddRange(BuildFields($"read model \"{id}\"", rm.Fields ?? []));
-            readModel.On.AddRange(on);
+            readModel.Fields.AddRange(BuildFields($"read model \"{id}\"", rm.Fields ?? [], defaultRowKeyField: key));
+            readModel.On.AddRange(onEventIds.Select(EventTypeName));
+            readModel.SeedOn.AddRange(onEventIds.Where(seedEventIds.Contains).Select(EventTypeName));
+            foreach (var scopeDef in rm.Scopes ?? [])
+            {
+                var viaCollection = ResolveReadModelCollection(scopeDef.Via.ReadModelId);
+                if (viaCollection is null)
+                {
+                    _report.Error($"read model \"{id}\" scope on param \"{scopeDef.Param}\" references " +
+                        $"read model \"{scopeDef.Via.ReadModelId}\", which does not exist");
+                    continue;
+                }
+                readModel.Scopes.Add(new Domain.ReadModelScope(
+                    scopeDef.Param, viaCollection,
+                    Names.SanitizeName(scopeDef.Via.MatchParamTo),
+                    Names.SanitizeName(scopeDef.Via.SelectField),
+                    Names.SanitizeName(scopeDef.Via.FilterLocalField)));
+            }
             GetOrCreateDomain(chosenOwner).ReadModels.Add(readModel);
         }
     }
@@ -460,6 +590,15 @@ public sealed class DocumentMapper
     }
 
     private static string CollectionName(string name, string id) => Names.LowerFirst(Names.TypeName(name, id));
+
+    /// <summary>Recomputes the physical collection name a read model id would map onto
+    /// -- deterministic from that id's own <c>name</c>, so this works for ANY read
+    /// model id in the document regardless of whether it's been mapped yet.</summary>
+    private string? ResolveReadModelCollection(string readModelId)
+    {
+        if (_document.ReadModels is null || !_document.ReadModels.TryGetValue(readModelId, out var rm)) return null;
+        return Names.SanitizeName(CollectionName(rm.Name, readModelId));
+    }
 
     // ---- helpers ----
 
@@ -485,28 +624,46 @@ public sealed class DocumentMapper
     private string CommandName(string id) =>
         TryGetCommand(id, out var cmd) ? Names.TypeName(cmd.Name, id) : Names.TypeName(null, id);
 
-    /// <summary>A scenario is evidence this command opens a fresh stream when none of
-    /// its `given` events belong to THIS slice's own aggregate -- an empty `given` is
-    /// the obvious case, but a `given` that's entirely a different aggregate's events
-    /// (a normal cross-aggregate precondition, e.g. "the project exists") says nothing
-    /// about whether this aggregate's own stream already has history. Only a given
-    /// event on the slice's own stream is real evidence against create. Where no
-    /// scenario qualifies, there's no create evidence. Shared by both a
+    /// <summary>Folds one scenario's `given` sequence IN ORDER, tracking the
+    /// aggregate's synthesized `Exists` exactly as the generated decider's `Evolve`
+    /// will: a `given` event on THIS slice's own aggregate stream sets `Exists` to
+    /// `false` when it's marked <c>endsStream</c>, `true` otherwise; a foreign-aggregate
+    /// `given` event is not evidence either way and leaves `Exists` untouched. The
+    /// scenario's own history nets to whichever value the LAST own-stream event left
+    /// behind -- an empty `given`, or one made entirely of foreign events, nets to the
+    /// initial `false`.
+    ///
+    /// This replaces the earlier "any own-stream event disqualifies create" scan: a
+    /// re-assign-after-unassign scenario's `given` legitimately contains an own-stream
+    /// event (the original assign) yet nets back to "doesn't exist," and must count as
+    /// create evidence, not update evidence -- see the design proposal's Q5 (option c).</summary>
+    private bool ScenarioNetExists(Scenario scenario, string aggregate)
+    {
+        var exists = false;
+        foreach (var given in scenario.Given)
+        {
+            if (!_eventOwners.TryGetValue(given.EventId, out var owner) || owner != aggregate) continue;
+            exists = !_endsStreamEvents.Contains(given.EventId);
+        }
+        return exists;
+    }
+
+    /// <summary>A scenario is evidence this command opens a fresh stream when its
+    /// `given` sequence nets to `Exists == false` (see <see cref="ScenarioNetExists"/>).
+    /// Where no scenario qualifies, there's no create evidence. Shared by both a
     /// directly-invoked command (<see cref="MapStateChange"/>) and an automation's
     /// dispatched command (<see cref="MapAutomation"/>) -- both slice kinds carry the
     /// same `given`-bearing scenarios.</summary>
     private bool HasCreateEvidence(Slice slice, string aggregate) =>
-        slice.Scenarios.OfType<StateChangeScenario>().Any(s =>
-            s.Given.All(g => !_eventOwners.TryGetValue(g.EventId, out var owner) || owner != aggregate));
+        slice.Scenarios.OfType<StateChangeScenario>().Any(s => !ScenarioNetExists(s, aggregate));
 
     /// <summary>The mirror of <see cref="HasCreateEvidence"/>: a scenario is evidence
-    /// this command can run against an ALREADY-existing stream when at least one of
-    /// its `given` events belongs to THIS slice's own aggregate. A command with BOTH
-    /// kinds of evidence is a genuine upsert (see <see cref="MapStateChange"/>) -- it
-    /// isn't strictly create-only or strictly update-only, so neither guard applies.</summary>
+    /// this command can run against an ALREADY-existing stream when its `given`
+    /// sequence nets to `Exists == true`. A command with BOTH kinds of evidence is a
+    /// genuine upsert (see <see cref="MapStateChange"/>) -- it isn't strictly
+    /// create-only or strictly update-only, so neither guard applies.</summary>
     private bool HasUpdateEvidence(Slice slice, string aggregate) =>
-        slice.Scenarios.OfType<StateChangeScenario>().Any(s =>
-            s.Given.Any(g => _eventOwners.TryGetValue(g.EventId, out var owner) && owner == aggregate));
+        slice.Scenarios.OfType<StateChangeScenario>().Any(s => ScenarioNetExists(s, aggregate));
 
     // ---- lossy notes ----
 

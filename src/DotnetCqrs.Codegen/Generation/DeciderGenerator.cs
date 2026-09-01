@@ -102,10 +102,15 @@ internal static class DeciderGenerator
         foreach (var eventName in events)
         {
             var eventFields = EventFields(domain, eventName);
+            // A terminal event (endsStream) resets Exists to false instead of setting
+            // it true, so Once/RequiresExisting keep working across a full
+            // assign -> unassign -> re-assign lifecycle -- see DocumentMapper's
+            // ScenarioNetExists, which folds the same rule at mapping time.
+            var existsLiteral = EventEndsStream(domain, eventName) ? "false" : "true";
             b.AppendLine($"                case {aggregate}Events.{eventName}:");
             if (eventFields.Count == 0)
             {
-                b.AppendLine("                    return state with { Exists = true };");
+                b.AppendLine($"                    return state with {{ Exists = {existsLiteral} }};");
             }
             else
             {
@@ -113,7 +118,7 @@ internal static class DeciderGenerator
                 b.AppendLine("                {");
                 b.AppendLine($"                    var data = JsonSerializer.Deserialize<{payloadType}>(ev.Data, JsonOptions)!;");
                 var withFields = string.Join(", ", eventFields.Select(f => $"{GenerationSupport.ExportName(f.Name)} = data.{GenerationSupport.ExportName(f.Name)}"));
-                b.AppendLine($"                    return state with {{ Exists = true, {withFields} }};");
+                b.AppendLine($"                    return state with {{ Exists = {existsLiteral}, {withFields} }};");
                 b.AppendLine("                }");
             }
         }
@@ -150,5 +155,16 @@ internal static class DeciderGenerator
                 if (@event.Name == eventName)
                     return @event.Fields;
         return [];
+    }
+
+    /// <summary>Whether the FIRST event named <paramref name="eventName"/> declares
+    /// (across every command) is marked <c>endsStream</c> — mirrors <see cref="EventFields"/>.</summary>
+    private static bool EventEndsStream(Domain.Domain domain, string eventName)
+    {
+        foreach (var command in domain.Commands)
+            foreach (var @event in command.Events)
+                if (@event.Name == eventName)
+                    return @event.EndsStream;
+        return false;
     }
 }

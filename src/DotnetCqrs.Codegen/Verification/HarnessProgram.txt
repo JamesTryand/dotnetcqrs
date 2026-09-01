@@ -80,15 +80,34 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
         var projection = (IProjection)Activator.CreateInstance(projectionType, readModel)!;
         await CallInitAsync(projection);
 
+        // A scoped query param resolves through a DIFFERENT read model (the semi-join
+        // side) -- its own table needs to exist and be seeded in this same in-memory
+        // database before the scoped SELECT can run against it. A view scenario's
+        // `given` is already cross-cutting fixture history (see ScenarioVerifier's own
+        // comment), so the very same events seed the via-projection too, whichever
+        // stream they actually belong to.
+        var viaProjections = new Dictionary<string, IProjection>();
+        foreach (var scope in scenario.Scopes)
+        {
+            if (viaProjections.ContainsKey(scope.ViaProjectionTypeName)) continue;
+            var viaType = Type.GetType(scope.ViaProjectionTypeName)
+                ?? throw new InvalidOperationException($"scope projection type not found: {scope.ViaProjectionTypeName}");
+            var viaProjection = (IProjection)Activator.CreateInstance(viaType, readModel)!;
+            await CallInitAsync(viaProjection);
+            viaProjections[scope.ViaProjectionTypeName] = viaProjection;
+        }
+
         long position = 0;
         foreach (var g in scenario.Given)
         {
             position++;
             var ev = new Event(position, $"scenario-{position}", scenario.Aggregate, scenario.StreamId, position, g.Type, g.Data, "{}", "1970-01-01T00:00:00.000Z");
             await projection.ApplyAsync(ev, CancellationToken.None);
+            foreach (var viaProjection in viaProjections.Values)
+                await viaProjection.ApplyAsync(ev, CancellationToken.None);
         }
 
-        var row = await SelectRowAsync(readModel.Connection, scenario.TableName, scenario.KeyColumn, scenario.StreamId, scenario.QueryParams);
+        var row = await SelectRowAsync(readModel.Connection, scenario.TableName, scenario.KeyColumn, scenario.StreamId, scenario.QueryParams, scenario.Scopes);
         if (row is null)
             return ViewResult(scenario, passed: false, "no row matched the query");
 
@@ -122,7 +141,8 @@ static async Task CallInitAsync(object projection)
     await (Task)method.Invoke(projection, [CancellationToken.None])!;
 }
 
-static async Task<Dictionary<string, object?>?> SelectRowAsync(DbConnection db, string table, string keyColumn, string streamId, string? queryParamsJson)
+static async Task<Dictionary<string, object?>?> SelectRowAsync(
+    DbConnection db, string table, string keyColumn, string streamId, string? queryParamsJson, List<ViewScopeInput> scopes)
 {
     string sql;
     var parameters = new Dictionary<string, object?>();
@@ -138,15 +158,23 @@ static async Task<Dictionary<string, object?>?> SelectRowAsync(DbConnection db, 
         var i = 0;
         foreach (var (key, value) in query)
         {
-            var column = ToSnakeCase(key);
             var paramName = $"@p{i++}";
-            clauses.Add($"{column} = {paramName}");
-            parameters[paramName] = value.ValueKind switch
+            var paramValue = value.ValueKind switch
             {
-                JsonValueKind.Number => value.GetDouble(),
+                JsonValueKind.Number => (object?)value.GetDouble(),
                 JsonValueKind.True or JsonValueKind.False => value.GetBoolean(),
                 _ => value.GetString(),
             };
+            // A scoped param names no column of THIS table at all -- the real
+            // predicate is a semi-join through the via read model, matching exactly
+            // what ProjectionGenerator's readModel.Scopes would emit for a real query.
+            // An unscoped param is the ordinary case: it names one of this table's own
+            // columns directly.
+            var scope = scopes.Find(s => s.Param == key);
+            clauses.Add(scope is null
+                ? $"{ToSnakeCase(key)} = {paramName}"
+                : $"{scope.FilterLocalColumn} IN (SELECT {scope.SelectColumn} FROM {scope.ViaTableName} WHERE {scope.MatchParamToColumn} = {paramName})");
+            parameters[paramName] = paramValue;
         }
         sql = clauses.Count == 0 ? $"SELECT * FROM {table}" : $"SELECT * FROM {table} WHERE {string.Join(" AND ", clauses)}";
     }
@@ -200,6 +228,26 @@ static string? SubsetDiff(string expectedJson, Dictionary<string, object?> actua
 
 static bool ValuesEqual(object? actual, JsonElement expected)
 {
+    // SQLite has no native boolean storage class -- a bool column (a plain-copied
+    // field, or a toggle derivation's literal 1/0) comes back from the reader as a
+    // long, not a bool, so `expected: true/false` must be compared against 0/nonzero
+    // rather than by exact text -- otherwise "1" == "true" always fails, which would
+    // make a toggle derivation's own verify scenario always fail regardless of whether
+    // the generated code is correct.
+    if (expected.ValueKind is JsonValueKind.True or JsonValueKind.False)
+    {
+        var expectedBool = expected.ValueKind == JsonValueKind.True;
+        var actualBool = actual switch
+        {
+            null => false,
+            bool b => b,
+            long l => l != 0,
+            double d => d != 0,
+            _ => string.Equals(actual.ToString(), "true", StringComparison.OrdinalIgnoreCase),
+        };
+        return actualBool == expectedBool;
+    }
+
     var actualText = actual switch
     {
         null => "null",
@@ -210,8 +258,6 @@ static bool ValuesEqual(object? actual, JsonElement expected)
     };
     var expectedText = expected.ValueKind switch
     {
-        JsonValueKind.True => "true",
-        JsonValueKind.False => "false",
         JsonValueKind.Number => expected.GetDouble().ToString("G17"),
         JsonValueKind.Null => "null",
         _ => expected.GetString(),
@@ -253,5 +299,7 @@ record GivenEventInput(string Type, string Data);
 record CommandScenarioInput(string SliceId, string ScenarioId, string Name, string Kind, string DeciderTypeName,
     string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes);
 record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,
-    string TableName, string KeyColumn, string StreamId, List<GivenEventInput> Given, string? QueryParams, string ExpectedResult);
+    string TableName, string KeyColumn, string StreamId, List<GivenEventInput> Given, string? QueryParams, string ExpectedResult,
+    List<ViewScopeInput> Scopes);
+record ViewScopeInput(string Param, string ViaProjectionTypeName, string ViaTableName, string MatchParamToColumn, string SelectColumn, string FilterLocalColumn);
 record ScenarioResultDto(string SliceId, string ScenarioId, string Name, string Kind, bool Passed, bool Skipped, string Detail);

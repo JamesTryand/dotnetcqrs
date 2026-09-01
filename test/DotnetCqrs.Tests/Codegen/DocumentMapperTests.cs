@@ -171,6 +171,120 @@ public class DocumentMapperTests
     }
 
     [Fact]
+    public void A_reassign_scenario_after_endsStream_nets_to_create_evidence_not_update()
+    {
+        // Design proposal's Q5 (option c): a `given` that seeds the own stream (an
+        // earlier assign) but then ENDS on an endsStream event (the unassign) nets back
+        // to "doesn't exist" -- create evidence, not update. The scanning Findings 1/2
+        // code would have called this update evidence (an own-stream event IS present)
+        // and wrongly flipped the command to an upsert, dropping the guard against
+        // double-assigning a currently-active pair.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "2.2.0", "id": "reassign-test", "name": "Reassign Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "staff-assigned": {"name": "Staff Assigned", "swimlaneId": "s", "aggregate": "ProjectStaffAssignment"},
+                "staff-unassigned": {"name": "Staff Unassigned", "swimlaneId": "s", "aggregate": "ProjectStaffAssignment", "endsStream": true}
+              },
+              "commands": {
+                "assign-staff": {"name": "Assign Staff", "aggregate": "ProjectStaffAssignment"},
+                "unassign-staff": {"name": "Unassign Staff", "aggregate": "ProjectStaffAssignment"}
+              },
+              "screens": {"scr": {"name": "Screen"}},
+              "slices": [
+                {
+                  "id": "assign-staff-slice", "name": "Assign Staff", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr", "commandId": "assign-staff", "eventIds": ["staff-assigned"],
+                  "scenarios": [
+                    {
+                      "id": "create-scenario", "name": "First assignment", "kind": "stateChange",
+                      "given": [], "when": {"commandId": "assign-staff"}, "then": {"events": [{"eventId": "staff-assigned"}]}
+                    },
+                    {
+                      "id": "reassign-scenario", "name": "Reassign after unassign", "kind": "stateChange",
+                      "given": [{"eventId": "staff-assigned"}, {"eventId": "staff-unassigned"}],
+                      "when": {"commandId": "assign-staff"}, "then": {"events": [{"eventId": "staff-assigned"}]}
+                    }
+                  ]
+                },
+                {
+                  "id": "unassign-staff-slice", "name": "Unassign Staff", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr", "commandId": "unassign-staff", "eventIds": ["staff-unassigned"],
+                  "scenarios": [{
+                    "id": "unassign-scenario", "name": "Unassign an existing pair", "kind": "stateChange",
+                    "given": [{"eventId": "staff-assigned"}], "when": {"commandId": "unassign-staff"},
+                    "then": {"events": [{"eventId": "staff-unassigned"}]}
+                  }]
+                }
+              ]
+            }
+            """;
+        var doc = DocumentLoader.Parse(json);
+
+        var result = DocumentMapper.Map(doc);
+
+        var command = Assert.Single(result.Domains).Commands.Single(c => c.Name == "AssignStaff");
+        Assert.True(command.Once, "still a create: a redundant assign of a currently-active pair must be refused");
+        Assert.False(command.RequiresExisting);
+    }
+
+    [Fact]
+    public void A_foreign_aggregate_endsStream_event_in_given_is_not_evidence_either_way()
+    {
+        // A `given` event on a DIFFERENT aggregate's stream is never evidence for this
+        // command, endsStream or not -- ScenarioNetExists must check ownership before
+        // ever consulting the endsStream set, not the reverse.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "2.2.0", "id": "foreign-endsstream-test", "name": "Foreign EndsStream Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "project-created": {"name": "Project Created", "swimlaneId": "s", "aggregate": "Project"},
+                "project-closed": {"name": "Project Closed", "swimlaneId": "s", "aggregate": "Project", "endsStream": true},
+                "invoice-staged": {"name": "Invoice Staged", "swimlaneId": "s", "aggregate": "Invoice"}
+              },
+              "commands": {
+                "close-project": {"name": "Close Project", "aggregate": "Project"},
+                "stage-invoice": {"name": "Stage Invoice", "aggregate": "Invoice"}
+              },
+              "screens": {"scr": {"name": "Screen"}},
+              "slices": [
+                {
+                  "id": "close-project-slice", "name": "Close Project", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr", "commandId": "close-project", "eventIds": ["project-closed"],
+                  "scenarios": [{
+                    "id": "close-scenario", "name": "Close an existing project", "kind": "stateChange",
+                    "given": [{"eventId": "project-created"}], "when": {"commandId": "close-project"},
+                    "then": {"events": [{"eventId": "project-closed"}]}
+                  }]
+                },
+                {
+                  "id": "stage-invoice-slice", "name": "Stage Invoice", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr", "commandId": "stage-invoice", "eventIds": ["invoice-staged"],
+                  "scenarios": [{
+                    "id": "stage-after-project-closed", "name": "Stage after the project closed", "kind": "stateChange",
+                    "given": [{"eventId": "project-closed"}],
+                    "when": {"commandId": "stage-invoice"}, "then": {"events": [{"eventId": "invoice-staged"}]}
+                  }]
+                }
+              ]
+            }
+            """;
+        var doc = DocumentLoader.Parse(json);
+
+        var result = DocumentMapper.Map(doc);
+
+        var command = result.Domains.Single(d => d.Aggregate == "invoice").Commands.Single();
+        Assert.True(command.Once, "a foreign-aggregate given (endsStream or not) is an ordinary cross-aggregate precondition, not update evidence");
+        Assert.False(command.RequiresExisting);
+    }
+
+    [Fact]
     public void A_dangling_reference_is_caught_before_mapping_ever_runs()
     {
         const string json = """

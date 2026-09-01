@@ -42,4 +42,19 @@ public sealed record ViewScenarioInput(
     string StreamId,
     IReadOnlyList<GivenEventInput> Given,
     string? QueryParams,
-    string ExpectedResult);
+    string ExpectedResult,
+    IReadOnlyList<ViewScopeInput> Scopes); // only entries whose param is present in QueryParams
+
+/// <summary>One active <c>readModel.scopes</c> entry for this scenario's query --
+/// resolved to the VIA read model's own generated projection, so the harness can seed
+/// its table from the same `given` events before running the scoped query. A stateView
+/// scenario's `given` is already NOT split by aggregate (see <c>BuildViewScenario</c>),
+/// so it's real fixture history for the via projection too, whichever stream it
+/// actually belongs to.</summary>
+public sealed record ViewScopeInput(
+    string Param,
+    string ViaProjectionTypeName,
+    string ViaTableName,
+    string MatchParamToColumn,
+    string SelectColumn,
+    string FilterLocalColumn);

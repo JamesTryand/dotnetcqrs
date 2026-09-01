@@ -163,4 +163,219 @@ public class ScenarioVerifierTests
         Assert.False(result.Passed);
         Assert.Contains("empty-rm", result.Detail);
     }
+
+    [Fact(Timeout = 60000)]
+    public async Task A_toggle_derivation_sets_the_field_from_which_event_fired()
+    {
+        // Finding 3's case #2 (staff-roster.ssoEnabled): the generic field-merge can
+        // only copy a literal payload key, and no event carries one named "ssoEnabled"
+        // -- the toggle derivation computes it from which EVENT TYPE fired instead.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "2.2.0", "id": "toggle-test", "name": "Toggle Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "staff-added": {"name": "Staff Added", "swimlaneId": "s", "aggregate": "Staff"},
+                "staff-sso-enabled": {"name": "Staff SSO Enabled", "swimlaneId": "s", "aggregate": "Staff"},
+                "staff-sso-disabled": {"name": "Staff SSO Disabled", "swimlaneId": "s", "aggregate": "Staff"}
+              },
+              "commands": {
+                "add-staff": {"name": "Add Staff", "aggregate": "Staff"},
+                "enable-staff-sso": {"name": "Enable Staff SSO", "aggregate": "Staff"}
+              },
+              "readModels": {
+                "staff-roster": {
+                  "name": "Staff Roster",
+                  "builtFromEventIds": ["staff-added"],
+                  "fields": [
+                    {"name": "staffId", "type": "string", "idAttribute": true},
+                    {"name": "ssoEnabled", "type": "boolean",
+                      "derivation": {"kind": "toggle", "onEventIds": ["staff-sso-enabled"], "offEventIds": ["staff-sso-disabled"], "initial": false}}
+                  ]
+                }
+              },
+              "screens": {"scr1": {"name": "Add Screen"}, "scr2": {"name": "Enable Screen"}, "scr3": {"name": "View Screen"}},
+              "slices": [
+                {
+                  "id": "add-staff-slice", "name": "Add Staff", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr1", "commandId": "add-staff", "eventIds": ["staff-added"],
+                  "scenarios": [{"id":"add-scenario","name":"Add","kind":"stateChange","given":[],"when":{"commandId":"add-staff"},"then":{"events":[{"eventId":"staff-added"}]}}]
+                },
+                {
+                  "id": "enable-sso-slice", "name": "Enable SSO", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr2", "commandId": "enable-staff-sso", "eventIds": ["staff-sso-enabled"],
+                  "scenarios": [{"id":"enable-scenario","name":"Enable","kind":"stateChange","given":[{"eventId":"staff-added"}],"when":{"commandId":"enable-staff-sso"},"then":{"events":[{"eventId":"staff-sso-enabled"}]}}]
+                },
+                {
+                  "id": "view-roster-slice", "name": "View Roster", "pattern": "stateView",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr3", "readModelId": "staff-roster",
+                  "scenarios": [{
+                    "id": "view-after-enable", "name": "SSO shows enabled", "kind": "stateView",
+                    "given": [{"eventId": "staff-added"}, {"eventId": "staff-sso-enabled"}],
+                    "when": {"readModelId": "staff-roster"},
+                    "then": {"result": {"ssoEnabled": true}}
+                  }]
+                }
+              ]
+            }
+            """;
+        var doc = DocumentLoader.Parse(json);
+        var mapped = DocumentMapper.Map(doc);
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+
+        var view = results.Single(r => r.ScenarioId == "view-after-enable");
+        Assert.True(view.Passed, view.Detail);
+    }
+
+    [Fact(Timeout = 60000)]
+    public async Task A_count_derivation_rolls_up_across_streams()
+    {
+        // Finding 3's case #3 (projects.staffCount): the counted events
+        // (staff-assigned-to-project) live on the ASSIGNMENT stream, not the project's
+        // own -- the generic one-row-per-stream projection can't key on ev.AggregateId
+        // for them at all. The count derivation keys on the event's own payload
+        // (rowKeyField, defaulted here to "projectId") instead.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "2.2.0", "id": "count-test", "name": "Count Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "project-created": {"name": "Project Created", "swimlaneId": "s", "aggregate": "Project",
+                  "fields": [{"name": "projectId", "type": "string", "idAttribute": true}]},
+                "staff-assigned-to-project": {"name": "Staff Assigned To Project", "swimlaneId": "s", "aggregate": "ProjectStaffAssignment",
+                  "fields": [{"name": "projectId", "type": "string"}]}
+              },
+              "commands": {
+                "create-project": {"name": "Create Project", "aggregate": "Project"},
+                "assign-staff-to-project": {"name": "Assign Staff To Project", "aggregate": "ProjectStaffAssignment"}
+              },
+              "readModels": {
+                "projects": {
+                  "name": "Projects",
+                  "builtFromEventIds": ["project-created"],
+                  "fields": [
+                    {"name": "projectId", "type": "string", "idAttribute": true},
+                    {"name": "staffCount", "type": "integer",
+                      "derivation": {"kind": "count", "incrementOnEventIds": ["staff-assigned-to-project"]}}
+                  ]
+                }
+              },
+              "screens": {"scr1": {"name": "Create Screen"}, "scr2": {"name": "Assign Screen"}, "scr3": {"name": "View Screen"}},
+              "slices": [
+                {
+                  "id": "create-project-slice", "name": "Create Project", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr1", "commandId": "create-project", "eventIds": ["project-created"],
+                  "scenarios": [{"id":"create-scenario","name":"Create","kind":"stateChange","given":[],"when":{"commandId":"create-project"},"then":{"events":[{"eventId":"project-created"}]}}]
+                },
+                {
+                  "id": "assign-staff-slice", "name": "Assign Staff", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr2", "commandId": "assign-staff-to-project", "eventIds": ["staff-assigned-to-project"],
+                  "scenarios": [{"id":"assign-scenario","name":"Assign","kind":"stateChange","given":[],"when":{"commandId":"assign-staff-to-project"},"then":{"events":[{"eventId":"staff-assigned-to-project"}]}}]
+                },
+                {
+                  "id": "view-projects-slice", "name": "View Projects", "pattern": "stateView",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr3", "readModelId": "projects",
+                  "scenarios": [{
+                    "id": "view-after-assign", "name": "Staff count reflects the assignment", "kind": "stateView",
+                    "given": [
+                      {"eventId": "project-created", "data": {"projectId": "p1"}},
+                      {"eventId": "staff-assigned-to-project", "data": {"projectId": "p1"}}
+                    ],
+                    "when": {"readModelId": "projects"},
+                    "then": {"result": {"staffCount": 1}}
+                  }]
+                }
+              ]
+            }
+            """;
+        var doc = DocumentLoader.Parse(json);
+        var mapped = DocumentMapper.Map(doc);
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+
+        var view = results.Single(r => r.ScenarioId == "view-after-assign");
+        Assert.True(view.Passed, view.Detail);
+    }
+
+    [Fact(Timeout = 60000)]
+    public async Task A_count_derivation_honours_an_explicit_rowKeyField_that_differs_from_the_read_models_own_key()
+    {
+        // Regression for a bug found in review: the counted event's payload here names
+        // the target project "forProjectId", NOT "projectId" (the "projects" read
+        // model's own idAttribute/key column) -- exactly the schema's documented
+        // "explicit override for when they differ" case. EmitRollup must still filter
+        // the UPDATE on the read model's own key column (project_id), extracting the
+        // VALUE via rowKeyField ("forProjectId") -- not generate a WHERE clause against
+        // a for_project_id column, which the projects table never has.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "2.2.0", "id": "count-rowkey-test", "name": "Count RowKey Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "project-created": {"name": "Project Created", "swimlaneId": "s", "aggregate": "Project",
+                  "fields": [{"name": "projectId", "type": "string", "idAttribute": true}]},
+                "staff-assigned-to-project": {"name": "Staff Assigned To Project", "swimlaneId": "s", "aggregate": "ProjectStaffAssignment",
+                  "fields": [{"name": "forProjectId", "type": "string"}]}
+              },
+              "commands": {
+                "create-project": {"name": "Create Project", "aggregate": "Project"},
+                "assign-staff-to-project": {"name": "Assign Staff To Project", "aggregate": "ProjectStaffAssignment"}
+              },
+              "readModels": {
+                "projects": {
+                  "name": "Projects",
+                  "builtFromEventIds": ["project-created"],
+                  "fields": [
+                    {"name": "projectId", "type": "string", "idAttribute": true},
+                    {"name": "staffCount", "type": "integer",
+                      "derivation": {"kind": "count", "incrementOnEventIds": ["staff-assigned-to-project"], "rowKeyField": "forProjectId"}}
+                  ]
+                }
+              },
+              "screens": {"scr1": {"name": "Create Screen"}, "scr2": {"name": "Assign Screen"}, "scr3": {"name": "View Screen"}},
+              "slices": [
+                {
+                  "id": "create-project-slice", "name": "Create Project", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr1", "commandId": "create-project", "eventIds": ["project-created"],
+                  "scenarios": [{"id":"create-scenario","name":"Create","kind":"stateChange","given":[],"when":{"commandId":"create-project"},"then":{"events":[{"eventId":"project-created"}]}}]
+                },
+                {
+                  "id": "assign-staff-slice", "name": "Assign Staff", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr2", "commandId": "assign-staff-to-project", "eventIds": ["staff-assigned-to-project"],
+                  "scenarios": [{"id":"assign-scenario","name":"Assign","kind":"stateChange","given":[],"when":{"commandId":"assign-staff-to-project"},"then":{"events":[{"eventId":"staff-assigned-to-project"}]}}]
+                },
+                {
+                  "id": "view-projects-slice", "name": "View Projects", "pattern": "stateView",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr3", "readModelId": "projects",
+                  "scenarios": [{
+                    "id": "view-after-assign", "name": "Staff count reflects the assignment", "kind": "stateView",
+                    "given": [
+                      {"eventId": "project-created", "data": {"projectId": "p1"}},
+                      {"eventId": "staff-assigned-to-project", "data": {"forProjectId": "p1"}}
+                    ],
+                    "when": {"readModelId": "projects"},
+                    "then": {"result": {"staffCount": 1}}
+                  }]
+                }
+              ]
+            }
+            """;
+        var doc = DocumentLoader.Parse(json);
+        var mapped = DocumentMapper.Map(doc);
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+
+        var view = results.Single(r => r.ScenarioId == "view-after-assign");
+        Assert.True(view.Passed, view.Detail);
+    }
 }

@@ -10,4 +10,5 @@ public sealed record Field(
     string? Cardinality,
     bool? IdAttribute,
     bool? Pii,
-    IReadOnlyList<Field>? Subfields);
+    IReadOnlyList<Field>? Subfields,
+    FieldDerivation? Derivation);

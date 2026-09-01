@@ -7,7 +7,14 @@ namespace DotnetCqrs.Codegen.Generation;
 /// ports pocketcqrs's <c>projectionGo</c>'s generic field-merge approach (not a
 /// per-event-type-specific mapping, since the domain model doesn't record which event
 /// sets which field): an incoming event's JSON payload is walked property by property,
-/// and whichever of the read model's own columns happen to be present are written.
+/// and whichever of the read model's own columns happen to be present are written. A
+/// field with a <see cref="Domain.Derivation"/> is the one exception: it is computed
+/// from which EVENT TYPE fired (a toggle's literal 1/0, a count/sum's running total)
+/// rather than copied from the payload, and a count/sum field is additionally keyed by
+/// the firing event's OWN payload (<see cref="Domain.CountDerivation.RowKeyField"/>/
+/// <see cref="Domain.SumDerivation.RowKeyField"/>) instead of <c>ev.AggregateId</c> --
+/// those events live on a different stream by construction, which is the entire reason
+/// a roll-up needs declaring at all (see eventmodelschema's <c>field.derivation</c>).
 /// Adapted to dotnetcqrs's actual read-model shape (an <see cref="DotnetCqrs.ReadModels.IReadModelStore"/>:
 /// a provider-neutral <see cref="System.Data.Common.DbConnection"/> plus a write-guard
 /// bypass scope) rather than pocketcqrs's PocketBase records — the same shape
@@ -18,8 +25,17 @@ internal static class ProjectionGenerator
     public static GeneratedFile Generate(Domain.Domain domain, Domain.ReadModel readModel)
     {
         var on = readModel.On.Count > 0 ? readModel.On : domain.Events();
+        // SeedOn is only ever narrower than On when a count/sum derivation adds
+        // foreign-stream events to On without also making them seed-eligible (see
+        // Domain.ReadModel.SeedOn's own doc comment) -- DocumentMapper is the only
+        // place that builds a ReadModel, and it always keeps them equal otherwise, so
+        // pre-existing (derivation-free) generated code is byte-for-byte unaffected.
+        var seedOn = readModel.SeedOn;
         var keyColumn = ToSnakeCase(readModel.Key);
-        var columns = readModel.Fields.Where(f => f.Name != readModel.Key).ToList();
+        var allColumns = readModel.Fields.Where(f => f.Name != readModel.Key).ToList();
+        var plainColumns = allColumns.Where(f => f.Derivation is null).ToList();
+        var toggleColumns = allColumns.Where(f => f.Derivation is Domain.ToggleDerivation).ToList();
+        var rollupColumns = allColumns.Where(f => f.Derivation is Domain.CountDerivation or Domain.SumDerivation).ToList();
         var typeName = GenerationSupport.ExportName(readModel.Collection) + "Projection";
 
         var b = new StringBuilder();
@@ -43,12 +59,28 @@ internal static class ProjectionGenerator
         b.AppendLine("        await using var command = store.Connection.CreateCommand();");
         b.AppendLine("        command.CommandText = \"\"\"");
         b.AppendLine($"            CREATE TABLE IF NOT EXISTS {readModel.Collection} (");
-        b.AppendLine($"                {keyColumn} TEXT PRIMARY KEY" + (columns.Count > 0 ? "," : ""));
-        for (var i = 0; i < columns.Count; i++)
+        b.AppendLine($"                {keyColumn} TEXT PRIMARY KEY" + (allColumns.Count > 0 ? "," : ""));
+        for (var i = 0; i < allColumns.Count; i++)
         {
-            var field = columns[i];
-            var comma = i < columns.Count - 1 ? "," : "";
-            b.AppendLine($"                {ToSnakeCase(field.Name)} {GenerationSupport.SqliteType(field.Type)}{comma}");
+            var field = allColumns[i];
+            var comma = i < allColumns.Count - 1 ? "," : "";
+            var sqlType = field.Derivation switch
+            {
+                Domain.CountDerivation => "INTEGER",
+                Domain.SumDerivation => "REAL",
+                _ => GenerationSupport.SqliteType(field.Type),
+            };
+            // A count/sum column is arithmetic (col = col +/- n) from the moment its
+            // row exists, and SQL arithmetic against NULL yields NULL forever --
+            // without a real starting value the very first increment would silently
+            // vanish. A toggle's own declared `initial` is the same idea for 0/1.
+            var defaultClause = field.Derivation switch
+            {
+                Domain.ToggleDerivation t => $" DEFAULT {(t.Initial ? 1 : 0)}",
+                Domain.CountDerivation or Domain.SumDerivation => " DEFAULT 0",
+                _ => "",
+            };
+            b.AppendLine($"                {ToSnakeCase(field.Name)} {sqlType}{defaultClause}{comma}");
         }
         b.AppendLine("            )");
         b.AppendLine("            \"\"\";");
@@ -60,22 +92,73 @@ internal static class ProjectionGenerator
         // String literals, not the aggregate's own event constants: On may
         // legitimately name another aggregate's events entirely (read models are
         // cross-cutting), which this package's decider would not have a constant for.
-        b.AppendLine($"        if (ev.Type is not ({string.Join(" or ", on.Select(n => $"\"{n}\""))})) return;");
+        b.AppendLine($"        if (ev.Type is not ({Disjunction(on)})) return;");
         b.AppendLine();
         b.AppendLine("        // The write-guard denies direct writes on every connection but the one that called");
         b.AppendLine("        // IReadModelStore.InstallWriteGuardAsync -- this IS that connection, but the guard");
         b.AppendLine("        // still fires unless a bypass scope is open, so this projection's own writes need one too.");
         b.AppendLine("        await using var bypass = await store.BeginBypassAsync(ct);");
-        b.AppendLine();
-        if (columns.Count > 0)
+
+        var seedIsUnconditional = seedOn.Count == on.Count;
+        if (seedIsUnconditional)
+        {
+            b.AppendLine();
+            EmitSeedBlock(b, readModel, keyColumn, plainColumns, toggleColumns);
+        }
+        else if (seedOn.Count > 0)
+        {
+            b.AppendLine();
+            b.AppendLine($"        if (ev.Type is ({Disjunction(seedOn)}))");
+            b.AppendLine("        {");
+            EmitSeedBlock(b, readModel, keyColumn, plainColumns, toggleColumns);
+            b.AppendLine("        }");
+        }
+        // seedOn.Count == 0: every reacted-to event is a foreign-stream roll-up driver
+        // (or a count/sum-only read model, flagged in DocumentMapper's own mapping
+        // report) -- nothing here seeds a row by aggregate id at all.
+
+        foreach (var field in rollupColumns)
+        {
+            var column = ToSnakeCase(field.Name);
+            switch (field.Derivation)
+            {
+                case Domain.CountDerivation count:
+                    if (count.IncrementOnEvents.Count > 0)
+                        EmitRollup(b, readModel, keyColumn, column, count.RowKeyField, count.IncrementOnEvents, $"{column} + 1");
+                    if (count.DecrementOnEvents.Count > 0)
+                        EmitRollup(b, readModel, keyColumn, column, count.RowKeyField, count.DecrementOnEvents, $"{column} - 1");
+                    break;
+                case Domain.SumDerivation sum:
+                    if (sum.AddOnEvents.Count > 0)
+                        EmitRollup(b, readModel, keyColumn, column, sum.RowKeyField, sum.AddOnEvents, $"{column} + @amount", sum.AmountField);
+                    if (sum.SubtractOnEvents.Count > 0)
+                        EmitRollup(b, readModel, keyColumn, column, sum.RowKeyField, sum.SubtractOnEvents, $"{column} - @amount", sum.AmountField);
+                    break;
+            }
+        }
+
+        b.AppendLine("    }");
+        b.AppendLine("}");
+
+        return new GeneratedFile($"{typeName}.cs", b.ToString());
+    }
+
+    /// <summary>Seeds/keeps the row for an OWN-stream event (<c>ev.AggregateId</c> is a
+    /// valid key for it) and applies every plain-copy and toggle column -- exactly the
+    /// generic field-merge this generator always did, before any derivation existed.</summary>
+    private static void EmitSeedBlock(StringBuilder b, Domain.ReadModel readModel, string keyColumn,
+        IReadOnlyList<Domain.Field> plainColumns, IReadOnlyList<Domain.Field> toggleColumns)
+    {
+        if (plainColumns.Count > 0)
         {
             // only declared when there's a column to read it into -- a read model with
-            // no fields beyond its key (columns.Count == 0) has nothing to deserialize
-            // ev.Data for, and an unused local would be a compiler warning in every
-            // file generated for a key-only read model.
+            // no plain fields (columns.Count == 0) has nothing to deserialize ev.Data
+            // for, and an unused local would be a compiler warning in every file
+            // generated for a key-only/toggle-only read model.
             b.AppendLine("        var data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(ev.Data) ?? [];");
             b.AppendLine();
         }
+
         b.AppendLine("        await using (var insert = store.Connection.CreateCommand())");
         b.AppendLine("        {");
         b.AppendLine("            insert.CommandText = \"\"\"");
@@ -86,34 +169,76 @@ internal static class ProjectionGenerator
         b.AppendLine("            await insert.ExecuteNonQueryAsync(ct);");
         b.AppendLine("        }");
 
-        if (columns.Count > 0)
+        if (plainColumns.Count == 0 && toggleColumns.Count == 0) return;
+
+        b.AppendLine();
+        b.AppendLine("        var setClauses = new List<string>();");
+        b.AppendLine("        await using var update = store.Connection.CreateCommand();");
+        b.AppendLine("        update.AddParam(\"@id\", ev.AggregateId);");
+        foreach (var field in plainColumns)
         {
-            b.AppendLine();
-            b.AppendLine("        var setClauses = new List<string>();");
-            b.AppendLine("        await using var update = store.Connection.CreateCommand();");
-            b.AppendLine("        update.AddParam(\"@id\", ev.AggregateId);");
-            foreach (var field in columns)
-            {
-                var column = ToSnakeCase(field.Name);
-                var valueVar = field.Name + "Value";
-                b.AppendLine($"        if (data.TryGetValue(\"{field.Name}\", out var {valueVar}))");
-                b.AppendLine("        {");
-                b.AppendLine($"            setClauses.Add(\"{column} = @{field.Name}\");");
-                b.AppendLine($"            update.AddParam(\"@{field.Name}\", {JsonElementAccessor(field.Type, valueVar)});");
-                b.AppendLine("        }");
-            }
-            b.AppendLine("        if (setClauses.Count > 0)");
+            var column = ToSnakeCase(field.Name);
+            var valueVar = field.Name + "Value";
+            b.AppendLine($"        if (data.TryGetValue(\"{field.Name}\", out var {valueVar}))");
             b.AppendLine("        {");
-            b.AppendLine("            update.CommandText = \"UPDATE " + readModel.Collection + " SET \" + string.Join(\", \", setClauses) + \" WHERE " + keyColumn + " = @id\";");
-            b.AppendLine("            await update.ExecuteNonQueryAsync(ct);");
+            b.AppendLine($"            setClauses.Add(\"{column} = @{field.Name}\");");
+            b.AppendLine($"            update.AddParam(\"@{field.Name}\", {JsonElementAccessor(field.Type, valueVar)});");
             b.AppendLine("        }");
         }
-
-        b.AppendLine("    }");
-        b.AppendLine("}");
-
-        return new GeneratedFile($"{typeName}.cs", b.ToString());
+        foreach (var field in toggleColumns)
+        {
+            var toggle = (Domain.ToggleDerivation)field.Derivation!;
+            var column = ToSnakeCase(field.Name);
+            if (toggle.OnEvents.Count > 0)
+            {
+                b.AppendLine($"        if (ev.Type is ({Disjunction(toggle.OnEvents)}))");
+                b.AppendLine($"            setClauses.Add(\"{column} = 1\");");
+            }
+            if (toggle.OffEvents.Count > 0)
+            {
+                b.AppendLine($"        if (ev.Type is ({Disjunction(toggle.OffEvents)}))");
+                b.AppendLine($"            setClauses.Add(\"{column} = 0\");");
+            }
+        }
+        b.AppendLine("        if (setClauses.Count > 0)");
+        b.AppendLine("        {");
+        b.AppendLine("            update.CommandText = \"UPDATE " + readModel.Collection + " SET \" + string.Join(\", \", setClauses) + \" WHERE " + keyColumn + " = @id\";");
+        b.AppendLine("            await update.ExecuteNonQueryAsync(ct);");
+        b.AppendLine("        }");
     }
+
+    /// <summary>Emits one guarded UPDATE for a <c>count</c>/<c>sum</c> derivation's
+    /// increment/decrement (or add/subtract) event set. <paramref name="rowKeyField"/>
+    /// names the payload field on the firing event to EXTRACT the target row's key
+    /// VALUE from -- it is not itself a column name, and may differ from this read
+    /// model's own key field (the schema's documented override case, e.g. an event
+    /// payload calling it <c>forProjectId</c> while the read model's own key is
+    /// <c>projectId</c>). The WHERE clause always filters on <paramref name="keyColumn"/>,
+    /// this read model's own physical key column, never a column derived from
+    /// <paramref name="rowKeyField"/>'s name -- these events live on a different stream
+    /// by construction (see this file's own doc comment), never <c>ev.AggregateId</c>.
+    /// Row existence is NOT this block's job -- the target row is created by its own
+    /// aggregate's normal seed path (<see cref="EmitSeedBlock"/>); an UPDATE against a
+    /// row that doesn't exist yet is simply a no-op, same as a plain-copy field's WHERE
+    /// would be.</summary>
+    private static void EmitRollup(StringBuilder b, Domain.ReadModel readModel, string keyColumn, string column,
+        string rowKeyField, IReadOnlyList<string> eventTypes, string setExpression, string? amountField = null)
+    {
+        b.AppendLine();
+        b.AppendLine($"        if (ev.Type is ({Disjunction(eventTypes)}))");
+        b.AppendLine("        {");
+        b.AppendLine("            var rollupData = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(ev.Data) ?? [];");
+        b.AppendLine("            await using var rollup = store.Connection.CreateCommand();");
+        b.AppendLine($"            rollup.CommandText = \"UPDATE {readModel.Collection} SET {column} = {setExpression} WHERE {keyColumn} = @rowKey\";");
+        b.AppendLine($"            rollup.AddParam(\"@rowKey\", rollupData[\"{rowKeyField}\"].GetString());");
+        if (amountField is not null)
+            b.AppendLine($"            rollup.AddParam(\"@amount\", rollupData[\"{amountField}\"].GetDouble());");
+        b.AppendLine("            await rollup.ExecuteNonQueryAsync(ct);");
+        b.AppendLine("        }");
+    }
+
+    private static string Disjunction(IEnumerable<string> eventTypes) =>
+        string.Join(" or ", eventTypes.Select(n => $"\"{n}\""));
 
     private static string JsonElementAccessor(string domainType, string variable) => domainType switch
     {

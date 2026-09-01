@@ -140,10 +140,35 @@ public static class ScenarioVerifier
             .ToList();
         var streamId = StreamId(document, scenario.Given);
 
+        var queryParamNames = new HashSet<string>();
+        if (scenario.When.QueryParams is { ValueKind: JsonValueKind.Object } qp)
+            foreach (var prop in qp.EnumerateObject())
+                queryParamNames.Add(prop.Name);
+
+        // Only the scopes this scenario's OWN queryParams actually invoke -- an
+        // unscoped view of the same read model (the Manager's own query, say) passes
+        // none of these params and gets no semi-join, exactly as the runtime query
+        // would.
+        var scopes = new List<ViewScopeInput>();
+        foreach (var scope in info.Scopes)
+        {
+            if (!queryParamNames.Contains(scope.Param)) continue;
+            if (!index.ReadModelByCollection.TryGetValue(scope.ViaCollection, out var via))
+            {
+                results.Add(new ScenarioResult(slice.Id, scenario.Id, scenario.Name, "stateView", Passed: false, Skipped: true,
+                    $"read model \"{readModelId}\" scope on param \"{scope.Param}\" resolves to collection " +
+                    $"\"{scope.ViaCollection}\", which was not generated"));
+                return;
+            }
+            var viaProjectionTypeName = $"Generated.{GenerationSupport.ExportName(via.Aggregate)}.{GenerationSupport.ExportName(via.Collection)}Projection";
+            scopes.Add(new ViewScopeInput(scope.Param, viaProjectionTypeName, via.Collection,
+                ToSnakeCase(scope.MatchParamToField), ToSnakeCase(scope.SelectField), ToSnakeCase(scope.FilterLocalField)));
+        }
+
         viewScenarios.Add(new ViewScenarioInput(
             slice.Id, scenario.Id, scenario.Name, projectionTypeName, info.Aggregate,
             info.Collection, info.KeyColumn, streamId, given,
-            scenario.When.QueryParams?.GetRawText(), scenario.Then.Result.GetRawText()));
+            scenario.When.QueryParams?.GetRawText(), scenario.Then.Result.GetRawText(), scopes));
     }
 
     private static (List<GivenEventInput> Own, List<GivenEventInput> Foreign) SplitGiven(
@@ -266,7 +291,8 @@ public static class ScenarioVerifier
         public required Dictionary<string, string> CommandName; // schema command id -> generated command name
         public required Dictionary<string, string> EventAggregate; // schema event id -> aggregate
         public required Dictionary<string, string> EventType; // schema event id -> generated event type
-        public required Dictionary<string, (string Aggregate, string Collection, string KeyColumn)> ReadModel; // schema read model id -> info
+        public required Dictionary<string, (string Aggregate, string Collection, string KeyColumn, IReadOnlyList<Domain.ReadModelScope> Scopes)> ReadModel; // schema read model id -> info
+        public required Dictionary<string, (string Aggregate, string Collection)> ReadModelByCollection; // physical collection name -> info, for resolving a scope's `via`
 
         public static GeneratedIndex Build(Document document, IReadOnlyList<Domain.Domain> domains)
         {
@@ -308,7 +334,8 @@ public static class ScenarioVerifier
                 }
             }
 
-            var readModel = new Dictionary<string, (string, string, string)>();
+            var readModel = new Dictionary<string, (string, string, string, IReadOnlyList<Domain.ReadModelScope>)>();
+            var readModelByCollection = new Dictionary<string, (string, string)>();
             if (document.ReadModels is not null)
             {
                 foreach (var (id, rm) in document.ReadModels)
@@ -318,7 +345,8 @@ public static class ScenarioVerifier
                     {
                         var match = d.ReadModels.FirstOrDefault(r => r.Collection == collection);
                         if (match is null) continue;
-                        readModel[id] = (d.Aggregate, collection, ToSnakeCase(match.Key));
+                        readModel[id] = (d.Aggregate, collection, ToSnakeCase(match.Key), match.Scopes);
+                        readModelByCollection[collection] = (d.Aggregate, collection);
                         break;
                     }
                 }
@@ -331,6 +359,7 @@ public static class ScenarioVerifier
                 EventAggregate = eventAggregate,
                 EventType = eventType,
                 ReadModel = readModel,
+                ReadModelByCollection = readModelByCollection,
             };
         }
     }

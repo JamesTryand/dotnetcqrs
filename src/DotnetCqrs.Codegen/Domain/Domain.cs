@@ -66,13 +66,34 @@ public sealed class Event
     public required string Name { get; init; }
     public List<Field> Fields { get; } = [];
     public bool NoFields { get; init; }
+
+    /// <summary>When folded, resets the aggregate's synthesized <c>Exists</c> to
+    /// <c>false</c> instead of <c>true</c> — the terminal event of a lifecycle that can
+    /// legitimately begin again (unassign before a re-assign). Generator-synthesized
+    /// state, not a schema concept of its own; see <c>eventmodelschema</c>'s
+    /// <c>event.endsStream</c>.</summary>
+    public bool EndsStream { get; init; }
 }
 
 /// <summary>One payload/column field. <c>Type</c> is one of a minimal, target-agnostic
 /// set — <c>text</c>/<c>number</c>/<c>bool</c>/<c>date</c>/<c>json</c> — that either a
 /// C# or a JS code generator maps onto its own concrete types (see
-/// <see cref="FieldTypeFolding"/>).</summary>
-public sealed record Field(string Name, string Type);
+/// <see cref="FieldTypeFolding"/>). <c>Derivation</c> is only ever set on a read-model
+/// field; a command/event field carries none.</summary>
+public sealed record Field(string Name, string Type, Derivation? Derivation = null);
+
+/// <summary>How a read-model field is computed as a fold over named (already
+/// generator-resolved) event type names, instead of copied from a same-named payload
+/// key — the domain-level counterpart of <see cref="Model.FieldDerivation"/>, with
+/// every id already resolved to the generated event type name and every row-key default
+/// already applied.</summary>
+public abstract record Derivation;
+
+public sealed record ToggleDerivation(IReadOnlyList<string> OnEvents, IReadOnlyList<string> OffEvents, bool Initial) : Derivation;
+
+public sealed record CountDerivation(IReadOnlyList<string> IncrementOnEvents, IReadOnlyList<string> DecrementOnEvents, string RowKeyField) : Derivation;
+
+public sealed record SumDerivation(IReadOnlyList<string> AddOnEvents, IReadOnlyList<string> SubtractOnEvents, string AmountField, string RowKeyField) : Derivation;
 
 /// <summary>A projection's target read-model table.</summary>
 public sealed class ReadModel
@@ -87,7 +108,30 @@ public sealed class ReadModel
 
     /// <summary>Event names that update the row.</summary>
     public List<string> On { get; } = [];
+
+    /// <summary>The subset of <see cref="On"/> whose OWN stream is this row — i.e.
+    /// <c>ev.AggregateId</c> is a valid key for it, so these (and only these) get the
+    /// generic row-seed insert and the plain-column/toggle copy. A <c>count</c>/<c>sum</c>
+    /// derivation's events are in <see cref="On"/> (so the projection reacts to them at
+    /// all) but never here — they live on a different stream, and are keyed by their
+    /// own payload's <c>rowKeyField</c> instead (see <see cref="CountDerivation"/>/
+    /// <see cref="SumDerivation"/>). Equal to <see cref="On"/> whenever a read model
+    /// declares no derivation, which is every read model before this feature and
+    /// exactly reproduces the generated code it already got.</summary>
+    public List<string> SeedOn { get; } = [];
+
+    /// <summary>Declared semi-joins for a query param that names no column of this read
+    /// model — see <see cref="ReadModelScope"/>.</summary>
+    public List<ReadModelScope> Scopes { get; } = [];
 }
+
+/// <summary>One <c>readModel.scopes</c> entry, fully resolved: <c>ViaCollection</c> is
+/// already the target physical collection/table name (resolved once, here, from the
+/// document's own <c>via.readModelId</c> — generation never re-consults the document),
+/// and the field names are the via-model's and this model's own, unresolved beyond
+/// <see cref="Domain.Names.SanitizeName"/> since the generator snake-cases columns at
+/// its own use site the same way it already does for every other field.</summary>
+public sealed record ReadModelScope(string Param, string ViaCollection, string MatchParamToField, string SelectField, string FilterLocalField);
 
 /// <summary>Maps events to a command on another aggregate — the automation shape.</summary>
 public sealed class Reactor
