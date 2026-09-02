@@ -425,4 +425,94 @@ public class DocumentMapperTests
         Assert.Contains(ex.Report.Errors, e =>
             e.Contains("everLoggedOvertime") && e.Contains("toggle") && e.Contains("not supported"));
     }
+
+    // Group C item 3/4's real shape (project/timesheets's time-entries read model,
+    // export-pm-slice/export-manager-slice/export-staff-slice): a taskDate-scoped
+    // dateRange filter (schema 2.4.0), sibling to readModel.scopes.
+    private const string DateRangeFilterDocumentJson = """
+        {
+          "eventModelingSchemaVersion": "2.4.0", "id": "daterange-test", "name": "DateRange Test",
+          "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+          "events": {
+            "time-entry-logged": {"name": "Time Entry Logged", "swimlaneId": "s", "aggregate": "TimeEntry",
+              "fields": [
+                {"name": "entryId", "type": "string", "idAttribute": true},
+                {"name": "taskDate", "type": "date"},
+                {"name": "hours", "type": "double"}
+              ]}
+          },
+          "commands": {
+            "log-time-entry": {"name": "Log Time Entry", "aggregate": "TimeEntry"}
+          },
+          "readModels": {
+            "time-entries": {
+              "name": "Time Entries",
+              "builtFromEventIds": ["time-entry-logged"],
+              "fields": [
+                {"name": "entryId", "type": "string", "idAttribute": true},
+                {"name": "taskDate", "type": "date"},
+                {"name": "hours", "type": "double"}
+              ],
+              "filters": [
+                {"param": "dateRange", "field": "taskDate", "kind": "dateRange", "presets": ["last7Days", "lastCalendarMonth", "custom"]}
+              ]
+            }
+          },
+          "screens": {"scr1": {"name": "Log Screen"}, "scr2": {"name": "View Screen"}},
+          "slices": [
+            {
+              "id": "log-time-entry-slice", "name": "Log Time Entry", "pattern": "stateChange",
+              "swimlaneId": "s", "status": "created",
+              "screenId": "scr1", "commandId": "log-time-entry", "eventIds": ["time-entry-logged"],
+              "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"log-time-entry"},"then":{"events":[{"eventId":"time-entry-logged"}]}}]
+            },
+            {
+              "id": "view-time-entries-slice", "name": "View Time Entries", "pattern": "stateView",
+              "swimlaneId": "s", "status": "created",
+              "screenId": "scr2", "readModelId": "time-entries",
+              "scenarios": []
+            }
+          ]
+        }
+        """;
+
+    [Fact]
+    public void A_dateRange_filter_maps_to_a_ReadModelFilter_alongside_the_field_it_names()
+    {
+        var doc = DocumentLoader.Parse(DateRangeFilterDocumentJson);
+
+        var result = DocumentMapper.Map(doc);
+
+        var readModel = result.Domains.Single(d => d.Aggregate == "timeEntry").ReadModels.Single();
+        var filter = Assert.Single(readModel.Filters);
+        Assert.Equal("dateRange", filter.Param);
+        Assert.Equal("taskDate", filter.Field);
+        Assert.Equal("dateRange", filter.Kind);
+        Assert.Equal(["last7Days", "lastCalendarMonth", "custom"], filter.Presets);
+    }
+
+    [Fact]
+    public void A_dateRange_filter_missing_presets_is_rejected_with_a_clear_reason()
+    {
+        // The schema's own allOf/if/then already requires `presets` whenever `kind` is
+        // "dateRange" and closes both to fixed enums, so no real (schema-validated)
+        // document can reach DocumentMapper with this shape -- exactly why this test
+        // mutates an already-parsed, already-valid Document directly in C# instead of
+        // going through DocumentLoader a second time (which would just reject the JSON
+        // itself, proving JsonSchema.Net works rather than DocumentMapper's own guard).
+        // Mirrors the toggle-subfield rejection test above: a defensive mapper-level
+        // check for a shape the schema also happens to forbid.
+        var doc = DocumentLoader.Parse(DateRangeFilterDocumentJson);
+        var readModel = doc.ReadModels!["time-entries"];
+        var malformedFilter = readModel.Filters!.Single() with { Presets = null };
+        var mutatedReadModels = new Dictionary<string, DotnetCqrs.Codegen.Model.ReadModelDef>(doc.ReadModels!)
+        {
+            ["time-entries"] = readModel with { Filters = [malformedFilter] },
+        };
+        var mutatedDoc = doc with { ReadModels = mutatedReadModels };
+
+        var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(mutatedDoc));
+        Assert.Contains(ex.Report.Errors, e =>
+            e.Contains("dateRange") && e.Contains("presets"));
+    }
 }

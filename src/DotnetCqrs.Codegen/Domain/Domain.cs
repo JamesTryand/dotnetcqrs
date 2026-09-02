@@ -135,6 +135,10 @@ public sealed class ReadModel
     /// <summary>Declared semi-joins for a query param that names no column of this read
     /// model — see <see cref="ReadModelScope"/>.</summary>
     public List<ReadModelScope> Scopes { get; } = [];
+
+    /// <summary>Declared single-field WHERE-range filters (schema 2.4.0) — see
+    /// <see cref="ReadModelFilter"/>.</summary>
+    public List<ReadModelFilter> Filters { get; } = [];
 }
 
 /// <summary>One <c>readModel.scopes</c> entry, fully resolved: <c>ViaCollection</c> is
@@ -144,6 +148,17 @@ public sealed class ReadModel
 /// <see cref="Domain.Names.SanitizeName"/> since the generator snake-cases columns at
 /// its own use site the same way it already does for every other field.</summary>
 public sealed record ReadModelScope(string Param, string ViaCollection, string MatchParamToField, string SelectField, string FilterLocalField);
+
+/// <summary>One <c>readModel.filters</c> entry, fully resolved (schema 2.4.0): a
+/// single-field WHERE-range filter with named presets, sibling to
+/// <see cref="ReadModelScope"/>'s semi-join. <c>Kind</c> is currently always
+/// <c>"dateRange"</c> — the schema's own <c>filterKind</c> enum has one member so far —
+/// carried through rather than hard-coded so a generator/harness consulting this record
+/// fails loudly on an unrecognized future kind instead of silently mis-filtering.
+/// <c>Presets</c> names which of <c>last7Days</c>/<c>lastCalendarMonth</c>/<c>custom</c>
+/// this param accepts at query time; resolving one to concrete bounds is
+/// <see cref="Generation.DateRangeResolver"/>'s job, not this record's.</summary>
+public sealed record ReadModelFilter(string Param, string Field, string Kind, IReadOnlyList<string> Presets);
 
 /// <summary>Maps events to a command on another aggregate — the automation shape.</summary>
 public sealed class Reactor

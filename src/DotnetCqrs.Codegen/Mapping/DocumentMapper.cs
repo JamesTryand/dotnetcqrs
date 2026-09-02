@@ -620,6 +620,29 @@ public sealed class DocumentMapper
                     Names.SanitizeName(scopeDef.Via.SelectField),
                     Names.SanitizeName(scopeDef.Via.FilterLocalField)));
             }
+            foreach (var filterDef in rm.Filters ?? [])
+            {
+                // The schema's own allOf/if/then already requires `presets` whenever
+                // `kind` is "dateRange" (the only kind that exists) and closes both to
+                // fixed enums -- unreachable via a real, schema-validated document. This
+                // guard exists for a Document built directly (a defensive unit test, or
+                // any future non-JSON front-end), the same belt-and-suspenders posture
+                // ResolveRowKeyField already takes for count/sum's own optional field.
+                if (filterDef.Kind != "dateRange")
+                {
+                    _report.Error($"read model \"{id}\" filter on param \"{filterDef.Param}\" declares unsupported kind " +
+                        $"\"{filterDef.Kind}\" -- only \"dateRange\" is supported");
+                    continue;
+                }
+                if (filterDef.Presets is not { Count: > 0 })
+                {
+                    _report.Error($"read model \"{id}\" filter on param \"{filterDef.Param}\" (kind dateRange) declares no " +
+                        "presets -- name at least one of last7Days/lastCalendarMonth/custom");
+                    continue;
+                }
+                readModel.Filters.Add(new Domain.ReadModelFilter(
+                    filterDef.Param, Names.SanitizeName(filterDef.Field), filterDef.Kind, filterDef.Presets));
+            }
             GetOrCreateDomain(chosenOwner).ReadModels.Add(readModel);
         }
     }

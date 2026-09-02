@@ -470,4 +470,80 @@ public class ScenarioVerifierTests
         var view = results.Single(r => r.ScenarioId == "view-after-log");
         Assert.True(view.Passed, view.Detail);
     }
+
+    [Fact(Timeout = 60000)]
+    public async Task A_dateRange_filter_narrows_a_view_query_to_the_declared_bounds()
+    {
+        // Group C item 4's grounding finding: before this, ANY object-shaped
+        // queryParams value (exactly the `{kind, from, to}` shape a real dateRange
+        // param uses) was silently skipped by the harness -- this is the regression
+        // test that it now becomes a real predicate instead. "custom" is used (not
+        // last7Days/lastCalendarMonth) so the scenario's own expected bounds don't
+        // depend on when the test happens to run.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "2.4.0", "id": "daterange-verify-test", "name": "DateRange Verify Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "time-entry-logged": {"name": "Time Entry Logged", "swimlaneId": "s", "aggregate": "TimeEntry",
+                  "fields": [
+                    {"name": "entryId", "type": "string", "idAttribute": true},
+                    {"name": "taskDate", "type": "date"},
+                    {"name": "hours", "type": "double"}
+                  ]}
+              },
+              "commands": {
+                "log-time-entry": {"name": "Log Time Entry", "aggregate": "TimeEntry"}
+              },
+              "readModels": {
+                "time-entries": {
+                  "name": "Time Entries",
+                  "builtFromEventIds": ["time-entry-logged"],
+                  "fields": [
+                    {"name": "entryId", "type": "string", "idAttribute": true},
+                    {"name": "taskDate", "type": "date"},
+                    {"name": "hours", "type": "double"}
+                  ],
+                  "filters": [
+                    {"param": "dateRange", "field": "taskDate", "kind": "dateRange", "presets": ["last7Days", "lastCalendarMonth", "custom"]}
+                  ]
+                }
+              },
+              "screens": {"scr1": {"name": "Log Screen"}, "scr2": {"name": "View Screen"}},
+              "slices": [
+                {
+                  "id": "log-time-entry-slice", "name": "Log Time Entry", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr1", "commandId": "log-time-entry", "eventIds": ["time-entry-logged"],
+                  "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"log-time-entry"},"then":{"events":[{"eventId":"time-entry-logged"}]}}]
+                },
+                {
+                  "id": "view-time-entries-slice", "name": "View Time Entries", "pattern": "stateView",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr2", "readModelId": "time-entries",
+                  "scenarios": [{
+                    "id": "view-within-custom-range", "name": "Only entries inside the custom date range are returned", "kind": "stateView",
+                    "given": [
+                      {"eventId": "time-entry-logged", "data": {"entryId": "e1", "taskDate": "2026-08-15", "hours": 4}},
+                      {"eventId": "time-entry-logged", "data": {"entryId": "e2", "taskDate": "2026-08-20", "hours": 3}},
+                      {"eventId": "time-entry-logged", "data": {"entryId": "e3", "taskDate": "2026-09-01", "hours": 2}}
+                    ],
+                    "when": {"readModelId": "time-entries", "queryParams": {"dateRange": {"kind": "custom", "from": "2026-08-01", "to": "2026-08-31"}}},
+                    "then": {"result": {"entries": [
+                      {"entryId": "e1", "taskDate": "2026-08-15", "hours": 4},
+                      {"entryId": "e2", "taskDate": "2026-08-20", "hours": 3}
+                    ]}}
+                  }]
+                }
+              ]
+            }
+            """;
+        var doc = DocumentLoader.Parse(json);
+        var mapped = DocumentMapper.Map(doc);
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+
+        var view = results.Single(r => r.ScenarioId == "view-within-custom-range");
+        Assert.True(view.Passed, view.Detail);
+    }
 }

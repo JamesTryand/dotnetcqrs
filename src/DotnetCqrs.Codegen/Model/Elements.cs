@@ -10,7 +10,7 @@ public sealed record EventDef(string Name, string SwimlaneId, string? Descriptio
 
 public sealed record CommandDef(string Name, string? Description, string? Reason, string? Aggregate, IReadOnlyList<Field>? Fields);
 
-public sealed record ReadModelDef(string Name, string? Description, string? Question, IReadOnlyList<string>? BuiltFromEventIds, IReadOnlyList<Field>? Fields, IReadOnlyList<ReadModelScopeDef>? Scopes);
+public sealed record ReadModelDef(string Name, string? Description, string? Question, IReadOnlyList<string>? BuiltFromEventIds, IReadOnlyList<Field>? Fields, IReadOnlyList<ReadModelScopeDef>? Scopes, IReadOnlyList<ReadModelFilterDef>? Filters);
 
 /// <summary>One <c>readModel.scopes</c> entry: a query param that resolves through
 /// another read model rather than naming one of this model's own columns — the
@@ -19,6 +19,17 @@ public sealed record ReadModelDef(string Name, string? Description, string? Ques
 public sealed record ReadModelScopeDef(string Param, ReadModelScopeVia Via);
 
 public sealed record ReadModelScopeVia(string ReadModelId, string MatchParamTo, string SelectField, string FilterLocalField);
+
+/// <summary>One <c>readModel.filters</c> entry (schema 2.4.0): a query param naming a
+/// single-field WHERE-range filter with named presets (e.g. <c>dateRange</c> over
+/// <c>taskDate</c>, presets <c>last7Days</c>/<c>lastCalendarMonth</c>/<c>custom</c>).
+/// <c>Presets</c> is nullable/optional here even though the schema's own
+/// <c>allOf</c>/<c>if</c>/<c>then</c> requires it whenever <c>kind</c> is
+/// <c>"dateRange"</c> (the only kind that exists) — real documents can never reach
+/// <see cref="Mapping.DocumentMapper"/> with it missing, since JSON Schema validation
+/// already rejects that shape before mapping runs, but a <see cref="Document"/> built
+/// directly in C# (as a defensive unit test does) can, so the mapper still guards it.</summary>
+public sealed record ReadModelFilterDef(string Param, string Field, string Kind, IReadOnlyList<string>? Presets);
 
 public sealed record ScreenDef(string Name, string? Description, string? ActorLaneId);
 

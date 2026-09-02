@@ -53,7 +53,8 @@ public sealed record ViewScenarioInput(
     IReadOnlyList<ViewGivenEventInput> Given,
     string? QueryParams,
     string ExpectedResult,
-    IReadOnlyList<ViewScopeInput> Scopes); // only entries whose param is present in QueryParams
+    IReadOnlyList<ViewScopeInput> Scopes, // only entries whose param is present in QueryParams
+    IReadOnlyList<ViewFilterInput> Filters); // every readModel.filters entry -- the harness only acts on one whose param is actually present in QueryParams
 
 /// <summary>One active <c>readModel.scopes</c> entry for this scenario's query --
 /// resolved to the VIA read model's own generated projection, so the harness can seed
@@ -68,3 +69,12 @@ public sealed record ViewScopeInput(
     string MatchParamToColumn,
     string SelectColumn,
     string FilterLocalColumn);
+
+/// <summary>One <c>readModel.filters</c> entry (schema 2.4.0), resolved to this read
+/// model's own physical column name — see <c>Domain.ReadModelFilter</c>. Passed
+/// whole rather than pre-filtered by whether its param appears in <c>QueryParams</c>
+/// (unlike <see cref="ViewScopeInput"/>, which needs another read model to have been
+/// generated at all): a filter references no other element, so there's no failure mode
+/// to check ahead of time, and the harness's own <c>SelectRowsAsync</c> only consults an
+/// entry whose param it actually sees.</summary>
+public sealed record ViewFilterInput(string Param, string Field, string Kind);

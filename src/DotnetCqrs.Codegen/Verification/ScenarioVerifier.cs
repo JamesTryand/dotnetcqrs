@@ -181,10 +181,14 @@ public static class ScenarioVerifier
                 scopes.ToDictionary(s => s.ViaProjectionTypeName, s => RowKey(viaIdFieldNames.GetValueOrDefault(s.ViaProjectionTypeName), g.Data, sharedDefault))))
             .ToList();
 
+        var filters = info.Filters
+            .Select(f => new ViewFilterInput(f.Param, ToSnakeCase(f.Field), f.Kind))
+            .ToList();
+
         viewScenarios.Add(new ViewScenarioInput(
             slice.Id, scenario.Id, scenario.Name, projectionTypeName, info.Aggregate,
             info.Collection, given,
-            scenario.When.QueryParams?.GetRawText(), scenario.Then.Result.GetRawText(), scopes));
+            scenario.When.QueryParams?.GetRawText(), scenario.Then.Result.GetRawText(), scopes, filters));
     }
 
     /// <summary>The schema field a read model itself declares <c>idAttribute: true</c>
@@ -260,6 +264,13 @@ public static class ScenarioVerifier
         Directory.CreateDirectory(scratchDir);
         try
         {
+            // DotnetCqrs.Codegen is a sibling of DotnetCqrs under the same src/
+            // directory in every environment this runs in (see HostProjectGenerator's
+            // identical derivation) -- referenced here so the harness can call
+            // DateRangeResolver.ResolveBounds directly instead of reimplementing the
+            // dateRange preset math, per that type's own doc comment.
+            var srcDir = Path.GetDirectoryName(Path.GetDirectoryName(dotnetCqrsProjectPath))!;
+            var codegenProjectPath = Path.Combine(srcDir, "DotnetCqrs.Codegen", "DotnetCqrs.Codegen.csproj");
             var csproj = $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
@@ -270,6 +281,7 @@ public static class ScenarioVerifier
                   </PropertyGroup>
                   <ItemGroup>
                     <ProjectReference Include="{dotnetCqrsProjectPath}" />
+                    <ProjectReference Include="{codegenProjectPath}" />
                   </ItemGroup>
                 </Project>
                 """;
@@ -331,7 +343,7 @@ public static class ScenarioVerifier
         public required Dictionary<string, string> CommandName; // schema command id -> generated command name
         public required Dictionary<string, string> EventAggregate; // schema event id -> aggregate
         public required Dictionary<string, string> EventType; // schema event id -> generated event type
-        public required Dictionary<string, (string Aggregate, string Collection, string KeyColumn, IReadOnlyList<Domain.ReadModelScope> Scopes)> ReadModel; // schema read model id -> info
+        public required Dictionary<string, (string Aggregate, string Collection, string KeyColumn, IReadOnlyList<Domain.ReadModelScope> Scopes, IReadOnlyList<Domain.ReadModelFilter> Filters)> ReadModel; // schema read model id -> info
         public required Dictionary<string, (string Aggregate, string Collection)> ReadModelByCollection; // physical collection name -> info, for resolving a scope's `via`
         public required Dictionary<string, string> ReadModelIdByCollection; // physical collection name -> schema read model id, for looking a via-model's own idAttribute field back up in the document
 
@@ -375,7 +387,7 @@ public static class ScenarioVerifier
                 }
             }
 
-            var readModel = new Dictionary<string, (string, string, string, IReadOnlyList<Domain.ReadModelScope>)>();
+            var readModel = new Dictionary<string, (string, string, string, IReadOnlyList<Domain.ReadModelScope>, IReadOnlyList<Domain.ReadModelFilter>)>();
             var readModelByCollection = new Dictionary<string, (string, string)>();
             var readModelIdByCollection = new Dictionary<string, string>();
             if (document.ReadModels is not null)
@@ -387,7 +399,7 @@ public static class ScenarioVerifier
                     {
                         var match = d.ReadModels.FirstOrDefault(r => r.Collection == collection);
                         if (match is null) continue;
-                        readModel[id] = (d.Aggregate, collection, ToSnakeCase(match.Key), match.Scopes);
+                        readModel[id] = (d.Aggregate, collection, ToSnakeCase(match.Key), match.Scopes, match.Filters);
                         readModelByCollection[collection] = (d.Aggregate, collection);
                         readModelIdByCollection[collection] = id;
                         break;

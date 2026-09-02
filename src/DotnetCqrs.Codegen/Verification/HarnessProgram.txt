@@ -14,6 +14,7 @@
 using System.Data.Common;
 using System.Reflection;
 using System.Text.Json;
+using DotnetCqrs.Codegen.Generation;
 using DotnetCqrs.Deciders;
 using DotnetCqrs.EventStore;
 using DotnetCqrs.Projections;
@@ -116,7 +117,7 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
             }
         }
 
-        var rows = await SelectRowsAsync(readModel.Connection, scenario.TableName, scenario.QueryParams, scenario.Scopes);
+        var rows = await SelectRowsAsync(readModel.Connection, scenario.TableName, scenario.QueryParams, scenario.Scopes, scenario.Filters);
 
         // Two `then.result` shapes are supported. A single-property object whose value
         // is a JSON array (e.g. `{"entries": [...]}`) is a NAMED-LIST result: the query
@@ -169,7 +170,7 @@ static async Task CallInitAsync(object projection)
 }
 
 static async Task<List<Dictionary<string, object?>>> SelectRowsAsync(
-    DbConnection db, string table, string? queryParamsJson, List<ViewScopeInput> scopes)
+    DbConnection db, string table, string? queryParamsJson, List<ViewScopeInput> scopes, List<ViewFilterInput> filters)
 {
     string sql;
     var parameters = new Dictionary<string, object?>();
@@ -187,11 +188,34 @@ static async Task<List<Dictionary<string, object?>>> SelectRowsAsync(
         var i = 0;
         foreach (var (key, value) in query)
         {
-            // Some queryParams (e.g. a date-range object) name filtering logic no
-            // generator emits -- there's no column or scope for them to become a SQL
-            // predicate. Skipping them (rather than erroring) still lets the ROW
-            // CONTENT comparison below report the real gap the scenario is describing,
-            // instead of a verifier crash unrelated to the domain.
+            // A param this read model actually DECLARES as a dateRange filter (schema
+            // 2.4.0) becomes a real `col >= @from AND col <= @to` predicate against
+            // Filters[i].Field -- resolving the runtime `{kind, from?, to?}` value
+            // through the SAME DateRangeResolver the real generated query route calls
+            // (see its own doc comment), so the two can't independently drift on what
+            // "last7Days" actually means.
+            var filter = filters.Find(f => f.Param == key);
+            if (filter is not null && value.ValueKind == JsonValueKind.Object)
+            {
+                var kind = value.GetProperty("kind").GetString()!;
+                var from = value.TryGetProperty("from", out var fromEl) && fromEl.ValueKind == JsonValueKind.String ? fromEl.GetString() : null;
+                var to = value.TryGetProperty("to", out var toEl) && toEl.ValueKind == JsonValueKind.String ? toEl.GetString() : null;
+                var (rangeFrom, rangeTo) = DateRangeResolver.ResolveBounds(kind, from, to, DateOnly.FromDateTime(DateTime.UtcNow));
+                var fromParam = $"@p{i++}";
+                var toParam = $"@p{i++}";
+                var column = ToSnakeCase(filter.Field);
+                clauses.Add($"{column} >= {fromParam} AND {column} <= {toParam}");
+                parameters[fromParam] = rangeFrom;
+                parameters[toParam] = rangeTo;
+                continue;
+            }
+
+            // Some queryParams (e.g. an object/array this read model declares no
+            // filter for) name filtering logic no generator emits -- there's no column
+            // or scope for them to become a SQL predicate. Skipping them (rather than
+            // erroring) still lets the ROW CONTENT comparison below report the real gap
+            // the scenario is describing, instead of a verifier crash unrelated to the
+            // domain.
             if (value.ValueKind is JsonValueKind.Object or JsonValueKind.Array) continue;
 
             var paramName = $"@p{i++}";
@@ -427,6 +451,7 @@ record CommandScenarioInput(string SliceId, string ScenarioId, string Name, stri
     string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes);
 record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,
     string TableName, List<ViewGivenEventInput> Given, string? QueryParams, string ExpectedResult,
-    List<ViewScopeInput> Scopes);
+    List<ViewScopeInput> Scopes, List<ViewFilterInput> Filters);
 record ViewScopeInput(string Param, string ViaProjectionTypeName, string ViaTableName, string MatchParamToColumn, string SelectColumn, string FilterLocalColumn);
+record ViewFilterInput(string Param, string Field, string Kind);
 record ScenarioResultDto(string SliceId, string ScenarioId, string Name, string Kind, bool Passed, bool Skipped, string Detail);
