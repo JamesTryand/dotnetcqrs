@@ -459,6 +459,32 @@ public sealed class DocumentMapper
                     (s.SubtractOnEventIds ?? []).Select(EventTypeName).ToList(),
                     Names.SanitizeName(s.AmountField),
                     sumKey);
+            case Model.GroupByDerivation g:
+                // subfields recurse through the SAME BuildFields/BuildDerivation path as
+                // a read model's own top-level fields, with the SAME defaultRowKeyField --
+                // a subfield's count/sum still names which TOP-LEVEL row a contributing
+                // event targets (unrelated to groupByField, which only picks the entry
+                // WITHIN that row's list), so reusing the read model's own key as the
+                // default is exactly as correct here as it is at the top level.
+                var subfields = new List<Domain.Field>();
+                foreach (var subfield in field.Subfields ?? [])
+                {
+                    if (subfield.Derivation is Model.ToggleDerivation)
+                    {
+                        // ToggleDerivation carries no rowKeyField at all (schema-enforced --
+                        // it's only ever meaningful same-stream), so there's no way to know
+                        // which top-level row a toggle subfield's event should update once
+                        // it's nested inside a groupBy field, which is foreign-stream by
+                        // construction (that's the whole reason groupBy exists). Reported,
+                        // not guessed at -- narrowing scope explicitly beats generating
+                        // code that silently updates the wrong row.
+                        _report.Error($"{owner}: field \"{field.Name}\" groupBy subfield \"{subfield.Name}\" " +
+                            "declares a toggle derivation, which is not supported inside groupBy -- only count/sum subfields are");
+                        continue;
+                    }
+                    subfields.AddRange(BuildFields($"{owner} groupBy subfield", [subfield], defaultRowKeyField));
+                }
+                return new Domain.GroupByDerivation(Names.SanitizeName(g.GroupByField), subfields);
             default:
                 throw new InvalidOperationException($"unhandled field derivation kind: {field.Derivation.GetType().Name}");
         }
@@ -527,6 +553,27 @@ public sealed class DocumentMapper
                     case Model.SumDerivation s:
                         foreach (var eid in s.AddOnEventIds) AddOnEvent(eid, seed: false);
                         foreach (var eid in s.SubtractOnEventIds ?? []) AddOnEvent(eid, seed: false);
+                        break;
+                    case Model.GroupByDerivation:
+                        // same seed:false reasoning as count/sum: a groupBy subfield's own
+                        // contributing events live on a different stream by construction
+                        // (that's the whole reason a grouped rollup needs declaring).
+                        foreach (var subfield in field.Subfields ?? [])
+                        {
+                            switch (subfield.Derivation)
+                            {
+                                case Model.CountDerivation c:
+                                    foreach (var eid in c.IncrementOnEventIds) AddOnEvent(eid, seed: false);
+                                    foreach (var eid in c.DecrementOnEventIds ?? []) AddOnEvent(eid, seed: false);
+                                    break;
+                                case Model.SumDerivation s:
+                                    foreach (var eid in s.AddOnEventIds) AddOnEvent(eid, seed: false);
+                                    foreach (var eid in s.SubtractOnEventIds ?? []) AddOnEvent(eid, seed: false);
+                                    break;
+                                // Model.ToggleDerivation: rejected in BuildDerivation with a
+                                // mapping error -- nothing to collect here either.
+                            }
+                        }
                         break;
                 }
             }

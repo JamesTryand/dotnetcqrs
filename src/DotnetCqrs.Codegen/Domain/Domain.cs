@@ -95,6 +95,18 @@ public sealed record CountDerivation(IReadOnlyList<string> IncrementOnEvents, IR
 
 public sealed record SumDerivation(IReadOnlyList<string> AddOnEvents, IReadOnlyList<string> SubtractOnEvents, string AmountField, string RowKeyField) : Derivation;
 
+/// <summary>Grouped-rollup fold (schema 2.3.0): the field's own value is a nested list of
+/// rows, one per distinct value of <see cref="GroupByField"/> (a contributing event's own
+/// payload field). Each of <see cref="Subfields"/> is an ordinary <see cref="Field"/>
+/// whose own <see cref="Derivation"/> (<see cref="CountDerivation"/>/
+/// <see cref="SumDerivation"/> only -- see <see cref="Mapping.DocumentMapper"/>'s own doc
+/// comment for why <see cref="ToggleDerivation"/> is rejected here) is computed within
+/// that group's own row, reusing exactly the row-key mechanism <see cref="CountDerivation"/>/
+/// <see cref="SumDerivation"/> already have (a subfield's own <c>RowKeyField</c> still
+/// names which TOP-LEVEL read-model row the contributing event targets -- unrelated to
+/// <see cref="GroupByField"/>, which only picks the entry WITHIN that row's list).</summary>
+public sealed record GroupByDerivation(string GroupByField, IReadOnlyList<Field> Subfields) : Derivation;
+
 /// <summary>A projection's target read-model table.</summary>
 public sealed class ReadModel
 {

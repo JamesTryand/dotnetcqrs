@@ -304,4 +304,125 @@ public class DocumentMapperTests
         Assert.Contains(ex.Report.Errors, e => e.Contains("nope-does-not-exist"));
         Assert.Contains(ex.Report.Errors, e => e.Contains("also-missing"));
     }
+
+    // A minimal payroll-periods.staffTotals shape (schema 2.3.0): "hours-logged" events
+    // live on a different aggregate ("TimeEntry") than the read model they roll up into
+    // ("PayrollPeriod"), same cross-stream shape as the count-derivation precedent
+    // (ScenarioVerifierTests's "A_count_derivation_rolls_up_across_streams") -- groupBy
+    // additionally nests one row per distinct staffId inside each period's own row.
+    private const string GroupByDocumentJson = """
+        {
+          "eventModelingSchemaVersion": "2.3.0", "id": "groupby-test", "name": "GroupBy Test",
+          "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+          "events": {
+            "period-created": {"name": "Period Created", "swimlaneId": "s", "aggregate": "PayrollPeriod",
+              "fields": [{"name": "periodId", "type": "string", "idAttribute": true}]},
+            "hours-logged": {"name": "Hours Logged", "swimlaneId": "s", "aggregate": "TimeEntry",
+              "fields": [
+                {"name": "periodId", "type": "string"},
+                {"name": "staffId", "type": "string"},
+                {"name": "hours", "type": "double"}
+              ]}
+          },
+          "commands": {
+            "create-period": {"name": "Create Period", "aggregate": "PayrollPeriod"},
+            "log-hours": {"name": "Log Hours", "aggregate": "TimeEntry"}
+          },
+          "readModels": {
+            "payroll-periods": {
+              "name": "Payroll Periods",
+              "builtFromEventIds": ["period-created"],
+              "fields": [
+                {"name": "periodId", "type": "string", "idAttribute": true},
+                {"name": "staffTotals", "type": "custom", "cardinality": "list",
+                  "derivation": {"kind": "groupBy", "groupByField": "staffId"},
+                  "subfields": [
+                    {"name": "staffId", "type": "string"},
+                    {"name": "outOfHoursHours", "type": "double",
+                      "derivation": {"kind": "sum", "addOnEventIds": ["hours-logged"], "amountField": "hours"}}
+                  ]}
+              ]
+            }
+          },
+          "screens": {"scr1": {"name": "Create Screen"}, "scr2": {"name": "Log Screen"}, "scr3": {"name": "View Screen"}},
+          "slices": [
+            {
+              "id": "create-period-slice", "name": "Create Period", "pattern": "stateChange",
+              "swimlaneId": "s", "status": "created",
+              "screenId": "scr1", "commandId": "create-period", "eventIds": ["period-created"],
+              "scenarios": [{"id":"create-scenario","name":"Create","kind":"stateChange","given":[],"when":{"commandId":"create-period"},"then":{"events":[{"eventId":"period-created"}]}}]
+            },
+            {
+              "id": "log-hours-slice", "name": "Log Hours", "pattern": "stateChange",
+              "swimlaneId": "s", "status": "created",
+              "screenId": "scr2", "commandId": "log-hours", "eventIds": ["hours-logged"],
+              "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"log-hours"},"then":{"events":[{"eventId":"hours-logged"}]}}]
+            },
+            {
+              "id": "view-periods-slice", "name": "View Periods", "pattern": "stateView",
+              "swimlaneId": "s", "status": "created",
+              "screenId": "scr3", "readModelId": "payroll-periods",
+              "scenarios": [{
+                "id": "view-after-log", "name": "Staff totals reflect logged hours", "kind": "stateView",
+                "given": [
+                  {"eventId": "period-created", "data": {"periodId": "p1"}},
+                  {"eventId": "hours-logged", "data": {"periodId": "p1", "staffId": "s1", "hours": 5}}
+                ],
+                "when": {"readModelId": "payroll-periods"},
+                "then": {"result": {"staffTotals": [{"staffId": "s1", "outOfHoursHours": 5}]}}
+              }]
+            }
+          ]
+        }
+        """;
+
+    [Fact]
+    public void A_groupBy_derivation_maps_to_a_nested_field_with_its_own_subfield_derivations()
+    {
+        var doc = DocumentLoader.Parse(GroupByDocumentJson);
+
+        var result = DocumentMapper.Map(doc);
+
+        var readModel = result.Domains.Single(d => d.Aggregate == "payrollPeriod").ReadModels.Single();
+        var staffTotals = readModel.Fields.Single(f => f.Name == "staffTotals");
+        var groupBy = Assert.IsType<GroupByDerivation>(staffTotals.Derivation);
+        Assert.Equal("staffId", groupBy.GroupByField);
+
+        var staffIdSubfield = groupBy.Subfields.Single(f => f.Name == "staffId");
+        Assert.Null(staffIdSubfield.Derivation);
+
+        var hoursSubfield = groupBy.Subfields.Single(f => f.Name == "outOfHoursHours");
+        var sum = Assert.IsType<SumDerivation>(hoursSubfield.Derivation);
+        Assert.Equal(["HoursLogged"], sum.AddOnEvents);
+        // defaulted from the read model's own key, exactly like a top-level sum/count's
+        // own rowKeyField default -- the contributing event's payload names it "periodId".
+        Assert.Equal("periodId", sum.RowKeyField);
+
+        // hours-logged lives on a DIFFERENT stream (TimeEntry, not PayrollPeriod) --
+        // reacted to (On) but not seed-eligible (SeedOn), same rule as count/sum.
+        Assert.Contains("HoursLogged", readModel.On);
+        Assert.DoesNotContain("HoursLogged", readModel.SeedOn);
+    }
+
+    [Fact]
+    public void A_toggle_subfield_inside_a_groupBy_is_rejected_with_a_clear_reason()
+    {
+        // ToggleDerivation carries no rowKeyField at all (schema-enforced -- it's only
+        // ever meaningful same-stream), so there is no way to know which top-level row a
+        // toggle subfield's event should update once nested inside a groupBy field, which
+        // is foreign-stream by construction. See DocumentMapper.BuildDerivation's own
+        // doc comment on the groupBy case.
+        var json = GroupByDocumentJson.Replace(
+            """{"name": "staffId", "type": "string"},""",
+            """
+            {"name": "staffId", "type": "string"},
+            {"name": "everLoggedOvertime", "type": "boolean",
+              "derivation": {"kind": "toggle", "onEventIds": ["hours-logged"], "offEventIds": ["hours-logged"]}},
+            """);
+        var doc = DocumentLoader.Parse(json);
+
+        var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(doc));
+        Assert.Contains(ex.Report.Errors, e =>
+            e.Contains("everLoggedOvertime") && e.Contains("toggle") && e.Contains("not supported"));
+    }
 }

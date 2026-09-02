@@ -296,6 +296,19 @@ static string? SubsetDiff(string expectedJson, Dictionary<string, object?> actua
 
 static bool ValuesEqual(object? actual, JsonElement expected)
 {
+    // A groupBy field's own column (schema 2.3.0) is a JSON array of objects, stored as
+    // raw TEXT -- `expected.GetString()` below would throw for an Array/Object
+    // JsonElement, so this shape needs its own structural comparison rather than falling
+    // into the scalar text comparison every other field type uses.
+    if (expected.ValueKind is JsonValueKind.Array or JsonValueKind.Object)
+    {
+        if (actual is not string actualJson) return false;
+        JsonElement actualParsed;
+        try { actualParsed = JsonSerializer.Deserialize<JsonElement>(actualJson); }
+        catch (JsonException) { return false; }
+        return JsonStructurallyEqual(actualParsed, expected);
+    }
+
     // SQLite has no native boolean storage class -- a bool column (a plain-copied
     // field, or a toggle derivation's literal 1/0) comes back from the reader as a
     // long, not a bool, so `expected: true/false` must be compared against 0/nonzero
@@ -331,6 +344,51 @@ static bool ValuesEqual(object? actual, JsonElement expected)
         _ => expected.GetString(),
     };
     return actualText == expectedText;
+}
+
+/// <summary>Deep-equal for a groupBy field's nested JSON, order-independent for arrays
+/// (same reasoning as <c>ListDiff</c>'s top-level rows: a grouped rollup is a list of
+/// rows, and nothing about the model promises what order contributing events land the
+/// entries in) and snake_case-normalized for object keys, since <paramref name="actual"/>
+/// (read straight off the generated column) carries the projection's own snake_case
+/// property names while <paramref name="expected"/> (the scenario's own JSON) uses the
+/// model's camelCase field names -- the same normalization <c>SubsetDiff</c> already does
+/// for top-level columns.</summary>
+static bool JsonStructurallyEqual(JsonElement actual, JsonElement expected)
+{
+    switch (expected.ValueKind)
+    {
+        case JsonValueKind.Object:
+            if (actual.ValueKind != JsonValueKind.Object) return false;
+            var actualProps = actual.EnumerateObject().ToDictionary(p => p.Name, p => p.Value);
+            foreach (var prop in expected.EnumerateObject())
+            {
+                if (!actualProps.TryGetValue(ToSnakeCase(prop.Name), out var actualValue)) return false;
+                if (!JsonStructurallyEqual(actualValue, prop.Value)) return false;
+            }
+            return true;
+        case JsonValueKind.Array:
+            if (actual.ValueKind != JsonValueKind.Array) return false;
+            var actualItems = actual.EnumerateArray().ToList();
+            var expectedItems = expected.EnumerateArray().ToList();
+            if (actualItems.Count != expectedItems.Count) return false;
+            var unmatched = new List<JsonElement>(actualItems);
+            foreach (var expectedItem in expectedItems)
+            {
+                var matchIndex = unmatched.FindIndex(a => JsonStructurallyEqual(a, expectedItem));
+                if (matchIndex < 0) return false;
+                unmatched.RemoveAt(matchIndex);
+            }
+            return true;
+        case JsonValueKind.True or JsonValueKind.False:
+            return actual.ValueKind == expected.ValueKind;
+        case JsonValueKind.Number:
+            return actual.ValueKind == JsonValueKind.Number && actual.GetDouble() == expected.GetDouble();
+        case JsonValueKind.Null:
+            return actual.ValueKind == JsonValueKind.Null;
+        default:
+            return actual.ValueKind == JsonValueKind.String && actual.GetString() == expected.GetString();
+    }
 }
 
 static string ToSnakeCase(string name)

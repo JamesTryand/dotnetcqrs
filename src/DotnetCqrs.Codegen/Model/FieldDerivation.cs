@@ -31,9 +31,22 @@ public sealed record CountDerivation(string Kind, IReadOnlyList<string> Incremen
 public sealed record SumDerivation(string Kind, IReadOnlyList<string> AddOnEventIds, IReadOnlyList<string>? SubtractOnEventIds, string AmountField, string? RowKeyField)
     : FieldDerivation(Kind);
 
+/// <summary>Grouped-rollup fold (schema 2.3.0): the owning <see cref="Field"/> is a
+/// <c>cardinality: "list"</c> field with <c>subfields</c> (schema-enforced, not
+/// re-checked here) -- one nested row per distinct value of <c>groupByField</c>, the
+/// payload field on a contributing event whose value becomes that row's key. Carries no
+/// row-key/amount of its own: each <see cref="Field.Subfields"/> entry is an ordinary
+/// <see cref="Field"/> that may carry its own <see cref="ToggleDerivation"/>/
+/// <see cref="CountDerivation"/>/<see cref="SumDerivation"/>, computed within its group
+/// rather than across the whole read model -- the field named by <c>groupByField</c>
+/// itself needs none, since its value is just the grouping key, copied straight from the
+/// matching event payload.</summary>
+public sealed record GroupByDerivation(string Kind, string GroupByField) : FieldDerivation(Kind);
+
 public sealed class FieldDerivationConverter() : DiscriminatedUnionConverter<FieldDerivation>("kind", new Dictionary<string, Type>
 {
     ["toggle"] = typeof(ToggleDerivation),
     ["count"] = typeof(CountDerivation),
     ["sum"] = typeof(SumDerivation),
+    ["groupBy"] = typeof(GroupByDerivation),
 });

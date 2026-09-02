@@ -36,10 +36,12 @@ internal static class ProjectionGenerator
         var plainColumns = allColumns.Where(f => f.Derivation is null).ToList();
         var toggleColumns = allColumns.Where(f => f.Derivation is Domain.ToggleDerivation).ToList();
         var rollupColumns = allColumns.Where(f => f.Derivation is Domain.CountDerivation or Domain.SumDerivation).ToList();
+        var groupByColumns = allColumns.Where(f => f.Derivation is Domain.GroupByDerivation).ToList();
         var typeName = GenerationSupport.ExportName(readModel.Collection) + "Projection";
 
         var b = new StringBuilder();
         b.AppendLine("using System.Text.Json;");
+        if (groupByColumns.Count > 0) b.AppendLine("using System.Text.Json.Nodes;");
         b.AppendLine("using DotnetCqrs.EventStore;");
         b.AppendLine("using DotnetCqrs.Projections;");
         b.AppendLine("using DotnetCqrs.ReadModels;");
@@ -78,6 +80,10 @@ internal static class ProjectionGenerator
             {
                 Domain.ToggleDerivation t => $" DEFAULT {(t.Initial ? 1 : 0)}",
                 Domain.CountDerivation or Domain.SumDerivation => " DEFAULT 0",
+                // an empty JSON array, not NULL -- a stateView query before any
+                // contributing event has landed should see "no rows yet", not a
+                // JsonException from trying to parse a null column.
+                Domain.GroupByDerivation => " DEFAULT '[]'",
                 _ => "",
             };
             b.AppendLine($"                {ToSnakeCase(field.Name)} {sqlType}{defaultClause}{comma}");
@@ -137,7 +143,46 @@ internal static class ProjectionGenerator
             }
         }
 
+        foreach (var field in groupByColumns)
+        {
+            var column = ToSnakeCase(field.Name);
+            var groupBy = (Domain.GroupByDerivation)field.Derivation!;
+            var groupKeyColumn = ToSnakeCase(groupBy.GroupByField);
+            foreach (var subfield in groupBy.Subfields)
+            {
+                var subColumn = ToSnakeCase(subfield.Name);
+                switch (subfield.Derivation)
+                {
+                    case Domain.CountDerivation count:
+                        if (count.IncrementOnEvents.Count > 0)
+                            EmitGroupByFold(b, readModel, keyColumn, column, groupKeyColumn, groupBy.GroupByField, count.RowKeyField,
+                                subColumn, count.IncrementOnEvents, "current + 1", amountField: null);
+                        if (count.DecrementOnEvents.Count > 0)
+                            EmitGroupByFold(b, readModel, keyColumn, column, groupKeyColumn, groupBy.GroupByField, count.RowKeyField,
+                                subColumn, count.DecrementOnEvents, "current - 1", amountField: null);
+                        break;
+                    case Domain.SumDerivation sum:
+                        if (sum.AddOnEvents.Count > 0)
+                            EmitGroupByFold(b, readModel, keyColumn, column, groupKeyColumn, groupBy.GroupByField, sum.RowKeyField,
+                                subColumn, sum.AddOnEvents, "current + amount", sum.AmountField);
+                        if (sum.SubtractOnEvents.Count > 0)
+                            EmitGroupByFold(b, readModel, keyColumn, column, groupKeyColumn, groupBy.GroupByField, sum.RowKeyField,
+                                subColumn, sum.SubtractOnEvents, "current - amount", sum.AmountField);
+                        break;
+                    // Domain.ToggleDerivation/null: DocumentMapper never produces a groupBy
+                    // subfield with either -- a toggle is rejected at mapping time (see its
+                    // own doc comment), and the field named by groupByField itself carries
+                    // no derivation on purpose (its value is the group key, already set when
+                    // ApplyGroupByAsync creates the entry).
+                }
+            }
+        }
+
         b.AppendLine("    }");
+
+        if (groupByColumns.Count > 0)
+            EmitApplyGroupByHelper(b);
+
         b.AppendLine("}");
 
         return new GeneratedFile($"{typeName}.cs", b.ToString());
@@ -235,6 +280,73 @@ internal static class ProjectionGenerator
             b.AppendLine($"            rollup.AddParam(\"@amount\", rollupData[\"{amountField}\"].GetDouble());");
         b.AppendLine("            await rollup.ExecuteNonQueryAsync(ct);");
         b.AppendLine("        }");
+    }
+
+    /// <summary>Emits one guarded read-modify-write for a <c>groupBy</c> field's
+    /// subfield fold (schema 2.3.0). Unlike <see cref="EmitRollup"/>'s plain SQL
+    /// arithmetic, the target column holds a JSON array (one object per distinct
+    /// <paramref name="groupByField"/> value), which SQLite has no arithmetic over --
+    /// <see cref="EmitApplyGroupByHelper"/>'s <c>ApplyGroupByAsync</c> does the
+    /// SELECT/parse/find-or-create-entry/UPDATE round trip; this method only supplies
+    /// the per-subfield delta as a closure. <paramref name="rowKeyField"/> plays the
+    /// exact same role as <see cref="EmitRollup"/>'s own (which TOP-LEVEL row the
+    /// contributing event targets) -- <paramref name="groupByField"/> is unrelated,
+    /// naming the payload field whose value picks the entry WITHIN that row's list.</summary>
+    private static void EmitGroupByFold(StringBuilder b, Domain.ReadModel readModel, string keyColumn, string column,
+        string groupKeyColumn, string groupByField, string rowKeyField, string subColumn,
+        IReadOnlyList<string> eventTypes, string deltaExpression, string? amountField)
+    {
+        b.AppendLine();
+        b.AppendLine($"        if (ev.Type is ({Disjunction(eventTypes)}))");
+        b.AppendLine("        {");
+        b.AppendLine("            var groupByData = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(ev.Data) ?? [];");
+        if (amountField is not null)
+            b.AppendLine($"            var amount = groupByData[\"{amountField}\"].GetDouble();");
+        b.AppendLine($"            await ApplyGroupByAsync(store, \"{readModel.Collection}\", \"{keyColumn}\", groupByData[\"{rowKeyField}\"].GetString()!,");
+        b.AppendLine($"                \"{column}\", \"{groupKeyColumn}\", groupByData[\"{groupByField}\"].GetString()!, ct, entry =>");
+        b.AppendLine("                {");
+        b.AppendLine($"                    var current = entry[\"{subColumn}\"]?.GetValue<double>() ?? 0;");
+        b.AppendLine($"                    entry[\"{subColumn}\"] = {deltaExpression};");
+        b.AppendLine("                });");
+        b.AppendLine("        }");
+    }
+
+    /// <summary>Emitted once per file, only when the read model declares at least one
+    /// <c>groupBy</c> field: finds-or-creates the JSON entry (keyed by
+    /// <paramref name="groupKeyColumn"/>'s value) inside <paramref name="column"/>'s
+    /// current array, applies the caller's delta to it, then writes the whole array
+    /// back. Uses <see cref="System.Text.Json.Nodes.JsonNode"/> (mutable), not
+    /// <see cref="JsonElement"/> (immutable, everywhere else in this generator) --
+    /// building a modified nested list needs real mutation, not just reading.</summary>
+    private static void EmitApplyGroupByHelper(StringBuilder b)
+    {
+        b.AppendLine();
+        b.AppendLine("    private static async Task ApplyGroupByAsync(IReadModelStore store, string table, string keyColumn, string rowKey,");
+        b.AppendLine("        string column, string groupKeyColumn, string groupKeyValue, CancellationToken ct, Action<JsonObject> apply)");
+        b.AppendLine("    {");
+        b.AppendLine("        string? currentJson;");
+        b.AppendLine("        await using (var select = store.Connection.CreateCommand())");
+        b.AppendLine("        {");
+        b.AppendLine("            select.CommandText = $\"SELECT {column} FROM {table} WHERE {keyColumn} = @id\";");
+        b.AppendLine("            select.AddParam(\"@id\", rowKey);");
+        b.AppendLine("            currentJson = (string?)await select.ExecuteScalarAsync(ct);");
+        b.AppendLine("        }");
+        b.AppendLine();
+        b.AppendLine("        var rows = string.IsNullOrEmpty(currentJson) ? new JsonArray() : JsonNode.Parse(currentJson)!.AsArray();");
+        b.AppendLine("        var entry = rows.OfType<JsonObject>().FirstOrDefault(o => o[groupKeyColumn]?.GetValue<string>() == groupKeyValue);");
+        b.AppendLine("        if (entry is null)");
+        b.AppendLine("        {");
+        b.AppendLine("            entry = new JsonObject { [groupKeyColumn] = groupKeyValue };");
+        b.AppendLine("            rows.Add(entry);");
+        b.AppendLine("        }");
+        b.AppendLine("        apply(entry);");
+        b.AppendLine();
+        b.AppendLine("        await using var update = store.Connection.CreateCommand();");
+        b.AppendLine("        update.CommandText = $\"UPDATE {table} SET {column} = @value WHERE {keyColumn} = @id\";");
+        b.AppendLine("        update.AddParam(\"@value\", rows.ToJsonString());");
+        b.AppendLine("        update.AddParam(\"@id\", rowKey);");
+        b.AppendLine("        await update.ExecuteNonQueryAsync(ct);");
+        b.AppendLine("    }");
     }
 
     private static string Disjunction(IEnumerable<string> eventTypes) =>

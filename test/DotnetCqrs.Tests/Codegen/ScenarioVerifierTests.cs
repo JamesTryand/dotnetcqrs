@@ -378,4 +378,96 @@ public class ScenarioVerifierTests
         var view = results.Single(r => r.ScenarioId == "view-after-assign");
         Assert.True(view.Passed, view.Detail);
     }
+
+    [Fact(Timeout = 60000)]
+    public async Task A_groupBy_derivation_produces_one_nested_row_per_distinct_group_key()
+    {
+        // Schema 2.3.0's payroll-periods.staffTotals shape: hours-logged lives on a
+        // DIFFERENT aggregate (TimeEntry) than the read model it rolls up into
+        // (PayrollPeriod) -- same cross-stream shape as the count-derivation tests above.
+        // staffTotals nests one row per distinct staffId, each with its own sum
+        // (outOfHoursHours) computed WITHIN that group -- two contributions for "s1"
+        // (5 + 3) must land in the SAME nested entry, not two separate ones, and "s2"'s
+        // single contribution must land in its own entry untouched by s1's.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "2.3.0", "id": "groupby-verify-test", "name": "GroupBy Verify Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "period-created": {"name": "Period Created", "swimlaneId": "s", "aggregate": "PayrollPeriod",
+                  "fields": [{"name": "periodId", "type": "string", "idAttribute": true}]},
+                "hours-logged": {"name": "Hours Logged", "swimlaneId": "s", "aggregate": "TimeEntry",
+                  "fields": [
+                    {"name": "periodId", "type": "string"},
+                    {"name": "staffId", "type": "string"},
+                    {"name": "hours", "type": "double"}
+                  ]}
+              },
+              "commands": {
+                "create-period": {"name": "Create Period", "aggregate": "PayrollPeriod"},
+                "log-hours": {"name": "Log Hours", "aggregate": "TimeEntry"}
+              },
+              "readModels": {
+                "payroll-periods": {
+                  "name": "Payroll Periods",
+                  "builtFromEventIds": ["period-created"],
+                  "fields": [
+                    {"name": "periodId", "type": "string", "idAttribute": true},
+                    {"name": "staffTotals", "type": "custom", "cardinality": "list",
+                      "derivation": {"kind": "groupBy", "groupByField": "staffId"},
+                      "subfields": [
+                        {"name": "staffId", "type": "string"},
+                        {"name": "outOfHoursHours", "type": "double",
+                          "derivation": {"kind": "sum", "addOnEventIds": ["hours-logged"], "amountField": "hours"}}
+                      ]}
+                  ]
+                }
+              },
+              "screens": {"scr1": {"name": "Create Screen"}, "scr2": {"name": "Log Screen"}, "scr3": {"name": "View Screen"}},
+              "slices": [
+                {
+                  "id": "create-period-slice", "name": "Create Period", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr1", "commandId": "create-period", "eventIds": ["period-created"],
+                  "scenarios": [{"id":"create-scenario","name":"Create","kind":"stateChange","given":[],"when":{"commandId":"create-period"},"then":{"events":[{"eventId":"period-created"}]}}]
+                },
+                {
+                  "id": "log-hours-slice", "name": "Log Hours", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr2", "commandId": "log-hours", "eventIds": ["hours-logged"],
+                  "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"log-hours"},"then":{"events":[{"eventId":"hours-logged"}]}}]
+                },
+                {
+                  "id": "view-periods-slice", "name": "View Periods", "pattern": "stateView",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr3", "readModelId": "payroll-periods",
+                  "scenarios": [{
+                    "id": "view-after-log", "name": "Staff totals reflect logged hours, grouped by staff", "kind": "stateView",
+                    "given": [
+                      {"eventId": "period-created", "data": {"periodId": "p1"}},
+                      {"eventId": "hours-logged", "data": {"periodId": "p1", "staffId": "s1", "hours": 5}},
+                      {"eventId": "hours-logged", "data": {"periodId": "p1", "staffId": "s2", "hours": 3}},
+                      {"eventId": "hours-logged", "data": {"periodId": "p1", "staffId": "s1", "hours": 3}}
+                    ],
+                    "when": {"readModelId": "payroll-periods"},
+                    "then": {"result": {
+                      "periodId": "p1",
+                      "staffTotals": [
+                        {"staffId": "s1", "outOfHoursHours": 8},
+                        {"staffId": "s2", "outOfHoursHours": 3}
+                      ]
+                    }}
+                  }]
+                }
+              ]
+            }
+            """;
+        var doc = DocumentLoader.Parse(json);
+        var mapped = DocumentMapper.Map(doc);
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+
+        var view = results.Single(r => r.ScenarioId == "view-after-log");
+        Assert.True(view.Passed, view.Detail);
+    }
 }
