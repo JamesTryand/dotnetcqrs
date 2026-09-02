@@ -34,7 +34,11 @@ public static class HostProjectGenerator
     {
         var files = new List<GeneratedFile>();
         foreach (var domain in mapped.Domains)
+        {
             files.AddRange(CSharpGenerator.Generate(domain));
+            foreach (var readModel in domain.ReadModels)
+                files.Add(ReadModelQueryGenerator.Generate(domain, readModel));
+        }
 
         files.Add(GenerateCsproj(projectName, dotnetCqrsProjectPath));
         files.Add(GenerateProgram(mapped, dotnetCqrsProjectPath, aggregateOverrides));
@@ -122,6 +126,14 @@ public static class HostProjectGenerator
         b.AppendLine();
         b.AppendLine("var eventStore = await SqliteEventStore.OpenAsync(eventsPath);");
         b.AppendLine("var readModelDb = await SqliteReadModelStore.OpenAsync(readModelPath);");
+        // Registered as a service so minimal API's parameter-source inference recognises
+        // an IReadModelStore parameter (every ReadModelQueryGenerator-emitted route takes
+        // one) as DI-resolved rather than an inferred request body -- unregistered, that
+        // misinference throws at first-request endpoint-construction time and takes down
+        // EVERY route on the app, not just the query ones (confirmed directly: a bare
+        // MapCqrsGateway command POST 500s too, since CompositeEndpointDataSource builds
+        // all endpoints together and one bad inference poisons the whole data source).
+        b.AppendLine("builder.Services.AddSingleton<IReadModelStore>(readModelDb);");
         b.AppendLine();
         b.AppendLine("var registry = new DeciderRegistry(eventStore);");
         foreach (var domain in mapped.Domains)
@@ -171,6 +183,14 @@ public static class HostProjectGenerator
         b.AppendLine("var app = builder.Build();");
         b.AppendLine("_ = engine.StartAsync(app.Lifetime.ApplicationStopping);");
         b.AppendLine("app.MapCqrsGateway();");
+        foreach (var domain in mapped.Domains)
+        {
+            foreach (var readModel in domain.ReadModels)
+            {
+                var typeName = GenerationSupport.ExportName(readModel.Collection);
+                b.AppendLine($"app.Map{typeName}Route();");
+            }
+        }
         b.AppendLine();
         b.AppendLine("await app.RunAsync();");
         b.AppendLine("return 0;");
