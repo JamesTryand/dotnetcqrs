@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace DotnetCqrs.Codegen.Model;
 
 /// <summary>The schema's "5 elements" (Event/Command/ReadModel/Screen/Automation) plus
@@ -8,7 +10,16 @@ public sealed record Swimlane(string Id, string Name, string Kind, string? Descr
 
 public sealed record EventDef(string Name, string SwimlaneId, string? Description, string? Aggregate, bool? EndsStream, IReadOnlyList<Field>? Fields);
 
-public sealed record CommandDef(string Name, string? Description, string? Reason, string? Aggregate, IReadOnlyList<Field>? Fields);
+/// <summary><c>RequiredRole</c>/<c>FieldGatedRole</c>/<c>RequiredOwnership</c>/<c>Scope</c>
+/// are schema 2.5.0's command-authorization declarations -- see
+/// <see cref="CommandFieldGatedRoleDef"/>/<see cref="CommandOwnershipDef"/>/
+/// <see cref="CommandScopeDef"/> for each shape.</summary>
+public sealed record CommandDef(
+    string Name, string? Description, string? Reason, string? Aggregate, IReadOnlyList<Field>? Fields,
+    [property: JsonConverter(typeof(RoleOrRolesConverter))] IReadOnlyList<string>? RequiredRole,
+    CommandFieldGatedRoleDef? FieldGatedRole,
+    CommandOwnershipDef? RequiredOwnership,
+    CommandScopeDef? Scope);
 
 public sealed record ReadModelDef(string Name, string? Description, string? Question, IReadOnlyList<string>? BuiltFromEventIds, IReadOnlyList<Field>? Fields, IReadOnlyList<ReadModelScopeDef>? Scopes, IReadOnlyList<ReadModelFilterDef>? Filters);
 

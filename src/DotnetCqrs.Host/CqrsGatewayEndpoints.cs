@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using DotnetCqrs.Deciders;
 using DotnetCqrs.EventStore;
 using Microsoft.AspNetCore.Builder;
@@ -49,10 +50,33 @@ public static class CqrsGatewayEndpoints
     /// independently against an external issuer's OIDC metadata, not a
     /// per-node-signed token only the master can verify (pocketcqrs's F-13), so a
     /// secondary validating its own inbound request locally before forwarding is
-    /// correct, not broken — see this issue's README for the finding.</para></summary>
+    /// correct, not broken — see this issue's README for the finding.</para>
+    ///
+    /// <para><paramref name="authorize"/> is the pluggable hook a generated
+    /// <c>Generated.CommandAuthorization.AuthorizeAsync</c> (schema 2.5.0's command
+    /// role/ownership/scope declarations, see <c>CommandAuthorizationGenerator</c>)
+    /// plugs into, same "auth is not built into this library" precedent as
+    /// <paramref name="resolveActor"/> — default <c>null</c> means no check, exactly
+    /// today's unchanged behavior. Deliberately takes no <c>IReadModelStore</c>
+    /// parameter of its own: an earlier draft did, but that would make EVERY consumer
+    /// of this shared method register one in DI or risk minimal API's parameter-source
+    /// inference silently mis-binding it as a request body -- the exact class of bug
+    /// this project already hit once for a read-model query route (an unregistered
+    /// <c>IReadModelStore</c> parameter 500s not just its own route but every route on
+    /// the composite endpoint data source). Instead, whatever store a real
+    /// <c>authorize</c> delegate needs is captured in its own closure by whoever wires
+    /// it up — e.g. <c>authorize: (user, agg, cmd, id, payload, ct) =>
+    /// Generated.CommandAuthorization.AuthorizeAsync(user, agg, cmd, id, payload,
+    /// myReadModelStore, resolveOwnRole, resolveOwnStaffId, ct)</c> — so this library
+    /// stays exactly as decoupled from <c>DotnetCqrs.ReadModels</c> as it is today.
+    /// When supplied and it returns <c>false</c>, the request is refused with 403
+    /// before <see cref="DeciderRegistry.HandleWithMetaAsync"/> ever loads any
+    /// aggregate state.</para></summary>
     public static RouteHandlerBuilder MapCqrsGateway(
         this IEndpointRouteBuilder endpoints, string prefix = "/api/cqrs",
-        Func<ClaimsPrincipal, string>? resolveActor = null, RequestDelegate? forward = null)
+        Func<ClaimsPrincipal, string>? resolveActor = null,
+        Func<ClaimsPrincipal, string, string, string, JsonElement, CancellationToken, Task<bool>>? authorize = null,
+        RequestDelegate? forward = null)
     {
         resolveActor ??= DefaultResolveActor;
         return endpoints.MapPost($"{prefix}/{{aggregate}}/{{aggregateId}}/{{command}}",
@@ -64,7 +88,7 @@ public static class CqrsGatewayEndpoints
                     await forward(httpContext);
                     return Results.Empty;
                 }
-                return await HandleAsync(aggregate, aggregateId, command, request, httpContext, registry, resolveActor, ct);
+                return await HandleAsync(aggregate, aggregateId, command, request, httpContext, registry, resolveActor, authorize, ct);
             });
     }
 
@@ -124,12 +148,25 @@ public static class CqrsGatewayEndpoints
 
     private static async Task<IResult> HandleAsync(
         string aggregate, string aggregateId, string command, HttpRequest request, HttpContext httpContext,
-        DeciderRegistry registry, Func<ClaimsPrincipal, string> resolveActor, CancellationToken ct)
+        DeciderRegistry registry, Func<ClaimsPrincipal, string> resolveActor,
+        Func<ClaimsPrincipal, string, string, string, JsonElement, CancellationToken, Task<bool>>? authorize, CancellationToken ct)
     {
         using var reader = new StreamReader(request.Body);
         var payload = await reader.ReadToEndAsync(ct);
         if (string.IsNullOrWhiteSpace(payload))
             payload = "{}";
+
+        if (authorize is not null)
+        {
+            // Parsed once, here, alongside the raw string still used for dispatch below
+            // -- no second body read. fieldGatedRole (schema 2.5.0) is the one
+            // authorization declaration that needs the payload itself, not just
+            // aggregate/command/aggregateId; every other declaration simply ignores it.
+            using var payloadDocument = JsonDocument.Parse(payload);
+            var authorized = await authorize(httpContext.User, aggregate, command, aggregateId, payloadDocument.RootElement, ct);
+            if (!authorized)
+                return Results.Problem("not authorized", statusCode: StatusCodes.Status403Forbidden);
+        }
 
         var actor = resolveActor(httpContext.User);
         var meta = new Dictionary<string, object>();

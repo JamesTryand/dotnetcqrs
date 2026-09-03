@@ -515,4 +515,136 @@ public class DocumentMapperTests
         Assert.Contains(ex.Report.Errors, e =>
             e.Contains("dateRange") && e.Contains("presets"));
     }
+
+    // platform/command-authorization's signed-off design proposal (schema 2.5.0):
+    // requiredRole (both single-value and array form), fieldGatedRole,
+    // requiredOwnership, and scope on a real-shaped command set (an ownership-only
+    // update, a Manager-bypass-else-PM-scoped flag, a Manager-only setup command, and
+    // an Administrator-field-gated onboarding command).
+    private const string CommandAuthorizationDocumentJson = """
+        {
+          "eventModelingSchemaVersion": "2.5.0", "id": "command-auth-test", "name": "Command Authorization Test",
+          "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+          "events": {
+            "order-placed": {"name": "Order Placed", "swimlaneId": "s", "aggregate": "Order"},
+            "order-updated": {"name": "Order Updated", "swimlaneId": "s", "aggregate": "Order"},
+            "order-flagged": {"name": "Order Flagged", "swimlaneId": "s", "aggregate": "Order"},
+            "staff-onboarded": {"name": "Staff Onboarded", "swimlaneId": "s", "aggregate": "Staff"}
+          },
+          "commands": {
+            "place-order": {"name": "Place Order", "aggregate": "Order", "requiredRole": ["manager", "administrator"]},
+            "update-order": {"name": "Update Order", "aggregate": "Order",
+              "requiredOwnership": {"via": {"readModelId": "orders", "keyField": "orderId", "ownerField": "ownerId"}}},
+            "flag-order": {"name": "Flag Order", "aggregate": "Order",
+              "scope": {
+                "bypassRoles": ["manager"],
+                "resolveVia": {"readModelId": "orders", "keyField": "orderId", "selectField": "regionId"},
+                "memberOfVia": {"readModelId": "region-managers", "matchField": "regionId"}
+              }},
+            "onboard-staff": {"name": "Onboard Staff", "aggregate": "Staff",
+              "fieldGatedRole": {"field": "role", "value": "manager", "requiredRole": "administrator"}}
+          },
+          "readModels": {
+            "orders": {"name": "Orders", "builtFromEventIds": ["order-placed"],
+              "fields": [{"name": "orderId", "type": "string", "idAttribute": true}, {"name": "ownerId", "type": "string"}, {"name": "regionId", "type": "string"}]},
+            "region-managers": {"name": "Region Managers", "builtFromEventIds": ["order-placed"],
+              "fields": [{"name": "staffId", "type": "string", "idAttribute": true}, {"name": "regionId", "type": "string"}]}
+          },
+          "screens": {"scr": {"name": "Screen"}},
+          "slices": [
+            {"id": "place-order-slice", "name": "Place Order", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
+              "screenId": "scr", "commandId": "place-order", "eventIds": ["order-placed"], "scenarios": []},
+            {"id": "update-order-slice", "name": "Update Order", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
+              "screenId": "scr", "commandId": "update-order", "eventIds": ["order-updated"], "scenarios": []},
+            {"id": "flag-order-slice", "name": "Flag Order", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
+              "screenId": "scr", "commandId": "flag-order", "eventIds": ["order-flagged"], "scenarios": []},
+            {"id": "onboard-staff-slice", "name": "Onboard Staff", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
+              "screenId": "scr", "commandId": "onboard-staff", "eventIds": ["staff-onboarded"], "scenarios": []}
+          ]
+        }
+        """;
+
+    [Fact]
+    public void RequiredRole_maps_as_a_list_whether_declared_as_one_value_or_an_array()
+    {
+        var doc = DocumentLoader.Parse(CommandAuthorizationDocumentJson);
+
+        var result = DocumentMapper.Map(doc);
+
+        var order = result.Domains.Single(d => d.Aggregate == "order");
+        var placeOrder = order.Commands.Single(c => c.Name == "PlaceOrder");
+        Assert.Equal(["manager", "administrator"], placeOrder.RequiredRole);
+    }
+
+    [Fact]
+    public void RequiredOwnership_resolves_its_via_read_model_to_a_physical_collection_name()
+    {
+        var doc = DocumentLoader.Parse(CommandAuthorizationDocumentJson);
+
+        var result = DocumentMapper.Map(doc);
+
+        var order = result.Domains.Single(d => d.Aggregate == "order");
+        var updateOrder = order.Commands.Single(c => c.Name == "UpdateOrder");
+        Assert.NotNull(updateOrder.RequiredOwnership);
+        var ownership = updateOrder.RequiredOwnership!;
+        Assert.Equal("orders", ownership.ViaCollection);
+        Assert.Equal("orderId", ownership.KeyField);
+        Assert.Equal("ownerId", ownership.OwnerField);
+        Assert.Empty(ownership.BypassRoles);
+    }
+
+    [Fact]
+    public void Scope_resolves_both_via_read_models_and_carries_bypassRoles()
+    {
+        var doc = DocumentLoader.Parse(CommandAuthorizationDocumentJson);
+
+        var result = DocumentMapper.Map(doc);
+
+        var order = result.Domains.Single(d => d.Aggregate == "order");
+        var flagOrder = order.Commands.Single(c => c.Name == "FlagOrder");
+        Assert.NotNull(flagOrder.Scope);
+        var scope = flagOrder.Scope!;
+        Assert.Equal(["manager"], scope.BypassRoles);
+        Assert.Equal("orders", scope.ResolveViaCollection);
+        Assert.Equal("orderId", scope.ResolveKeyField);
+        Assert.Equal("regionId", scope.ResolveSelectField);
+        Assert.Equal("regionManagers", scope.MemberOfViaCollection);
+        Assert.Equal("regionId", scope.MemberOfMatchField);
+    }
+
+    [Fact]
+    public void FieldGatedRole_resolves_a_string_value_and_keeps_the_payload_field_name_unsanitized()
+    {
+        var doc = DocumentLoader.Parse(CommandAuthorizationDocumentJson);
+
+        var result = DocumentMapper.Map(doc);
+
+        var staff = result.Domains.Single(d => d.Aggregate == "staff");
+        var onboardStaff = staff.Commands.Single(c => c.Name == "OnboardStaff");
+        Assert.NotNull(onboardStaff.FieldGatedRole);
+        var fieldGated = onboardStaff.FieldGatedRole!;
+        Assert.Equal("role", fieldGated.Field);
+        Assert.Equal(new StringFieldValue("manager"), fieldGated.Value);
+        Assert.Equal(["administrator"], fieldGated.RequiredRole);
+    }
+
+    [Fact]
+    public void RequiredOwnership_referencing_a_nonexistent_read_model_is_rejected_with_a_clear_reason()
+    {
+        var doc = DocumentLoader.Parse(CommandAuthorizationDocumentJson);
+        var updateOrder = doc.Commands!["update-order"];
+        var mutatedOwnership = updateOrder.RequiredOwnership! with
+        {
+            Via = updateOrder.RequiredOwnership!.Via with { ReadModelId = "no-such-read-model" },
+        };
+        var mutatedCommands = new Dictionary<string, DotnetCqrs.Codegen.Model.CommandDef>(doc.Commands!)
+        {
+            ["update-order"] = updateOrder with { RequiredOwnership = mutatedOwnership },
+        };
+        var mutatedDoc = doc with { Commands = mutatedCommands };
+
+        var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(mutatedDoc));
+        Assert.Contains(ex.Report.Errors, e =>
+            e.Contains("update-order") && e.Contains("requiredOwnership") && e.Contains("no-such-read-model"));
+    }
 }

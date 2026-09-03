@@ -1,3 +1,4 @@
+using System.Text.Json;
 using DotnetCqrs.Codegen.Domain;
 using DotnetCqrs.Codegen.Model;
 
@@ -386,6 +387,10 @@ public sealed class DocumentMapper
             Name = CommandName(id),
             Once = once,
             RequiresExisting = requiresExisting,
+            RequiredRole = cmd.RequiredRole,
+            FieldGatedRole = BuildFieldGatedRole(id, cmd.FieldGatedRole),
+            RequiredOwnership = BuildOwnership(id, cmd.RequiredOwnership),
+            Scope = BuildScope(id, cmd.Scope),
         };
         command.Fields.AddRange(BuildFields($"command \"{id}\"", cmd.Fields ?? []));
 
@@ -668,6 +673,79 @@ public sealed class DocumentMapper
     {
         if (_document.ReadModels is null || !_document.ReadModels.TryGetValue(readModelId, out var rm)) return null;
         return Names.SanitizeName(CollectionName(rm.Name, readModelId));
+    }
+
+    /// <summary>Resolves a command's <c>fieldGatedRole</c> (schema 2.5.0): the payload
+    /// field name is passed through unsanitized -- it is compared against the raw wire
+    /// JSON's own property name at runtime, not turned into a code identifier or SQL
+    /// column the way a read-model field is. <c>value</c>'s <see cref="JsonValueKind"/>
+    /// is checked defensively even though the schema's own <c>oneOf</c> already restricts
+    /// it to string/boolean/number -- same posture as <see cref="ResolveReadModelCollection"/>'s
+    /// sibling <c>dateRange</c> filter guard, for a <see cref="Document"/> built directly
+    /// in C# rather than parsed from JSON.</summary>
+    private Domain.FieldGatedRolePolicy? BuildFieldGatedRole(string commandId, CommandFieldGatedRoleDef? def)
+    {
+        if (def is null) return null;
+
+        Domain.FieldGatedRoleValue? value = def.Value.ValueKind switch
+        {
+            JsonValueKind.String => new Domain.StringFieldValue(def.Value.GetString()!),
+            JsonValueKind.True or JsonValueKind.False => new Domain.BoolFieldValue(def.Value.GetBoolean()),
+            JsonValueKind.Number => new Domain.NumberFieldValue(def.Value.GetDouble()),
+            _ => null,
+        };
+        if (value is null)
+        {
+            _report.Error($"command \"{commandId}\"'s fieldGatedRole.value must be a string, boolean, or number, " +
+                $"found {def.Value.ValueKind}");
+            return null;
+        }
+        return new Domain.FieldGatedRolePolicy(def.Field, value, def.RequiredRole);
+    }
+
+    /// <summary>Resolves a command's <c>requiredOwnership</c> (schema 2.5.0), same
+    /// via-resolution posture as <see cref="ResolveReadModelCollection"/>'s existing
+    /// <c>readModel.scopes</c> mapping.</summary>
+    private Domain.OwnershipPolicy? BuildOwnership(string commandId, CommandOwnershipDef? def)
+    {
+        if (def is null) return null;
+
+        var viaCollection = ResolveReadModelCollection(def.Via.ReadModelId);
+        if (viaCollection is null)
+        {
+            _report.Error($"command \"{commandId}\"'s requiredOwnership references read model " +
+                $"\"{def.Via.ReadModelId}\", which does not exist");
+            return null;
+        }
+        return new Domain.OwnershipPolicy(
+            def.BypassRoles ?? [], viaCollection,
+            Names.SanitizeName(def.Via.KeyField), Names.SanitizeName(def.Via.OwnerField));
+    }
+
+    /// <summary>Resolves a command's <c>scope</c> (schema 2.5.0) -- two independent
+    /// via-resolutions, same posture as <see cref="BuildOwnership"/>.</summary>
+    private Domain.ScopePolicy? BuildScope(string commandId, CommandScopeDef? def)
+    {
+        if (def is null) return null;
+
+        var resolveCollection = ResolveReadModelCollection(def.ResolveVia.ReadModelId);
+        if (resolveCollection is null)
+        {
+            _report.Error($"command \"{commandId}\"'s scope.resolveVia references read model " +
+                $"\"{def.ResolveVia.ReadModelId}\", which does not exist");
+            return null;
+        }
+        var memberOfCollection = ResolveReadModelCollection(def.MemberOfVia.ReadModelId);
+        if (memberOfCollection is null)
+        {
+            _report.Error($"command \"{commandId}\"'s scope.memberOfVia references read model " +
+                $"\"{def.MemberOfVia.ReadModelId}\", which does not exist");
+            return null;
+        }
+        return new Domain.ScopePolicy(
+            def.BypassRoles ?? [],
+            resolveCollection, Names.SanitizeName(def.ResolveVia.KeyField), Names.SanitizeName(def.ResolveVia.SelectField),
+            memberOfCollection, Names.SanitizeName(def.MemberOfVia.MatchField));
     }
 
     // ---- helpers ----

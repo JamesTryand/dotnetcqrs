@@ -39,6 +39,10 @@ public static class HostProjectGenerator
             foreach (var readModel in domain.ReadModels)
                 files.Add(ReadModelQueryGenerator.Generate(domain, readModel));
         }
+        // Cross-cutting, one file for the whole document -- see
+        // CommandAuthorizationGenerator's own doc comment for why this can't be emitted
+        // per-aggregate/per-command the way everything else above is.
+        files.Add(CommandAuthorizationGenerator.Generate(mapped.Domains));
 
         files.Add(GenerateCsproj(projectName, dotnetCqrsProjectPath));
         files.Add(GenerateProgram(mapped, dotnetCqrsProjectPath, aggregateOverrides));
@@ -182,6 +186,15 @@ public static class HostProjectGenerator
 
         b.AppendLine("var app = builder.Build();");
         b.AppendLine("_ = engine.StartAsync(app.Lifetime.ApplicationStopping);");
+        // Generated.CommandAuthorization.AuthorizeAsync (Generated/CommandAuthorization.cs)
+        // is always emitted, but never auto-wired here -- same posture as resolveActor
+        // above, which this generator also leaves unset. Both need project-specific
+        // resolver delegates (an actor id, an own role, an own staff id) this generator
+        // has no way to know; wiring `authorize: (user, aggregate, command, id, payload,
+        // ct) => Generated.CommandAuthorization.AuthorizeAsync(user, aggregate, command,
+        // id, payload, readModelDb, resolveOwnRole, resolveOwnStaffId, ct)` -- closing
+        // over this same file's own `readModelDb`, not a new route-handler parameter --
+        // is the operator's own addition, the same way resolveActor already is.
         b.AppendLine("app.MapCqrsGateway();");
         foreach (var domain in mapped.Domains)
         {

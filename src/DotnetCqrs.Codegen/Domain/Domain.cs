@@ -55,7 +55,55 @@ public sealed class Command
 
     /// <summary>Needs the aggregate to already exist.</summary>
     public bool RequiresExisting { get; init; }
+
+    /// <summary>The actor's own role must be one of these (schema 2.5.0
+    /// <c>command.requiredRole</c>). Null when undeclared -- today's default, no role
+    /// requirement at all.</summary>
+    public IReadOnlyList<string>? RequiredRole { get; init; }
+
+    /// <summary><see cref="FieldGatedRolePolicy.RequiredRole"/> applies only when the
+    /// command payload's own <see cref="FieldGatedRolePolicy.Field"/> equals
+    /// <see cref="FieldGatedRolePolicy.Value"/> (schema 2.5.0 <c>command.fieldGatedRole</c>).</summary>
+    public FieldGatedRolePolicy? FieldGatedRole { get; init; }
+
+    /// <summary>The actor must own the command's own target (schema 2.5.0
+    /// <c>command.requiredOwnership</c>).</summary>
+    public OwnershipPolicy? RequiredOwnership { get; init; }
+
+    /// <summary>Role bypasses outright, else the actor must be a member of a resolved
+    /// set (schema 2.5.0 <c>command.scope</c>).</summary>
+    public ScopePolicy? Scope { get; init; }
 }
+
+/// <summary>Domain-level counterpart of <see cref="Model.CommandFieldGatedRoleDef"/>:
+/// <see cref="Value"/> is resolved to a typed <see cref="FieldGatedRoleValue"/> once,
+/// here, so <see cref="Generation"/> never re-consults the document's raw JSON.</summary>
+public sealed record FieldGatedRolePolicy(string Field, FieldGatedRoleValue Value, IReadOnlyList<string> RequiredRole);
+
+/// <summary>One JSON scalar a <see cref="FieldGatedRolePolicy"/> compares a command
+/// payload field against -- the schema allows a string, boolean, or number
+/// (<c>commandFieldGatedRole.value</c>), never an object/array/null.</summary>
+public abstract record FieldGatedRoleValue;
+
+public sealed record StringFieldValue(string Value) : FieldGatedRoleValue;
+
+public sealed record BoolFieldValue(bool Value) : FieldGatedRoleValue;
+
+public sealed record NumberFieldValue(double Value) : FieldGatedRoleValue;
+
+/// <summary>Domain-level counterpart of <see cref="Model.CommandOwnershipDef"/>:
+/// <see cref="ViaCollection"/> is already the target physical collection/table name
+/// (resolved once, here, from the document's own <c>via.readModelId</c> -- generation
+/// never re-consults the document), same posture as <see cref="ReadModelScope"/>.</summary>
+public sealed record OwnershipPolicy(IReadOnlyList<string> BypassRoles, string ViaCollection, string KeyField, string OwnerField);
+
+/// <summary>Domain-level counterpart of <see cref="Model.CommandScopeDef"/>: both
+/// <c>*Collection</c> names are already resolved physical collection/table names, same
+/// posture as <see cref="OwnershipPolicy"/>/<see cref="ReadModelScope"/>.</summary>
+public sealed record ScopePolicy(
+    IReadOnlyList<string> BypassRoles,
+    string ResolveViaCollection, string ResolveKeyField, string ResolveSelectField,
+    string MemberOfViaCollection, string MemberOfMatchField);
 
 /// <summary>One event a command may record. Fields are never inherited implicitly from
 /// the command — "carries nothing" (<see cref="NoFields"/>) and "nobody said what it
