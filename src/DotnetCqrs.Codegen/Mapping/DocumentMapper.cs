@@ -606,7 +606,7 @@ public sealed class DocumentMapper
             var (key, keyNote) = ReadModelKey(id, rm, chosenOwner);
             if (keyNote is not null) _report.Warn(keyNote);
 
-            var readModel = new Domain.ReadModel { Collection = Names.SanitizeName(CollectionName(rm.Name, id)), Key = key };
+            var readModel = new Domain.ReadModel { Collection = Names.SanitizeName(CollectionName(rm.Name, id)), Key = key, RequiredRole = rm.RequiredRole };
             readModel.Fields.AddRange(BuildFields($"read model \"{id}\"", rm.Fields ?? [], defaultRowKeyField: key));
             readModel.On.AddRange(onEventIds.Select(EventTypeName));
             readModel.SeedOn.AddRange(onEventIds.Where(seedEventIds.Contains).Select(EventTypeName));

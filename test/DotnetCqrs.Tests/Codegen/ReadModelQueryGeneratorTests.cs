@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Net;
 using System.Text.Json;
 using DotnetCqrs.Codegen;
+using DotnetCqrs.Codegen.Domain;
 using DotnetCqrs.Codegen.Generation;
 using DotnetCqrs.Codegen.Mapping;
 
@@ -224,6 +225,235 @@ public class ReadModelQueryGeneratorTests : IDisposable
             var byPlainField = await client.GetFromJsonAsync<JsonElement>("/api/query/timeEntries?entryId=e1");
             Assert.Equal(1, byPlainField.GetArrayLength());
             Assert.Equal("e1", byPlainField[0].GetProperty("entry_id").GetString());
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
+            }
+        }
+    }
+
+    // Schema 2.7.0 readModel.requiredRole. A minimal single-read-model document rather
+    // than reusing the dateRange fixture above -- keeps the two concerns (filters,
+    // requiredRole) each provable in isolation.
+    private const string RoleGateJson = """
+        {
+          "eventModelingSchemaVersion": "2.7.0", "id": "role-gate-test", "name": "Role Gate Test",
+          "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+          "events": {
+            "widget-made": {"name": "Widget Made", "swimlaneId": "s", "aggregate": "Widget",
+              "fields": [
+                {"name": "widgetId", "type": "string", "idAttribute": true},
+                {"name": "name", "type": "string"}
+              ]}
+          },
+          "commands": {
+            "make-widget": {"name": "Make Widget", "aggregate": "Widget"}
+          },
+          "readModels": {
+            "widgets": {
+              "name": "Widgets",
+              "builtFromEventIds": ["widget-made"],
+              "fields": [
+                {"name": "widgetId", "type": "string", "idAttribute": true},
+                {"name": "name", "type": "string"}
+              ],
+              "requiredRole": ["manager", "administrator"]
+            }
+          },
+          "screens": {"scr1": {"name": "Make Screen"}},
+          "slices": [
+            {
+              "id": "make-widget-slice", "name": "Make Widget", "pattern": "stateChange",
+              "swimlaneId": "s", "status": "created",
+              "screenId": "scr1", "commandId": "make-widget", "eventIds": ["widget-made"],
+              "scenarios": []
+            }
+          ]
+        }
+        """;
+
+    // Reads an X-Test-Role header into a ClaimsPrincipal claim -- a stand-in for a real
+    // auth scheme, same spirit as HostGenerationTests' own unauthenticated-by-default
+    // host: this test isn't proving an auth SCHEME, only that the generated route
+    // consults whatever resolveOwnRole delegate it's given.
+    private const string RoleGateProgramCsTemplate = """
+        using DotnetCqrs.EventStore;
+        using DotnetCqrs.ReadModels;
+        using Generated.Widget;
+        using System.Security.Claims;
+
+        var store = await SqliteReadModelStore.OpenAsync(":memory:");
+        var projection = new WidgetsProjection(store);
+        await projection.InitAsync();
+
+        var seedEvent = new Event(1, "seed-1", "widget", "w1", 1, "WidgetMade",
+            System.Text.Json.JsonSerializer.Serialize(new { widgetId = "w1", name = "Widget One" }),
+            "{}", "1970-01-01T00:00:00.000Z");
+        await projection.ApplyAsync(seedEvent, CancellationToken.None);
+
+        var builder = WebApplication.CreateBuilder(args);
+        builder.Services.AddSingleton<IReadModelStore>(store);
+        var app = builder.Build();
+
+        app.Use(async (context, next) =>
+        {
+            var role = context.Request.Headers["X-Test-Role"].ToString();
+            var claims = role.Length > 0 ? new[] { new Claim("role", role) } : Array.Empty<Claim>();
+            context.User = new ClaimsPrincipal(new ClaimsIdentity(claims, "TestScheme"));
+            await next();
+        });
+
+        string ResolveOwnRole(ClaimsPrincipal user) => user.FindFirst("role")?.Value ?? "";
+
+        {{MAP_CALL}}
+        await app.RunAsync();
+        """;
+
+    private static (GeneratedFile[] Files, Domain Domain, ReadModel ReadModel) GenerateRoleGateRoute()
+    {
+        var doc = DocumentLoader.Parse(RoleGateJson);
+        var mapped = DocumentMapper.Map(doc);
+        var domain = Assert.Single(mapped.Domains);
+        var readModel = Assert.Single(domain.ReadModels);
+        Assert.Equal("widget", domain.Aggregate);
+        Assert.Equal("widgets", readModel.Collection);
+        Assert.Equal(["manager", "administrator"], readModel.RequiredRole);
+
+        var files = new List<GeneratedFile>(CSharpGenerator.Generate(domain))
+        {
+            ReadModelQueryGenerator.Generate(domain, readModel),
+        };
+        return (files.ToArray(), domain, readModel);
+    }
+
+    private async Task<int> StartHostAndBuildAsync(GeneratedFile[] files, string programCs, string scratchDir)
+    {
+        var csproj = $"""
+            <Project Sdk="Microsoft.NET.Sdk.Web">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+                <ImplicitUsings>enable</ImplicitUsings>
+                <Nullable>enable</Nullable>
+              </PropertyGroup>
+              <ItemGroup>
+                <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs", "DotnetCqrs.csproj")}" />
+                <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs.Codegen", "DotnetCqrs.Codegen.csproj")}" />
+              </ItemGroup>
+            </Project>
+            """;
+        await File.WriteAllTextAsync(Path.Combine(scratchDir, "Scratch.csproj"), csproj);
+        foreach (var file in files)
+            await File.WriteAllTextAsync(Path.Combine(scratchDir, file.Name), file.Source);
+        await File.WriteAllTextAsync(Path.Combine(scratchDir, "Program.cs"), programCs);
+
+        var (buildExit, buildOutput) = await RunAsync("dotnet", ["build", scratchDir, "-v", "quiet"]);
+        Assert.True(buildExit == 0, $"generated query route project did not compile:\n{buildOutput}");
+        return FreeTcpPort();
+    }
+
+    [Fact(Timeout = 300000)]
+    public async Task Generated_query_route_enforces_requiredRole_when_resolveOwnRole_is_wired()
+    {
+        var (files, _, _) = GenerateRoleGateRoute();
+        var programCs = RoleGateProgramCsTemplate.Replace("{{MAP_CALL}}",
+            "app.MapWidgetsRoute(resolveOwnRole: ResolveOwnRole);");
+        var port = await StartHostAndBuildAsync(files, programCs, _scratchDir);
+
+        var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        psi.ArgumentList.Add("run");
+        psi.ArgumentList.Add("--project");
+        psi.ArgumentList.Add(_scratchDir);
+        psi.ArgumentList.Add("--no-build");
+        psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+
+        using var process = Process.Start(psi)!;
+        try
+        {
+            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+
+            async Task<HttpResponseMessage> PollAsync(string? role)
+            {
+                for (var attempt = 0; attempt < 60; attempt++)
+                {
+                    await Task.Delay(500);
+                    try
+                    {
+                        using var req = new HttpRequestMessage(HttpMethod.Get, "/api/query/widgets");
+                        if (role is not null) req.Headers.Add("X-Test-Role", role);
+                        return await client.SendAsync(req);
+                    }
+                    catch (HttpRequestException) { /* not listening yet -- retry */ }
+                }
+                throw new TimeoutException("generated host never answered /api/query/widgets");
+            }
+
+            using var staffResponse = await PollAsync("staff");
+            Assert.False(process.HasExited, "generated host process exited early");
+            Assert.Equal(HttpStatusCode.Forbidden, staffResponse.StatusCode);
+
+            using var noRoleResponse = await client.GetAsync("/api/query/widgets");
+            Assert.Equal(HttpStatusCode.Forbidden, noRoleResponse.StatusCode);
+
+            using var managerResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Get, "/api/query/widgets") { Headers = { { "X-Test-Role", "manager" } } });
+            Assert.Equal(HttpStatusCode.OK, managerResponse.StatusCode);
+            var rows = await managerResponse.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal(1, rows.GetArrayLength());
+            Assert.Equal("w1", rows[0].GetProperty("widget_id").GetString());
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
+            }
+        }
+    }
+
+    [Fact(Timeout = 300000)]
+    public async Task Generated_query_route_stays_open_when_resolveOwnRole_is_not_wired()
+    {
+        // Same "generated code is a scaffold, wiring real auth is the operator's job"
+        // posture command authorization already established: a read model declaring
+        // requiredRole doesn't self-enforce it -- unset resolveOwnRole (this generator's
+        // default, and HostProjectGenerator's own generated Program.cs) means the route
+        // stays exactly as open as it was before this capability existed.
+        var (files, _, _) = GenerateRoleGateRoute();
+        var programCs = RoleGateProgramCsTemplate.Replace("{{MAP_CALL}}", "app.MapWidgetsRoute();");
+        var port = await StartHostAndBuildAsync(files, programCs, _scratchDir);
+
+        var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        psi.ArgumentList.Add("run");
+        psi.ArgumentList.Add("--project");
+        psi.ArgumentList.Add(_scratchDir);
+        psi.ArgumentList.Add("--no-build");
+        psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+
+        using var process = Process.Start(psi)!;
+        try
+        {
+            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+
+            async Task<HttpResponseMessage> PollAsync()
+            {
+                for (var attempt = 0; attempt < 60; attempt++)
+                {
+                    await Task.Delay(500);
+                    try { return await client.GetAsync("/api/query/widgets"); }
+                    catch (HttpRequestException) { /* not listening yet -- retry */ }
+                }
+                throw new TimeoutException("generated host never answered /api/query/widgets");
+            }
+
+            using var response = await PollAsync();
+            Assert.False(process.HasExited, "generated host process exited early");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var rows = await response.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal(1, rows.GetArrayLength());
         }
         finally
         {

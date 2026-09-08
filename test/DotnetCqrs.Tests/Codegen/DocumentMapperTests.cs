@@ -546,9 +546,11 @@ public class DocumentMapperTests
           },
           "readModels": {
             "orders": {"name": "Orders", "builtFromEventIds": ["order-placed"],
-              "fields": [{"name": "orderId", "type": "string", "idAttribute": true}, {"name": "ownerId", "type": "string"}, {"name": "regionId", "type": "string"}]},
+              "fields": [{"name": "orderId", "type": "string", "idAttribute": true}, {"name": "ownerId", "type": "string"}, {"name": "regionId", "type": "string"}],
+              "requiredRole": "manager"},
             "region-managers": {"name": "Region Managers", "builtFromEventIds": ["order-placed"],
-              "fields": [{"name": "staffId", "type": "string", "idAttribute": true}, {"name": "regionId", "type": "string"}]}
+              "fields": [{"name": "staffId", "type": "string", "idAttribute": true}, {"name": "regionId", "type": "string"}],
+              "requiredRole": ["manager", "administrator"]}
           },
           "screens": {"scr": {"name": "Screen"}},
           "slices": [
@@ -574,6 +576,22 @@ public class DocumentMapperTests
         var order = result.Domains.Single(d => d.Aggregate == "order");
         var placeOrder = order.Commands.Single(c => c.Name == "PlaceOrder");
         Assert.Equal(["manager", "administrator"], placeOrder.RequiredRole);
+    }
+
+    [Fact]
+    public void ReadModel_requiredRole_maps_as_a_list_whether_declared_as_one_value_or_an_array()
+    {
+        // Schema 2.7.0's read-side mirror of command.requiredRole -- same
+        // RoleOrRolesConverter, same normalize-to-a-list behavior.
+        var doc = DocumentLoader.Parse(CommandAuthorizationDocumentJson);
+
+        var result = DocumentMapper.Map(doc);
+
+        var order = result.Domains.Single(d => d.Aggregate == "order");
+        var orders = order.ReadModels.Single(rm => rm.Collection == "orders");
+        Assert.Equal(["manager"], orders.RequiredRole);
+        var regionManagers = order.ReadModels.Single(rm => rm.Collection == "regionManagers");
+        Assert.Equal(["manager", "administrator"], regionManagers.RequiredRole);
     }
 
     [Fact]

@@ -196,6 +196,13 @@ public static class HostProjectGenerator
         // over this same file's own `readModelDb`, not a new route-handler parameter --
         // is the operator's own addition, the same way resolveActor already is.
         b.AppendLine("app.MapCqrsGateway();");
+        // Each Map{Model}Route() below (ReadModelQueryGenerator) takes its own optional
+        // `resolveOwnRole` for a read model declaring `requiredRole` (schema 2.7.0) --
+        // same "left unset here, wired by the operator" posture as authorize/resolveActor
+        // above, e.g. `app.Map{Model}Route(resolveOwnRole: resolveOwnRole);` once the
+        // operator has a real one. Unset (the default below), every route stays open
+        // regardless of any declared requiredRole -- unchanged behavior from before this
+        // capability existed, same "generated code is a scaffold" posture throughout.
         foreach (var domain in mapped.Domains)
         {
             foreach (var readModel in domain.ReadModels)

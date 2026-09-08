@@ -187,6 +187,17 @@ public sealed class ReadModel
     /// <summary>Declared single-field WHERE-range filters (schema 2.4.0) — see
     /// <see cref="ReadModelFilter"/>.</summary>
     public List<ReadModelFilter> Filters { get; } = [];
+
+    /// <summary>The actor's own role must be one of these to query this read model at
+    /// all (schema 2.7.0 <c>readModel.requiredRole</c>) — the read-side mirror of
+    /// <see cref="Command.RequiredRole"/>, same shape and same "null means undeclared,
+    /// no requirement" default. Unlike <see cref="Command.RequiredRole"/>, which a
+    /// runtime policy TABLE resolves per-request (<c>CommandAuthorizationGenerator</c>'s
+    /// own doc comment explains why: one shared gateway route dispatches every command),
+    /// this is checked directly in the generated per-read-model route itself
+    /// (<see cref="Generation.ReadModelQueryGenerator"/>) — each route already only ever
+    /// needs its OWN read model's fixed role list, so there's no runtime lookup to do.</summary>
+    public IReadOnlyList<string>? RequiredRole { get; init; }
 }
 
 /// <summary>One <c>readModel.scopes</c> entry, fully resolved: <c>ViaCollection</c> is

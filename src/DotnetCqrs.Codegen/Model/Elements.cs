@@ -21,7 +21,13 @@ public sealed record CommandDef(
     CommandOwnershipDef? RequiredOwnership,
     CommandScopeDef? Scope);
 
-public sealed record ReadModelDef(string Name, string? Description, string? Question, IReadOnlyList<string>? BuiltFromEventIds, IReadOnlyList<Field>? Fields, IReadOnlyList<ReadModelScopeDef>? Scopes, IReadOnlyList<ReadModelFilterDef>? Filters);
+/// <summary><c>RequiredRole</c> is schema 2.7.0's <c>readModel.requiredRole</c> -- the
+/// read-side mirror of <see cref="CommandDef.RequiredRole"/>, same shape (a role id, or
+/// a non-empty array, satisfied by membership) and same converter.</summary>
+public sealed record ReadModelDef(
+    string Name, string? Description, string? Question, IReadOnlyList<string>? BuiltFromEventIds,
+    IReadOnlyList<Field>? Fields, IReadOnlyList<ReadModelScopeDef>? Scopes, IReadOnlyList<ReadModelFilterDef>? Filters,
+    [property: JsonConverter(typeof(RoleOrRolesConverter))] IReadOnlyList<string>? RequiredRole);
 
 /// <summary>One <c>readModel.scopes</c> entry: a query param that resolves through
 /// another read model rather than naming one of this model's own columns — the

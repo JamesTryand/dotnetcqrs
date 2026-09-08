@@ -41,9 +41,11 @@ public sealed record CommandScopeResolveVia(string ReadModelId, string KeyField,
 public sealed record CommandScopeMemberOfVia(string ReadModelId, string MatchField);
 
 /// <summary>Deserializes <c>requiredRole</c>/<c>bypassRoles</c>/<c>fieldGatedRole.requiredRole</c>:
-/// the schema's own <c>commandRole</c> <c>$def</c> is an <c>anyOf</c> of a single role id or
-/// a non-empty array of them (<c>eventmodelschema</c> 2.5.0) -- normalized to a list here
-/// so nothing downstream re-checks which JSON shape a document happened to use.</summary>
+/// the schema's own <c>roleRequirement</c> <c>$def</c> (named <c>commandRole</c> before
+/// <c>eventmodelschema</c> 2.7.0 -- renamed once <c>readModel.requiredRole</c> started
+/// reusing it too) is an <c>anyOf</c> of a single role id or a non-empty array of them
+/// (<c>eventmodelschema</c> 2.5.0) -- normalized to a list here so nothing downstream
+/// re-checks which JSON shape a document happened to use.</summary>
 public sealed class RoleOrRolesConverter : JsonConverter<IReadOnlyList<string>>
 {
     public override IReadOnlyList<string>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)

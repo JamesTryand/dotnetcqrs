@@ -31,6 +31,29 @@ namespace DotnetCqrs.Codegen.Generation;
 /// <c>.RequireAuthorization()</c> — same posture <c>MapCqrsGateway</c> already takes;
 /// auth is out of scope here (deferred, per this project's own README, to whichever
 /// stage wires a route into a real host).</para>
+///
+/// <para><b>Role gating (schema 2.7.0 <c>readModel.requiredRole</c>):</b> a declared
+/// <see cref="Domain.ReadModel.RequiredRole"/> is checked directly inside this route's
+/// own handler, not through a shared runtime policy table the way
+/// <c>CommandAuthorizationGenerator</c>'s <c>CommandAuthorization.Policies</c> is —
+/// that shape exists specifically because ONE shared gateway route dispatches every
+/// command, so it needs a runtime <c>(aggregate, command)</c> lookup
+/// (<c>CommandAuthorizationGenerator</c>'s own doc comment). Every read model already
+/// gets its OWN generated route here, so its required role is a plain literal baked in
+/// at generation time — no lookup needed, same posture this generator already takes for
+/// a read model's own <see cref="Domain.ReadModelScope"/>/<see cref="Domain.ReadModelFilter"/>
+/// SQL. Takes an optional <c>resolveOwnRole</c> delegate, same "pluggable hook, default
+/// null means no check" precedent as <c>MapCqrsGateway</c>'s own <c>authorize</c>
+/// parameter — wiring a real one (and <c>.RequireAuthorization()</c> for authentication
+/// itself) is the operator's job, not this generator's; see
+/// <c>HostProjectGenerator</c>'s generated <c>Program.cs</c> for where that wiring goes.
+/// Deliberately does NOT force a <c>scopes</c> param (e.g. <c>pmStaffId</c>) to the
+/// caller's own identity — this generator never has, for any read model — so there is
+/// no interaction to reason about between the two: <c>requiredRole</c> gates the whole
+/// route regardless of which params a request supplies, and a project needing
+/// per-caller scope-forcing on top of that still hand-writes it, exactly as
+/// <c>project/timesheets</c>'s own Phase 04g already did before this capability
+/// existed.</para>
 /// </summary>
 public static class ReadModelQueryGenerator
 {
@@ -39,6 +62,7 @@ public static class ReadModelQueryGenerator
         var typeName = GenerationSupport.ExportName(readModel.Collection);
 
         var b = new StringBuilder();
+        b.AppendLine("using System.Security.Claims;");
         b.AppendLine("using System.Text.Json;");
         b.AppendLine("using DotnetCqrs.Codegen.Generation;");
         b.AppendLine("using DotnetCqrs.ReadModels;");
@@ -49,13 +73,28 @@ public static class ReadModelQueryGenerator
         b.AppendLine($"namespace Generated.{GenerationSupport.ExportName(domain.Aggregate)};");
         b.AppendLine();
         b.AppendLine($"/// <summary>Read-side query route for the \"{readModel.Collection}\" table -- see");
-        b.AppendLine("/// ReadModelQueryGenerator's own doc comment for the query-string convention.</summary>");
+        b.AppendLine("/// ReadModelQueryGenerator's own doc comment for the query-string convention and role gating.</summary>");
         b.AppendLine($"public static class {typeName}QueryRoute");
         b.AppendLine("{");
-        b.AppendLine($"    public static RouteHandlerBuilder Map{typeName}Route(this IEndpointRouteBuilder endpoints, string prefix = \"/api/query\")");
+        b.AppendLine($"    public static RouteHandlerBuilder Map{typeName}Route(this IEndpointRouteBuilder endpoints, string prefix = \"/api/query\", Func<ClaimsPrincipal, string>? resolveOwnRole = null)");
         b.AppendLine("    {");
         b.AppendLine($"        return endpoints.MapGet($\"{{prefix}}/{readModel.Collection}\", async (HttpRequest request, IReadModelStore store, CancellationToken ct) =>");
         b.AppendLine("        {");
+        if (readModel.RequiredRole is { Count: > 0 } requiredRole)
+        {
+            // A bare collection expression has no target type when `.Contains(...)` is
+            // called on it directly (CS9176) -- an explicitly-typed local gives it one,
+            // same fix CommandAuthorizationGenerator's own literal gets for free by
+            // assigning into a declared `string[]?` record property instead.
+            b.AppendLine("            if (resolveOwnRole is not null)");
+            b.AppendLine("            {");
+            b.AppendLine($"                string[] requiredRole = {GenerationSupport.QuotedArray(requiredRole)};");
+            b.AppendLine("                var ownRole = resolveOwnRole(request.HttpContext.User);");
+            b.AppendLine("                if (!requiredRole.Contains(ownRole, StringComparer.OrdinalIgnoreCase))");
+            b.AppendLine("                    return Results.Problem(\"not authorized\", statusCode: StatusCodes.Status403Forbidden);");
+            b.AppendLine("            }");
+            b.AppendLine();
+        }
         b.AppendLine("            var clauses = new List<string>();");
         b.AppendLine("            var parameters = new Dictionary<string, object?>();");
         b.AppendLine("            var i = 0;");
