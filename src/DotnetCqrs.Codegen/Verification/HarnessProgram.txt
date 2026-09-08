@@ -117,7 +117,7 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
             }
         }
 
-        var rows = await SelectRowsAsync(readModel.Connection, scenario.TableName, scenario.QueryParams, scenario.Scopes, scenario.Filters);
+        var rows = await SelectRowsAsync(readModel.Connection, scenario.TableName, scenario.QueryParams, scenario.AsOf, scenario.Scopes, scenario.Filters);
 
         // Two `then.result` shapes are supported. A single-property object whose value
         // is a JSON array (e.g. `{"entries": [...]}`) is a NAMED-LIST result: the query
@@ -170,8 +170,12 @@ static async Task CallInitAsync(object projection)
 }
 
 static async Task<List<Dictionary<string, object?>>> SelectRowsAsync(
-    DbConnection db, string table, string? queryParamsJson, List<ViewScopeInput> scopes, List<ViewFilterInput> filters)
+    DbConnection db, string table, string? queryParamsJson, string? asOf, List<ViewScopeInput> scopes, List<ViewFilterInput> filters)
 {
+    // schema 2.6.0: a scenario-supplied asOf pins what "today" means for a dateRange
+    // preset below, instead of always reading the live clock -- see ReadModelQuery's
+    // own doc comment (Model/Refs.cs) for why this exists (scenario clock drift).
+    var today = asOf is not null ? DateOnly.Parse(asOf) : DateOnly.FromDateTime(DateTime.UtcNow);
     string sql;
     var parameters = new Dictionary<string, object?>();
     if (string.IsNullOrEmpty(queryParamsJson) || queryParamsJson == "{}")
@@ -200,7 +204,7 @@ static async Task<List<Dictionary<string, object?>>> SelectRowsAsync(
                 var kind = value.GetProperty("kind").GetString()!;
                 var from = value.TryGetProperty("from", out var fromEl) && fromEl.ValueKind == JsonValueKind.String ? fromEl.GetString() : null;
                 var to = value.TryGetProperty("to", out var toEl) && toEl.ValueKind == JsonValueKind.String ? toEl.GetString() : null;
-                var (rangeFrom, rangeTo) = DateRangeResolver.ResolveBounds(kind, from, to, DateOnly.FromDateTime(DateTime.UtcNow));
+                var (rangeFrom, rangeTo) = DateRangeResolver.ResolveBounds(kind, from, to, today);
                 var fromParam = $"@p{i++}";
                 var toParam = $"@p{i++}";
                 var column = ToSnakeCase(filter.Field);
@@ -450,7 +454,7 @@ record ViewGivenEventInput(string Type, string Data, string MainKey, Dictionary<
 record CommandScenarioInput(string SliceId, string ScenarioId, string Name, string Kind, string DeciderTypeName,
     string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes);
 record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,
-    string TableName, List<ViewGivenEventInput> Given, string? QueryParams, string ExpectedResult,
+    string TableName, List<ViewGivenEventInput> Given, string? QueryParams, string? AsOf, string ExpectedResult,
     List<ViewScopeInput> Scopes, List<ViewFilterInput> Filters);
 record ViewScopeInput(string Param, string ViaProjectionTypeName, string ViaTableName, string MatchParamToColumn, string SelectColumn, string FilterLocalColumn);
 record ViewFilterInput(string Param, string Field, string Kind);

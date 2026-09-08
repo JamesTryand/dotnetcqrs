@@ -546,4 +546,82 @@ public class ScenarioVerifierTests
         var view = results.Single(r => r.ScenarioId == "view-within-custom-range");
         Assert.True(view.Passed, view.Detail);
     }
+
+    [Fact(Timeout = 60000)]
+    public async Task An_asOf_pin_resolves_a_last7Days_preset_against_a_fixed_date_not_the_live_clock()
+    {
+        // Schema 2.6.0's readModelQuery.asOf: without it, last7Days/lastCalendarMonth
+        // resolve "today" from DateTime.UtcNow, so this exact scenario would only pass
+        // on whatever 7-day window contains the real date the test happens to run on --
+        // the drift that motivated asOf in the first place (see NEEDS.md item 8,
+        // project/timesheets's export-pm-slice). asOf: "2026-09-06" pins the window to
+        // 2026-08-31..2026-09-06 regardless of when this test actually executes: if the
+        // harness ignored asOf and used the live clock instead, e2 (2026-09-01) would
+        // fall outside today's real last7Days window and this assertion would fail.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "2.6.0", "id": "asof-verify-test", "name": "AsOf Verify Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "time-entry-logged": {"name": "Time Entry Logged", "swimlaneId": "s", "aggregate": "TimeEntry",
+                  "fields": [
+                    {"name": "entryId", "type": "string", "idAttribute": true},
+                    {"name": "taskDate", "type": "date"},
+                    {"name": "hours", "type": "double"}
+                  ]}
+              },
+              "commands": {
+                "log-time-entry": {"name": "Log Time Entry", "aggregate": "TimeEntry"}
+              },
+              "readModels": {
+                "time-entries": {
+                  "name": "Time Entries",
+                  "builtFromEventIds": ["time-entry-logged"],
+                  "fields": [
+                    {"name": "entryId", "type": "string", "idAttribute": true},
+                    {"name": "taskDate", "type": "date"},
+                    {"name": "hours", "type": "double"}
+                  ],
+                  "filters": [
+                    {"param": "dateRange", "field": "taskDate", "kind": "dateRange", "presets": ["last7Days", "lastCalendarMonth", "custom"]}
+                  ]
+                }
+              },
+              "screens": {"scr1": {"name": "Log Screen"}, "scr2": {"name": "View Screen"}},
+              "slices": [
+                {
+                  "id": "log-time-entry-slice", "name": "Log Time Entry", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr1", "commandId": "log-time-entry", "eventIds": ["time-entry-logged"],
+                  "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"log-time-entry"},"then":{"events":[{"eventId":"time-entry-logged"}]}}]
+                },
+                {
+                  "id": "view-time-entries-slice", "name": "View Time Entries", "pattern": "stateView",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr2", "readModelId": "time-entries",
+                  "scenarios": [{
+                    "id": "view-within-pinned-last7days-window", "name": "Only entries inside the asOf-pinned last7Days window are returned", "kind": "stateView",
+                    "given": [
+                      {"eventId": "time-entry-logged", "data": {"entryId": "e1", "taskDate": "2026-08-30", "hours": 4}},
+                      {"eventId": "time-entry-logged", "data": {"entryId": "e2", "taskDate": "2026-09-01", "hours": 3}},
+                      {"eventId": "time-entry-logged", "data": {"entryId": "e3", "taskDate": "2026-09-06", "hours": 2}}
+                    ],
+                    "when": {"readModelId": "time-entries", "asOf": "2026-09-06", "queryParams": {"dateRange": {"kind": "last7Days"}}},
+                    "then": {"result": {"entries": [
+                      {"entryId": "e2", "taskDate": "2026-09-01", "hours": 3},
+                      {"entryId": "e3", "taskDate": "2026-09-06", "hours": 2}
+                    ]}}
+                  }]
+                }
+              ]
+            }
+            """;
+        var doc = DocumentLoader.Parse(json);
+        var mapped = DocumentMapper.Map(doc);
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+
+        var view = results.Single(r => r.ScenarioId == "view-within-pinned-last7days-window");
+        Assert.True(view.Passed, view.Detail);
+    }
 }

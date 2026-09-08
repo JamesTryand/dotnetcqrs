@@ -52,6 +52,7 @@ public sealed record ViewScenarioInput(
     string TableName,
     IReadOnlyList<ViewGivenEventInput> Given,
     string? QueryParams,
+    string? AsOf, // schema 2.6.0 -- when present, pins "today" for a dateRange preset in QueryParams instead of the live clock
     string ExpectedResult,
     IReadOnlyList<ViewScopeInput> Scopes, // only entries whose param is present in QueryParams
     IReadOnlyList<ViewFilterInput> Filters); // every readModel.filters entry -- the harness only acts on one whose param is actually present in QueryParams

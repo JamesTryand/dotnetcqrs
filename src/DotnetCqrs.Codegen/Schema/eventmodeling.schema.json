@@ -10,7 +10,7 @@
     "eventModelingSchemaVersion": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+$",
-      "default": "2.5.0"
+      "default": "2.6.0"
     },
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
@@ -500,7 +500,8 @@
       "required": ["readModelId"],
       "properties": {
         "readModelId": { "$ref": "#/$defs/id" },
-        "queryParams": { "type": "object" }
+        "queryParams": { "type": "object" },
+        "asOf": { "type": "string", "format": "date" }
       },
       "additionalProperties": false
     },

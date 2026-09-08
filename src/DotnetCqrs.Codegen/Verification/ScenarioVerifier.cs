@@ -188,7 +188,8 @@ public static class ScenarioVerifier
         viewScenarios.Add(new ViewScenarioInput(
             slice.Id, scenario.Id, scenario.Name, projectionTypeName, info.Aggregate,
             info.Collection, given,
-            scenario.When.QueryParams?.GetRawText(), scenario.Then.Result.GetRawText(), scopes, filters));
+            scenario.When.QueryParams?.GetRawText(), scenario.When.AsOf,
+            scenario.Then.Result.GetRawText(), scopes, filters));
     }
 
     /// <summary>The schema field a read model itself declares <c>idAttribute: true</c>
