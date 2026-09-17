@@ -46,13 +46,16 @@ jobs:
 
       # OIDC -> temporary (1-hour, single-use) NuGet API key. Requires a Trusted
       # Publishing policy registered on nuget.org first (Repository Owner:
-      # JamesTryand, Repository: dotnetcqrs, Workflow File: publish-nuget.yml) --
-      # see this repo's NEEDS.md in the platform/dotnet-cqrs-baseline worktree.
+      # JamesTryand -- the GitHub account -- Repository: dotnetcqrs, Workflow File:
+      # publish-nuget.yml) -- see this repo's NEEDS.md in the
+      # platform/dotnet-cqrs-baseline worktree. `user:` below is the nuget.org
+      # *profile name*, not the GitHub account or email -- confirmed with the user
+      # as `jtryand`, distinct from the GitHub/PackageId prefix on purpose.
       - name: NuGet login (OIDC -> temp API key)
         uses: NuGet/login@v1
         id: login
         with:
-          user: JamesTryand
+          user: jtryand
 
       - name: Push packages
         run: |
