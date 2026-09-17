@@ -127,8 +127,12 @@ public sealed class Event
 /// set — <c>text</c>/<c>number</c>/<c>bool</c>/<c>date</c>/<c>json</c> — that either a
 /// C# or a JS code generator maps onto its own concrete types (see
 /// <see cref="FieldTypeFolding"/>). <c>Derivation</c> is only ever set on a read-model
-/// field; a command/event field carries none.</summary>
-public sealed record Field(string Name, string Type, Derivation? Derivation = null);
+/// field; a command/event field carries none. <c>Pii</c> is a direct passthrough of
+/// <see cref="Model.Field.Pii"/> — same shape as <c>RequiredRole</c>/<c>Filters</c>, no
+/// via-resolution needed. <c>Type</c> stays the field's underlying folded type even when
+/// <c>Pii</c> is true; a generator wraps it (e.g. C#'s <c>Pii&lt;T&gt;</c>) rather than
+/// this record encoding the wrapping itself.</summary>
+public sealed record Field(string Name, string Type, Derivation? Derivation = null, bool Pii = false);
 
 /// <summary>How a read-model field is computed as a fold over named (already
 /// generator-resolved) event type names, instead of copied from a same-named payload

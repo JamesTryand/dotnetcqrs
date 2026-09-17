@@ -431,7 +431,7 @@ public sealed class DocumentMapper
             var note = FieldTypeFolding.Note(owner, field);
             if (note is not null) _report.Warn(note);
             var derivation = BuildDerivation(owner, field, defaultRowKeyField);
-            result.Add(new Domain.Field(Names.SanitizeName(field.Name), FieldTypeFolding.Fold(field), derivation));
+            result.Add(new Domain.Field(Names.SanitizeName(field.Name), FieldTypeFolding.Fold(field), derivation, field.Pii == true));
         }
         return result;
     }

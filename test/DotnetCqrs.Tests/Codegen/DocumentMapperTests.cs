@@ -163,6 +163,20 @@ public class DocumentMapperTests
     }
 
     [Fact]
+    public void A_field_pii_marked_field_carries_Pii_true_through_to_the_domain_and_unmarked_fields_do_not()
+    {
+        var result = MapOrderFulfillment();
+        var order = result.Domains.Single(d => d.Aggregate == "order");
+        var orderPlaced = order.Commands.Single(c => c.Name == "PlaceOrder").Events.Single(e => e.Name == "OrderPlaced");
+
+        var customerEmail = orderPlaced.Fields.Single(f => f.Name == "customerEmail");
+        Assert.True(customerEmail.Pii);
+
+        var orderId = orderPlaced.Fields.Single(f => f.Name == "orderId");
+        Assert.False(orderId.Pii);
+    }
+
+    [Fact]
     public void Chapters_and_slice_status_are_named_as_lossy()
     {
         var result = MapOrderFulfillment();
