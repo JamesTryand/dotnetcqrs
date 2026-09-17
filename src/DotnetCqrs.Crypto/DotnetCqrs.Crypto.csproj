@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- Only BCL (System.Net.Http.Json, System.Text.Json) needed — this talks to
+       platform/key-management-service's facade over plain HTTPS/JSON, no Vault SDK,
+       no dependency on DotnetCqrs.Abstractions (Pii<T> is a standalone value type any
+       generated payload/state record can reference). -->
+
+</Project>
