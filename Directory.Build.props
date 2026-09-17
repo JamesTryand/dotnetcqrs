@@ -1,0 +1,17 @@
+<Project>
+
+  <!-- Shared NuGet packaging metadata for every packable project under src/. Individual
+       .csproj files only need their own PackageId + Description on top of this. -->
+  <PropertyGroup>
+    <Authors>James Tryand</Authors>
+    <PackageProjectUrl>https://github.com/JamesTryand/dotnetcqrs</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/JamesTryand/dotnetcqrs</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>cqrs;event-sourcing;dotnet</PackageTags>
+    <!-- Local/manual `dotnet pack` fallback, matching the latest existing git tag.
+         CI overrides this with -p:Version=<tag, "v" stripped> at publish time. -->
+    <Version>0.7.0</Version>
+  </PropertyGroup>
+
+</Project>

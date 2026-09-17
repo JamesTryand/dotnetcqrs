@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>JamesTryand.DotnetCqrs.Abstractions</PackageId>
+    <Description>Provider-neutral CQRS/event-sourcing contracts for dotnetcqrs -- envelope types, IEventStore/IReadModelStore, and the consumer/decider surface. No implementation.</Description>
   </PropertyGroup>
 
   <!-- Deliberately zero PackageReference: this project is the provider-neutral

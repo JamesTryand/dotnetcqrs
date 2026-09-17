@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>JamesTryand.DotnetCqrs.Postgres</PackageId>
+    <Description>Postgres implementation of dotnetcqrs's provider-neutral event-store/read-model contracts (DotnetCqrs.Abstractions) -- the sibling of DotnetCqrs's SQLite implementation.</Description>
   </PropertyGroup>
 
   <!-- Npgsql is the only PackageReference: this is the Postgres implementation of the

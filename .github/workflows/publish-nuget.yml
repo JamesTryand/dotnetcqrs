@@ -1,0 +1,62 @@
+name: Publish NuGet packages
+
+# Fires on the same v*.*.* tag convention this repo already uses (v0.1.0 .. v0.7.0 so
+# far) -- pushing a new tag is the release action, nothing extra to remember.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to request the short-lived OIDC token Trusted Publishing exchanges
+      # for a temporary NuGet API key -- no long-lived secret stored anywhere.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      # Strip the leading "v" (tag v0.7.0 -> package version 0.7.0).
+      - name: Derive package version from the tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore and build
+        run: dotnet build --configuration Release
+
+      - name: Pack all packable projects
+        run: |
+          mkdir -p artifacts
+          for proj in \
+            src/DotnetCqrs.Abstractions/DotnetCqrs.Abstractions.csproj \
+            src/DotnetCqrs/DotnetCqrs.csproj \
+            src/DotnetCqrs.Host/DotnetCqrs.Host.csproj \
+            src/DotnetCqrs.Codegen/DotnetCqrs.Codegen.csproj \
+            src/DotnetCqrs.Codegen.Cli/DotnetCqrs.Codegen.Cli.csproj \
+            src/DotnetCqrs.Postgres/DotnetCqrs.Postgres.csproj \
+          ; do
+            dotnet pack "$proj" --configuration Release --no-build \
+              -p:Version=${{ steps.version.outputs.value }} -o artifacts
+          done
+
+      # OIDC -> temporary (1-hour, single-use) NuGet API key. Requires a Trusted
+      # Publishing policy registered on nuget.org first (Repository Owner:
+      # JamesTryand, Repository: dotnetcqrs, Workflow File: publish-nuget.yml) --
+      # see this repo's NEEDS.md in the platform/dotnet-cqrs-baseline worktree.
+      - name: NuGet login (OIDC -> temp API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: JamesTryand
+
+      - name: Push packages
+        run: |
+          dotnet nuget push "artifacts/*.nupkg" \
+            --api-key ${{ steps.login.outputs.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate

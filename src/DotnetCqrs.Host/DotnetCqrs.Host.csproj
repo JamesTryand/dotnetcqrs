@@ -8,6 +8,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>JamesTryand.DotnetCqrs.Host</PackageId>
+    <Description>ASP.NET Core command gateway for dotnetcqrs -- POST /{prefix}/{aggregate}/{aggregateId}/{command}, pluggable auth (bring your own AddJwtBearer/etc.) and file storage (IFileStore).</Description>
   </PropertyGroup>
 
   <!-- Lets this class library reference ASP.NET Core routing/hosting types

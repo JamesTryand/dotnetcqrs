@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>JamesTryand.DotnetCqrs.Codegen</PackageId>
+    <Description>Generates dotnetcqrs deciders, projections, reactors, and a runnable host project from an EventModeling document, plus scenario verification against the generated code.</Description>
   </PropertyGroup>
 
   <ItemGroup>
