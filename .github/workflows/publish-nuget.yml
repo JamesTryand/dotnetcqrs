@@ -2,10 +2,19 @@ name: Publish NuGet packages
 
 # Fires on the same v*.*.* tag convention this repo already uses (v0.1.0 .. v0.7.0 so
 # far) -- pushing a new tag is the release action, nothing extra to remember.
+# workflow_dispatch added 2026-09-17 as a manual-trigger fallback/test path -- the
+# tag-push trigger for v0.8.0 didn't produce a run for reasons not yet root-caused
+# (repo/Actions settings all checked out fine); this lets a run be started directly
+# from the Actions tab UI regardless.
 on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version to publish, e.g. 0.8.0 (only used for a manual run -- a tag push derives this automatically from the tag name)"
+        required: true
 
 jobs:
   publish:
@@ -21,10 +30,17 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      # Strip the leading "v" (tag v0.7.0 -> package version 0.7.0).
-      - name: Derive package version from the tag
+      # Tag push: strip the leading "v" (tag v0.7.0 -> package version 0.7.0).
+      # Manual dispatch: use the version typed into the workflow_dispatch input instead.
+      - name: Derive package version
         id: version
-        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            value="${{ inputs.version }}"
+          else
+            value="${GITHUB_REF_NAME#v}"
+          fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
 
       - name: Restore and build
         run: dotnet build --configuration Release
