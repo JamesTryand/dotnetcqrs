@@ -1,39 +1,46 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using DotnetCqrs.Deciders;
 
 namespace DotnetCqrs.Crypto;
 
 public enum PiiState
 {
-    /// <summary>Carries ciphertext + subject id; nothing decrypted yet. The whole point
-    /// of this state existing is that constructing one costs zero facade traffic.</summary>
+    /// <summary>Plaintext that has just entered the system (a command field) and has not
+    /// been encrypted yet. Readable by <c>Decide</c>; refuses to serialise, so it can never
+    /// reach the event store by accident.</summary>
+    Fresh,
+
+    /// <summary>Carries ciphertext + subject id; nothing decrypted yet. Constructing one
+    /// costs zero facade traffic. Reading <see cref="Pii{T}.Value"/> throws
+    /// <see cref="RevealRequiredException"/>, which <c>DeciderRegistry</c> turns into one
+    /// batched reveal followed by a re-run of <c>Decide</c>.</summary>
     Pending,
 
-    /// <summary>The owning subject's key has been destroyed (crypto-shredded) — this is
-    /// the correct terminal state for an erased subject's data, not a fault.</summary>
+    /// <summary>The owning subject's key has been destroyed (crypto-shredded) — the
+    /// correct terminal state for an erased subject's data, not a fault.</summary>
     Redacted,
 
-    /// <summary>The value has been revealed (or was constructed from a known value) and
-    /// is available via <see cref="Pii{T}.Value"/>.</summary>
+    /// <summary>Revealed (or freshly encrypted): the value is available and the
+    /// ciphertext is known, so it serialises without another round trip.</summary>
     Known,
 }
 
-/// <summary>A `field.pii`-marked value: lazy (constructing/copying one never touches the
-/// facade) and, when revealed via a <see cref="PiiRevealBuffer"/>, batched with every
-/// other pending reveal for the same subject. See
-/// <c>platform/key-management-service/findings.md</c>'s "Phase 4 design" section for the
-/// full rationale.
+/// <summary>A `field.pii`-marked value. Lazy (constructing or copying one never touches
+/// the facade), batched when revealed through a <see cref="PiiRevealBuffer"/>, and
+/// fail-closed on the wire: the JSON converter writes only the ciphertext envelope
+/// <c>{"$pii":{"s":subject,"c":ciphertext}}</c> and throws on a <see cref="PiiState.Fresh"/>
+/// value, while reading accepts either that envelope (⇒ <see cref="PiiState.Pending"/>)
+/// or a bare scalar (⇒ <see cref="PiiState.Fresh"/>, how a command's plaintext arrives).
 ///
 /// <c>T</c> is always one of dotnetcqrs's five folded field CLR types
-/// (<c>string</c>/<c>double</c>/<c>bool</c>/<c>DateTime</c>/<c>JsonElement</c> — see
-/// <c>GenerationSupport.CSharpType</c>); the encrypt/decrypt codec is plain
-/// <see cref="JsonSerializer"/> round-tripping of <c>T</c> rather than a per-type codec,
-/// since JSON already faithfully round-trips all five.
+/// (<c>string</c>/<c>double</c>/<c>bool</c>/<c>DateTime</c>/<c>JsonElement</c>); the
+/// encrypt/decrypt codec is plain <see cref="JsonSerializer"/> round-tripping of <c>T</c>.
 ///
-/// Deliberately has no public constructor and no way to read <see cref="Ciphertext"/>'s
-/// bytes as plaintext without a real facade round trip (via <see cref="RevealAsync"/>) —
-/// there is no code path in this type that can produce a plaintext value the facade
-/// itself didn't hand back, matching the facade's own non-exportable-key guarantee one
-/// layer up.</summary>
+/// There is no code path in this type that produces a plaintext value the facade itself
+/// didn't hand back or a command didn't carry in, matching the facade's own
+/// non-exportable-key guarantee one layer up.</summary>
+[JsonConverter(typeof(PiiJsonConverterFactory))]
 public sealed class Pii<T>
 {
     public PiiState State { get; }
@@ -49,46 +56,54 @@ public sealed class Pii<T>
         _value = value;
     }
 
-    /// <summary>Wraps a ciphertext read back from storage (e.g. deserializing a stored
-    /// event). Costs nothing until <see cref="RevealAsync"/> is called.</summary>
+    /// <summary>Plaintext that has just arrived and must be encrypted before it can be
+    /// stored. <c>Decide</c> may read it freely.</summary>
+    public static Pii<T> Fresh(T value) => new(PiiState.Fresh, null, null, value);
+
+    /// <summary>Wraps a ciphertext read back from storage. Costs nothing until revealed.</summary>
     public static Pii<T> FromCiphertext(string subjectId, string ciphertext) =>
         new(PiiState.Pending, subjectId, ciphertext, default);
 
-    /// <summary>A value whose subject's key is already known to be destroyed (e.g. a
-    /// caller checked the erasure ledger before even attempting to store/read the
-    /// field). <paramref name="subjectId"/> is optional context for diagnostics only.</summary>
+    /// <summary>A value whose subject's key is known to be destroyed.</summary>
     public static Pii<T> Redacted(string? subjectId = null) =>
         new(PiiState.Redacted, subjectId, null, default);
 
     private static Pii<T> Known(string subjectId, string ciphertext, T value) =>
         new(PiiState.Known, subjectId, ciphertext, value);
 
-    /// <summary>Throws unless <see cref="State"/> is <see cref="PiiState.Known"/> — call
-    /// <see cref="RevealAsync"/> (and flush the buffer) first.</summary>
-    public T Value => State == PiiState.Known
-        ? _value!
-        : throw new InvalidOperationException(
-            $"Pii<{typeof(T).Name}> is {State}, not Known — call RevealAsync via a PiiRevealBuffer (and flush it) first.");
-
-    /// <summary>Encrypts <paramref name="value"/> under <paramref name="subjectId"/>'s
-    /// key (ensuring the key exists first) and returns a <see cref="Pii{T}"/> already in
-    /// the <see cref="PiiState.Known"/> state, carrying the resulting ciphertext for
-    /// storage. This is a direct, unbatched facade round trip — Milestone C decides where
-    /// in the write path this actually gets called from (see <c>findings.md</c>'s open
-    /// design question); this method itself makes no assumption about that.</summary>
-    public static async Task<Pii<T>> EncryptAsync(IKmsClient client, string subjectId, T value, CancellationToken ct = default)
+    /// <summary>The plaintext, for a <see cref="PiiState.Fresh"/> or
+    /// <see cref="PiiState.Known"/> value. A <see cref="PiiState.Pending"/> value throws
+    /// <see cref="RevealRequiredException"/> (the registry reveals and re-decides); a
+    /// <see cref="PiiState.Redacted"/> value throws <see cref="PiiRedactedException"/> —
+    /// check <see cref="State"/> first when erasure is a legitimate branch.</summary>
+    public T Value => State switch
     {
+        PiiState.Fresh or PiiState.Known => _value!,
+        PiiState.Pending => throw new RevealRequiredException(
+            $"Pii<{typeof(T).Name}> for subject '{SubjectId}' has not been revealed yet."),
+        _ => throw new PiiRedactedException(SubjectId),
+    };
+
+    /// <summary>Encrypts a <see cref="PiiState.Fresh"/> value under
+    /// <paramref name="subjectId"/>'s key (ensuring the key exists), returning a
+    /// <see cref="PiiState.Known"/> value that carries the ciphertext for storage.
+    /// Any other state returns itself — already encrypted, or nothing to encrypt.</summary>
+    public async Task<Pii<T>> EncryptAsync(IKmsClient client, string subjectId, CancellationToken ct = default)
+    {
+        if (State != PiiState.Fresh) return this;
         await client.EnsureKeyAsync(subjectId, ct).ConfigureAwait(false);
-        var plaintext = JsonSerializer.SerializeToUtf8Bytes(value);
-        var ciphertext = await client.EncryptAsync(subjectId, plaintext, ct).ConfigureAwait(false);
-        return Known(subjectId, ciphertext, value);
+        var ciphertext = await client.EncryptAsync(subjectId, Encode(_value!), ct).ConfigureAwait(false);
+        return Known(subjectId, ciphertext, _value!);
     }
 
-    /// <summary>A <see cref="PiiState.Known"/> or <see cref="PiiState.Redacted"/> value
-    /// returns itself immediately (no-op, no facade traffic). A
-    /// <see cref="PiiState.Pending"/> value enqueues into <paramref name="buffer"/> and
-    /// returns a task that completes only once <see cref="PiiRevealBuffer.FlushAsync"/>
-    /// runs — nothing happens until the caller flushes.</summary>
+    /// <summary>Convenience for a value not yet wrapped: <c>Fresh(value).EncryptAsync(...)</c>.</summary>
+    public static Task<Pii<T>> EncryptAsync(IKmsClient client, string subjectId, T value, CancellationToken ct = default) =>
+        Fresh(value).EncryptAsync(client, subjectId, ct);
+
+    /// <summary>A <see cref="PiiState.Pending"/> value enqueues into
+    /// <paramref name="buffer"/> and returns a task that completes only once
+    /// <see cref="PiiRevealBuffer.FlushAsync"/> runs. Any other state returns itself
+    /// immediately with no facade traffic.</summary>
     public Task<Pii<T>> RevealAsync(PiiRevealBuffer buffer, CancellationToken ct = default) =>
         State == PiiState.Pending ? RevealPendingAsync(buffer, ct) : Task.FromResult(this);
 
@@ -99,8 +114,21 @@ public sealed class Pii<T>
         if (outcome.Redacted) return Redacted(SubjectId);
         if (outcome.Error is not null)
             throw new KmsProtocolException($"decrypt-batch item error for subject '{SubjectId}': {outcome.Error}");
-        var value = JsonSerializer.Deserialize<T>(outcome.Plaintext!)
-            ?? throw new KmsProtocolException($"decrypted plaintext for subject '{SubjectId}' deserialized to null");
-        return Known(SubjectId!, Ciphertext!, value);
+        return Known(SubjectId!, Ciphertext!, Decode(outcome.Plaintext!));
     }
+
+    internal static byte[] Encode(T value) => JsonSerializer.SerializeToUtf8Bytes(value);
+
+    internal static T Decode(byte[] plaintext) => JsonSerializer.Deserialize<T>(plaintext)
+        ?? throw new KmsProtocolException($"decrypted plaintext deserialized to a null {typeof(T).Name}");
+}
+
+/// <summary>A decision read a value whose subject has been erased. Distinct from
+/// <see cref="RevealRequiredException"/>: no reveal can help, and the registry does not
+/// retry. A decider that expects erasure as a normal branch checks
+/// <see cref="Pii{T}.State"/> instead of reading <see cref="Pii{T}.Value"/>.</summary>
+public sealed class PiiRedactedException(string? subjectId)
+    : Exception($"PII for subject '{subjectId}' has been erased (key destroyed).")
+{
+    public string? SubjectId { get; } = subjectId;
 }

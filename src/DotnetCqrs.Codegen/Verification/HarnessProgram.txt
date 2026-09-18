@@ -157,7 +157,10 @@ static void RegisterDecider(DeciderRegistry registry, string typeName, string ag
         ?? throw new InvalidOperationException($"{typeName}.Create() not found");
     var decider = createMethod.Invoke(null, null)!;
     var stateType = decider.GetType().GetGenericArguments()[0];
-    var registerMethod = typeof(DeciderRegistry).GetMethods().Single(m => m.Name == "Register" && m.IsGenericMethodDefinition)
+    // The two-argument overload: verification never registers a PII protector (there is
+    // no facade in a harness run), and Register has a three-argument sibling.
+    var registerMethod = typeof(DeciderRegistry).GetMethods()
+        .Single(m => m.Name == "Register" && m.IsGenericMethodDefinition && m.GetParameters().Length == 2)
         .MakeGenericMethod(stateType);
     registerMethod.Invoke(registry, [aggregate, decider]);
 }

@@ -18,6 +18,7 @@ internal sealed class FakeKmsHandler : HttpMessageHandler
     /// instead of a successful decrypt/encrypt result — set by a test before the call.</summary>
     public HashSet<string> ForceItemErrors { get; } = [];
 
+    public int EncryptCallCount { get; private set; }
     public int DecryptBatchCallCount { get; private set; }
     public List<int> DecryptBatchItemCounts { get; } = [];
 
@@ -57,6 +58,7 @@ internal sealed class FakeKmsHandler : HttpMessageHandler
 
     private HttpResponseMessage Encrypt(string subjectId, string body)
     {
+        EncryptCallCount++;
         if (!_keys.Contains(subjectId)) return new HttpResponseMessage(HttpStatusCode.NotFound);
         var plaintext = JsonDocument.Parse(body).RootElement.GetProperty("plaintext").GetString()!;
         return JsonResponse(HttpStatusCode.OK, $$"""{"ciphertext":"{{Seal(subjectId, plaintext)}}"}""");

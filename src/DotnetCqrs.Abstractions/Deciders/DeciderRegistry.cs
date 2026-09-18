@@ -17,13 +17,26 @@ public sealed class DeciderRegistry(IEventStore store)
 {
     private readonly Dictionary<string, ErasedDecider> _deciders = [];
 
+    /// <summary>Used to serialise a <see cref="NewEvent.Payload"/> into
+    /// <see cref="NewEvent.Data"/> at append time. Defaults to camelCase property names,
+    /// matching what generated deciders have always written by hand.</summary>
+    public JsonSerializerOptions PayloadSerializerOptions { get; set; } =
+        new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
     /// <summary>Adds a decider for an aggregate name.</summary>
-    public void Register<TState>(string aggregate, Decider<TState> decider)
+    public void Register<TState>(string aggregate, Decider<TState> decider) =>
+        Register(aggregate, decider, protector: null);
+
+    /// <summary>Adds a decider together with its <see cref="IPiiProtector"/>. A separate
+    /// overload rather than an optional parameter so the two-argument form stays
+    /// binary- and reflection-compatible (the verify harness resolves it by arity).</summary>
+    public void Register<TState>(string aggregate, Decider<TState> decider, IPiiProtector? protector)
     {
         _deciders[aggregate] = new ErasedDecider(
             Initial: () => decider.InitialState()!,
             Decide: (state, command) => decider.Decide((TState)state, command),
-            Evolve: (state, ev) => decider.Evolve((TState)state, ev)!);
+            Evolve: (state, ev) => decider.Evolve((TState)state, ev)!,
+            Protector: protector);
     }
 
     /// <summary>
@@ -67,13 +80,34 @@ public sealed class DeciderRegistry(IEventStore store)
         foreach (var ev in stream)
             state = decider.Evolve(state, ev);
 
-        var newEvents = decider.Decide(state, cmd);
+        IReadOnlyList<NewEvent> newEvents;
+        try
+        {
+            newEvents = decider.Decide(state, cmd);
+        }
+        catch (RevealRequiredException) when (decider.Protector is not null)
+        {
+            // The decision read protected state that is still ciphertext. Reveal it (one
+            // batched round trip) and decide again -- Decide is pure, so re-running it is
+            // free of side effects. A decision that never reads protected state never
+            // lands here and pays nothing.
+            state = await decider.Protector.RevealAsync(state, ct);
+            newEvents = decider.Decide(state, cmd);
+        }
         if (newEvents.Count == 0) return [];
 
-        var withMeta = newEvents.Select(ne => ne with { Metadata = MergeMeta(ne.Metadata, resolvedMeta) }).ToList();
+        if (decider.Protector is not null)
+            newEvents = await decider.Protector.ProtectAsync(aggregateId, newEvents, ct);
+
+        var withMeta = newEvents
+            .Select(ne => ne with { Data = Materialize(ne), Payload = null, Metadata = MergeMeta(ne.Metadata, resolvedMeta) })
+            .ToList();
 
         return await store.AppendAsync(aggregate, aggregateId, stream.Count, withMeta, ct);
     }
+
+    private string Materialize(NewEvent ne) =>
+        ne.Payload is null ? ne.Data : JsonSerializer.Serialize(ne.Payload, ne.Payload.GetType(), PayloadSerializerOptions);
 
     private static string? MetaString(IReadOnlyDictionary<string, object> meta, string key) =>
         meta.TryGetValue(key, out var value) ? value?.ToString() : null;
@@ -99,5 +133,6 @@ public sealed class DeciderRegistry(IEventStore store)
     private sealed record ErasedDecider(
         Func<object> Initial,
         Func<object, Command, IReadOnlyList<NewEvent>> Decide,
-        Func<object, Event, object> Evolve);
+        Func<object, Event, object> Evolve,
+        IPiiProtector? Protector);
 }

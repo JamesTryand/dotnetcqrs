@@ -6,9 +6,13 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
-  <!-- Only BCL (System.Net.Http.Json, System.Text.Json) needed — this talks to
-       platform/key-management-service's facade over plain HTTPS/JSON, no Vault SDK,
-       no dependency on DotnetCqrs.Abstractions (Pii<T> is a standalone value type any
-       generated payload/state record can reference). -->
+  <!-- BCL only (System.Net.Http.Json, System.Text.Json) plus the provider-neutral
+       contract: this talks to platform/key-management-service's facade over plain
+       HTTPS/JSON, no Vault SDK. The Abstractions reference exists for
+       RevealRequiredException, the one type Pii<T> and DeciderRegistry must agree on. -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\DotnetCqrs.Abstractions\DotnetCqrs.Abstractions.csproj" />
+  </ItemGroup>
 
 </Project>

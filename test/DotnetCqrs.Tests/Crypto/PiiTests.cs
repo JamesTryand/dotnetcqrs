@@ -88,7 +88,7 @@ public class PiiTests
         var revealed = await revealTask;
 
         Assert.Equal(PiiState.Redacted, revealed.State);
-        Assert.Throws<InvalidOperationException>(() => revealed.Value);
+        Assert.Throws<PiiRedactedException>(() => revealed.Value);
     }
 
     [Fact]
