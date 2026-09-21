@@ -131,8 +131,12 @@ public sealed class Event
 /// <see cref="Model.Field.Pii"/> — same shape as <c>RequiredRole</c>/<c>Filters</c>, no
 /// via-resolution needed. <c>Type</c> stays the field's underlying folded type even when
 /// <c>Pii</c> is true; a generator wraps it (e.g. C#'s <c>Pii&lt;T&gt;</c>) rather than
-/// this record encoding the wrapping itself.</summary>
-public sealed record Field(string Name, string Type, Derivation? Derivation = null, bool Pii = false);
+/// this record encoding the wrapping itself. <c>PiiSubject</c> (schema 3.0.0
+/// <c>field.piiSubject</c>) is the already-sanitised name of the sibling field whose
+/// value is the data subject's id — the key a PII value is encrypted under. Always
+/// present when <c>Pii</c> is true: <see cref="Mapping.DocumentMapper"/> rejects a PII
+/// field without a resolvable subject rather than defaulting one.</summary>
+public sealed record Field(string Name, string Type, Derivation? Derivation = null, bool Pii = false, string? PiiSubject = null);
 
 /// <summary>How a read-model field is computed as a fold over named (already
 /// generator-resolved) event type names, instead of copied from a same-named payload

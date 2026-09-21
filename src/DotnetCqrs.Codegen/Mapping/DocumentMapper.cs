@@ -423,17 +423,55 @@ public sealed class DocumentMapper
     /// derivation in practice (nothing stops the schema from allowing one there too --
     /// it's a structural, not semantic, constraint -- but a generator only ever
     /// consults <see cref="Domain.Field.Derivation"/> on a read model's own fields).</summary>
-    private List<Domain.Field> BuildFields(string owner, IReadOnlyList<Model.Field> fields, string? defaultRowKeyField = null)
+    private List<Domain.Field> BuildFields(string owner, IReadOnlyList<Model.Field> fields, string? defaultRowKeyField = null,
+        IReadOnlyList<Model.Field>? siblings = null)
     {
+        siblings ??= fields;
         var result = new List<Domain.Field>(fields.Count);
         foreach (var field in fields)
         {
             var note = FieldTypeFolding.Note(owner, field);
             if (note is not null) _report.Warn(note);
             var derivation = BuildDerivation(owner, field, defaultRowKeyField);
-            result.Add(new Domain.Field(Names.SanitizeName(field.Name), FieldTypeFolding.Fold(field), derivation, field.Pii == true));
+            var piiSubject = ResolvePiiSubject(owner, field, siblings);
+            result.Add(new Domain.Field(Names.SanitizeName(field.Name), FieldTypeFolding.Fold(field), derivation, field.Pii == true, piiSubject));
         }
         return result;
+    }
+
+    /// <summary>Resolves schema 3.0.0's <c>field.piiSubject</c> to the sanitised name of the
+    /// sibling field whose value is the data subject's id. The schema enforces
+    /// "<c>pii</c> ⇒ <c>piiSubject</c>" and "<c>piiSubject</c> ⇒ <c>pii</c>" structurally but
+    /// leaves the reference checks to generators; a <see cref="Model.Document"/> built directly
+    /// in C# can bypass even the structural ones, so all four are checked here. Every failure is
+    /// an <b>error</b>, never a default: a value encrypted under the wrong subject survives that
+    /// person's erasure, which is the one outcome crypto-shredding exists to prevent.</summary>
+    private string? ResolvePiiSubject(string owner, Model.Field field, IReadOnlyList<Model.Field> siblings)
+    {
+        var isPii = field.Pii == true;
+        if (field.PiiSubject is null)
+        {
+            if (isPii)
+                _report.Error($"{owner}: field \"{field.Name}\" is pii but declares no piiSubject -- name the sibling field that holds the data subject's id");
+            return null;
+        }
+        if (!isPii)
+        {
+            _report.Error($"{owner}: field \"{field.Name}\" declares piiSubject \"{field.PiiSubject}\" but is not pii");
+            return null;
+        }
+        var subject = siblings.FirstOrDefault(s => s.Name == field.PiiSubject);
+        if (subject is null)
+        {
+            _report.Error($"{owner}: field \"{field.Name}\" names piiSubject \"{field.PiiSubject}\", which is not a sibling field");
+            return null;
+        }
+        if (subject.Pii == true)
+        {
+            _report.Error($"{owner}: field \"{field.Name}\" names piiSubject \"{field.PiiSubject}\", which is itself pii -- a subject id cannot be encrypted under its own key");
+            return null;
+        }
+        return Names.SanitizeName(subject.Name);
     }
 
     /// <summary>Resolves a field's <see cref="Model.FieldDerivation"/> (raw schema ids,
@@ -487,7 +525,7 @@ public sealed class DocumentMapper
                             "declares a toggle derivation, which is not supported inside groupBy -- only count/sum subfields are");
                         continue;
                     }
-                    subfields.AddRange(BuildFields($"{owner} groupBy subfield", [subfield], defaultRowKeyField));
+                    subfields.AddRange(BuildFields($"{owner} groupBy subfield", [subfield], defaultRowKeyField, siblings: field.Subfields));
                 }
                 return new Domain.GroupByDerivation(Names.SanitizeName(g.GroupByField), subfields);
             default:

@@ -10,7 +10,7 @@
     "eventModelingSchemaVersion": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+$",
-      "default": "2.7.0"
+      "default": "3.0.0"
     },
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
@@ -166,6 +166,7 @@
         "cardinality": { "$ref": "#/$defs/fieldCardinality" },
         "idAttribute": { "type": "boolean" },
         "pii": { "type": "boolean" },
+        "piiSubject": { "type": "string", "minLength": 1 },
         "derivation": { "$ref": "#/$defs/fieldDerivation" },
         "subfields": {
           "type": "array",
@@ -173,7 +174,25 @@
         }
       },
       "additionalProperties": false,
+      "dependentSchemas": {
+        "piiSubject": {
+          "type": "object",
+          "required": ["pii"],
+          "properties": { "pii": { "const": true } }
+        }
+      },
       "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "required": ["pii"],
+            "properties": { "pii": { "const": true } }
+          },
+          "then": {
+            "type": "object",
+            "required": ["piiSubject"]
+          }
+        },
         {
           "if": {
             "type": "object",

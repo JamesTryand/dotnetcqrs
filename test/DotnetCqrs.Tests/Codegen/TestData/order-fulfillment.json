@@ -23,7 +23,8 @@
       "aggregate": "Order",
       "fields": [
         { "name": "orderId", "type": "uuid", "idAttribute": true },
-        { "name": "customerEmail", "type": "string", "pii": true },
+        { "name": "customerId", "type": "uuid" },
+        { "name": "customerEmail", "type": "string", "pii": true, "piiSubject": "customerId" },
         {
           "name": "items",
           "type": "custom",

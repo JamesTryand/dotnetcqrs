@@ -171,9 +171,47 @@ public class DocumentMapperTests
 
         var customerEmail = orderPlaced.Fields.Single(f => f.Name == "customerEmail");
         Assert.True(customerEmail.Pii);
+        Assert.Equal("customerId", customerEmail.PiiSubject);
 
         var orderId = orderPlaced.Fields.Single(f => f.Name == "orderId");
         Assert.False(orderId.Pii);
+        Assert.Null(orderId.PiiSubject);
+    }
+
+    // Schema 3.0.0's `piiSubject`: the schema enforces pii <=> piiSubject structurally but
+    // leaves the reference checks (does it name a sibling? is that sibling itself pii?) to
+    // generators, and a Document mutated in C# can bypass even the structural ones -- same
+    // reasoning as the dateRange/presets test below. Every case is an error, never a default.
+    private static DotnetCqrs.Codegen.Model.Document WithOrderPlacedCustomerEmail(Func<DotnetCqrs.Codegen.Model.Field, DotnetCqrs.Codegen.Model.Field> mutate)
+    {
+        var doc = DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json"));
+        var ev = doc.Events!["order-placed"];
+        var fields = ev.Fields!.Select(f => f.Name == "customerEmail" ? mutate(f) : f).ToList();
+        var events = new Dictionary<string, DotnetCqrs.Codegen.Model.EventDef>(doc.Events!) { ["order-placed"] = ev with { Fields = fields } };
+        return doc with { Events = events };
+    }
+
+    [Theory]
+    [InlineData(null, "declares no piiSubject")]
+    [InlineData("noSuchField", "not a sibling field")]
+    [InlineData("customerEmail", "is itself pii")]
+    public void A_pii_field_whose_subject_cannot_be_resolved_is_rejected_not_defaulted(string? subject, string reason)
+    {
+        var doc = WithOrderPlacedCustomerEmail(f => f with { PiiSubject = subject });
+
+        var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(doc));
+
+        Assert.Contains(ex.Report.Errors, e => e.Contains("customerEmail") && e.Contains(reason));
+    }
+
+    [Fact]
+    public void A_piiSubject_on_a_field_that_is_not_pii_is_rejected()
+    {
+        var doc = WithOrderPlacedCustomerEmail(f => f with { Pii = null });
+
+        var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(doc));
+
+        Assert.Contains(ex.Report.Errors, e => e.Contains("customerEmail") && e.Contains("is not pii"));
     }
 
     [Fact]
