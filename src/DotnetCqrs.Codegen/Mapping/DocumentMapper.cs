@@ -643,6 +643,7 @@ public sealed class DocumentMapper
 
             var (key, keyNote) = ReadModelKey(id, rm, chosenOwner);
             if (keyNote is not null) _report.Warn(keyNote);
+            CheckReadModelPii(id, rm, seedEventIds, key);
 
             var readModel = new Domain.ReadModel { Collection = Names.SanitizeName(CollectionName(rm.Name, id)), Key = key, RequiredRole = rm.RequiredRole };
             readModel.Fields.AddRange(BuildFields($"read model \"{id}\"", rm.Fields ?? [], defaultRowKeyField: key));
@@ -687,6 +688,89 @@ public sealed class DocumentMapper
                     filterDef.Param, Names.SanitizeName(filterDef.Field), filterDef.Kind, filterDef.Presets));
             }
             GetOrCreateDomain(chosenOwner).ReadModels.Add(readModel);
+        }
+    }
+
+    /// <summary>A projection copies a plain column from any same-named field on a seed
+    /// event's payload, and after the decider generator's PII work that payload carries a
+    /// <c>{"$pii":…}</c> envelope for a pii field, not a scalar. So a read-model field's
+    /// own <c>pii</c> flag must agree with every contributing event field it is copied
+    /// from, in both directions -- an error, never inferred (user's call, 2026-09-22):
+    /// the document has to say what the generated code does. The key column is exempt
+    /// (written from <c>ev.AggregateId</c>, never the payload). A derived field is never
+    /// copied, so it can't itself be pii, and the payload fields a derivation reads as
+    /// plaintext (row key, amount, group key) can't be pii on the events it folds.</summary>
+    private void CheckReadModelPii(string id, ReadModelDef rm, IReadOnlyCollection<string> seedEventIds, string key)
+    {
+        var owner = $"read model \"{id}\"";
+
+        bool? EventFieldPii(string eventId, string fieldName)
+        {
+            if (!TryGetEvent(eventId, out var ev)) return null;
+            var match = ev.Fields?.FirstOrDefault(f => Names.SanitizeName(f.Name) == Names.SanitizeName(fieldName));
+            return match is null ? null : match.Pii == true;
+        }
+
+        void RequirePlainRef(string field, string role, string refField, IEnumerable<string> eventIds)
+        {
+            foreach (var eventId in eventIds.Distinct().OrderBy(e => e, StringComparer.Ordinal))
+                if (EventFieldPii(eventId, refField) == true)
+                    _report.Error($"{owner}: field \"{field}\"'s {role} \"{refField}\" is pii on event \"{eventId}\" -- " +
+                        "a derivation reads it as plaintext, which an encrypted value is not");
+        }
+
+        void CheckDerivationRefs(string field, Model.FieldDerivation derivation)
+        {
+            switch (derivation)
+            {
+                case Model.CountDerivation c:
+                    RequirePlainRef(field, "rowKeyField", c.RowKeyField ?? key, c.IncrementOnEventIds.Concat(c.DecrementOnEventIds ?? []));
+                    break;
+                case Model.SumDerivation s:
+                    var events = s.AddOnEventIds.Concat(s.SubtractOnEventIds ?? []).ToList();
+                    RequirePlainRef(field, "rowKeyField", s.RowKeyField ?? key, events);
+                    RequirePlainRef(field, "amountField", s.AmountField, events);
+                    break;
+            }
+        }
+
+        foreach (var field in rm.Fields ?? [])
+        {
+            if (field.Derivation is not null)
+            {
+                if (field.Pii == true)
+                    _report.Error($"{owner}: field \"{field.Name}\" is pii but derived ({field.Derivation.Kind}) -- " +
+                        "a derived value is computed, never copied from a payload, so there is nothing to encrypt; drop pii");
+                CheckDerivationRefs(field.Name, field.Derivation);
+                if (field.Derivation is Model.GroupByDerivation g)
+                    foreach (var sub in field.Subfields ?? [])
+                    {
+                        if (sub.Derivation is null) continue;
+                        CheckDerivationRefs($"{field.Name}.{sub.Name}", sub.Derivation);
+                        var subEvents = sub.Derivation switch
+                        {
+                            Model.CountDerivation c => c.IncrementOnEventIds.Concat(c.DecrementOnEventIds ?? []),
+                            Model.SumDerivation s => s.AddOnEventIds.Concat(s.SubtractOnEventIds ?? []),
+                            _ => [],
+                        };
+                        RequirePlainRef(field.Name, "groupByField", g.GroupByField, subEvents);
+                    }
+                continue;
+            }
+
+            if (Names.SanitizeName(field.Name) == key) continue;
+
+            var readModelPii = field.Pii == true;
+            foreach (var eventId in seedEventIds.OrderBy(e => e, StringComparer.Ordinal))
+            {
+                var eventPii = EventFieldPii(eventId, field.Name);
+                if (eventPii is null || eventPii == readModelPii) continue;
+                _report.Error(readModelPii
+                    ? $"{owner}: field \"{field.Name}\" is pii, but event \"{eventId}\" carries it as plaintext -- " +
+                      "mark the event field pii too, or drop pii here"
+                    : $"{owner}: field \"{field.Name}\" is not pii, but event \"{eventId}\" carries it as pii -- " +
+                      "mark it pii (with a piiSubject) or drop the column");
+            }
         }
     }
 
@@ -873,8 +957,9 @@ public sealed class DocumentMapper
         // Event fields are no longer lossy: the decider generator types them Pii<T> and
         // emits a PiiProtector, so they are encrypted before append. Command fields never
         // persist (they arrive as plaintext and become event fields). What is still only
-        // partially handled is the read side: a projection copies the ciphertext envelope
-        // into its column as-is (safe at rest), but no generated query route reveals it yet.
+        // partially handled is the read side: a projection stores the ciphertext envelope's
+        // raw JSON in the column (safe at rest; CheckReadModelPii keeps the pii flags in
+        // agreement), but no generated query route reveals it yet.
         if (_document.ReadModels is not null)
             foreach (var (id, rm) in _document.ReadModels) Walk($"read model {id}", rm.Fields);
 
@@ -882,7 +967,7 @@ public sealed class DocumentMapper
         {
             flagged.Sort(StringComparer.Ordinal);
             _report.Note($"{flagged.Count} read-model field(s) are marked pii: {string.Join(", ", flagged)}. " +
-                "Their columns hold the ciphertext envelope; generated query routes do not reveal them yet");
+                "Their columns hold the ciphertext envelope's raw JSON; generated query routes return it as-is and do not reveal it yet");
         }
     }
 

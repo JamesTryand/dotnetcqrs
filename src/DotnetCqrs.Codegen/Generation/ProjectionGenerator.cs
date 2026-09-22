@@ -70,6 +70,9 @@ internal static class ProjectionGenerator
             {
                 Domain.CountDerivation => "INTEGER",
                 Domain.SumDerivation => "REAL",
+                // a pii column holds the {"$pii":…} envelope's raw JSON whatever the
+                // field's own type -- see EmitSeedBlock.
+                _ when field.Pii => "TEXT",
                 _ => GenerationSupport.SqliteType(field.Type),
             };
             // A count/sum column is arithmetic (col = col +/- n) from the moment its
@@ -227,7 +230,12 @@ internal static class ProjectionGenerator
             b.AppendLine($"        if (data.TryGetValue(\"{field.Name}\", out var {valueVar}))");
             b.AppendLine("        {");
             b.AppendLine($"            setClauses.Add(\"{column} = @{field.Name}\");");
-            b.AppendLine($"            update.AddParam(\"@{field.Name}\", {JsonElementAccessor(field.Type, valueVar)});");
+            // A pii field arrives as the {"$pii":{"s":…,"c":…}} envelope (an object), not
+            // a scalar, so it is stored as that envelope's raw JSON: ciphertext at rest,
+            // revealed (or not) at query time. DocumentMapper.CheckReadModelPii guarantees
+            // a non-pii column never receives an envelope.
+            var accessor = field.Pii ? $"{valueVar}.GetRawText()" : JsonElementAccessor(field.Type, valueVar);
+            b.AppendLine($"            update.AddParam(\"@{field.Name}\", {accessor});");
             b.AppendLine("        }");
         }
         foreach (var field in toggleColumns)

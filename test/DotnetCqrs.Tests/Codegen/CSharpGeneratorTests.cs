@@ -245,6 +245,82 @@ public class CSharpGeneratorTests : IDisposable
     }
 
     [Fact]
+    public async Task A_projection_stores_a_pii_column_as_the_ciphertext_envelope_instead_of_throwing()
+    {
+        // Milestone D's first bug: the generic field-merge read a text column with
+        // GetString(), and after C2 a pii field arrives as the {"$pii":…} envelope (an
+        // object) -- so the projection threw on the first PII-bearing event. order-summary
+        // gains customerId + customerEmail (pii, matching the event, which
+        // DocumentMapper.CheckReadModelPii now requires); the real write path produces the
+        // event, and the generated projection must store the envelope's raw JSON.
+        var doc = DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json"));
+        var rm = doc.ReadModels!["order-summary"];
+        var readModels = new Dictionary<string, DotnetCqrs.Codegen.Model.ReadModelDef>(doc.ReadModels!)
+        {
+            ["order-summary"] = rm with
+            {
+                Fields =
+                [
+                    .. rm.Fields!,
+                    new("customerId", "uuid", null, null, null, null, null, null, null, null),
+                    new("customerEmail", "string", null, null, null, null, true, "customerId", null, null),
+                ],
+            },
+        };
+        var result = DocumentMapper.Map(doc with { ReadModels = readModels }, new MappingOptions
+        {
+            AggregateOverrides = new Dictionary<string, string> { ["notify-shipping-partner"] = "ShippingNotification" },
+        });
+        var order = result.Domains.Single(d => d.Aggregate == "order");
+        var files = CSharpGenerator.Generate(order);
+
+        const string programCs = """"
+            using DotnetCqrs.Crypto;
+            using DotnetCqrs.Deciders;
+            using DotnetCqrs.EventStore;
+            using DotnetCqrs.ReadModels;
+            using Generated.Order;
+
+            var kms = new InMemoryKmsClient();
+            var store = await SqliteEventStore.OpenAsync(":memory:");
+            var registry = new DeciderRegistry(store);
+            registry.Register(OrderDecider.Aggregate, OrderDecider.Create(), new OrderDecider.PiiProtector(kms));
+            await registry.HandleAsync("order", "o1", new Command("PlaceOrder",
+                """{"orderId":"o1","customerId":"cust-1","customerEmail":"ada@example.com","items":[]}"""));
+            await registry.HandleAsync("order", "o1", new Command("ShipOrder", "{}"));
+
+            var readModel = await SqliteReadModelStore.OpenAsync(":memory:");
+            var projection = new OrderSummaryProjection(readModel);
+            await projection.InitAsync();
+            foreach (var ev in await store.LoadStreamAsync("order", "o1"))
+                await projection.ApplyAsync(ev, CancellationToken.None);
+
+            await using var select = readModel.Connection.CreateCommand();
+            select.CommandText = "SELECT customer_id, customer_email FROM orderSummary WHERE order_id = 'o1'";
+            await using var reader = await select.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) { Console.WriteLine("FAIL: no orderSummary row"); return 1; }
+            var customerId = reader.GetString(0);
+            var customerEmail = reader.GetString(1);
+
+            if (customerId != "cust-1") { Console.WriteLine($"FAIL: customer_id = {customerId}"); return 1; }
+            if (customerEmail.Contains("ada@example.com")) { Console.WriteLine($"FAIL: plaintext in read model: {customerEmail}"); return 1; }
+            if (!customerEmail.StartsWith("{\"$pii\":") || !customerEmail.Contains("\"s\":\"cust-1\""))
+            {
+                Console.WriteLine($"FAIL: column is not the envelope: {customerEmail}");
+                return 1;
+            }
+            if (kms.DecryptBatchCalls != 0) { Console.WriteLine($"FAIL: projection revealed, {kms.DecryptBatchCalls} calls"); return 1; }
+
+            Console.WriteLine("PASS");
+            return 0;
+            """";
+
+        var (success, output) = await BuildAsync(files, programCs);
+        Assert.True(success, $"generated PII projection did not build/run correctly:\n{output}");
+        Assert.Contains("PASS", output);
+    }
+
+    [Fact]
     public async Task An_endsStream_event_lets_a_removed_link_be_reassigned()
     {
         // Finding 3's Class 3 (findings.md §4): before this fix, Evolve only ever set

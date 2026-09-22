@@ -218,6 +218,89 @@ public class DocumentMapperTests
         Assert.Contains(ex.Report.Errors, e => e.Contains("customerEmail") && e.Contains("is not pii"));
     }
 
+    // Milestone D: a projection copies a plain column from any same-named field on its
+    // seed events, so a read-model field's pii flag must agree with the event field it
+    // copies -- a mapping error in both directions, never inferred (user's call, 2026-09-22).
+    private static readonly MappingOptions OrderFulfillmentOptions =
+        new() { AggregateOverrides = new Dictionary<string, string> { ["notify-shipping-partner"] = "ShippingNotification" } };
+
+    private static DotnetCqrs.Codegen.Model.Field RmField(string name, string type = "string", bool pii = false,
+        string? piiSubject = null, DotnetCqrs.Codegen.Model.FieldDerivation? derivation = null) =>
+        new(name, type, null, null, null, null, pii ? true : null, piiSubject, null, derivation);
+
+    private static DotnetCqrs.Codegen.Model.Document WithOrderSummaryFields(
+        DotnetCqrs.Codegen.Model.Document doc, params DotnetCqrs.Codegen.Model.Field[] extra)
+    {
+        var rm = doc.ReadModels!["order-summary"];
+        var readModels = new Dictionary<string, DotnetCqrs.Codegen.Model.ReadModelDef>(doc.ReadModels!)
+        {
+            ["order-summary"] = rm with { Fields = [.. rm.Fields!, .. extra] },
+        };
+        return doc with { ReadModels = readModels };
+    }
+
+    [Fact]
+    public void A_read_model_column_copied_from_a_pii_event_field_must_itself_be_pii()
+    {
+        var doc = WithOrderSummaryFields(DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json")),
+            RmField("customerEmail"));
+
+        var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(doc, OrderFulfillmentOptions));
+
+        Assert.Contains(ex.Report.Errors, e => e.Contains("order-summary") && e.Contains("customerEmail")
+            && e.Contains("is not pii, but event \"order-placed\" carries it as pii"));
+    }
+
+    [Fact]
+    public void A_pii_read_model_column_copied_from_a_plaintext_event_field_is_rejected()
+    {
+        var doc = WithOrderPlacedCustomerEmail(f => f with { Pii = null, PiiSubject = null });
+        doc = WithOrderSummaryFields(doc, RmField("customerId", "uuid"), RmField("customerEmail", pii: true, piiSubject: "customerId"));
+
+        var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(doc, OrderFulfillmentOptions));
+
+        Assert.Contains(ex.Report.Errors, e => e.Contains("customerEmail")
+            && e.Contains("is pii, but event \"order-placed\" carries it as plaintext"));
+    }
+
+    [Fact]
+    public void A_read_model_column_whose_pii_flag_matches_its_event_field_maps_as_pii()
+    {
+        var doc = WithOrderSummaryFields(DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json")),
+            RmField("customerId", "uuid"), RmField("customerEmail", pii: true, piiSubject: "customerId"));
+
+        var result = DocumentMapper.Map(doc, OrderFulfillmentOptions);
+
+        var summary = result.Domains.Single(d => d.Aggregate == "order").ReadModels.Single(rm => rm.Collection == "orderSummary");
+        Assert.True(summary.Fields.Single(f => f.Name == "customerEmail").Pii);
+        Assert.False(summary.Fields.Single(f => f.Name == "customerId").Pii);
+    }
+
+    [Fact]
+    public void A_derivation_that_reads_a_pii_event_field_as_plaintext_is_rejected()
+    {
+        // sum's amountField is read with GetDouble() -- impossible on a ciphertext envelope.
+        var doc = WithOrderSummaryFields(DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json")),
+            RmField("emailTotal", "double", derivation: new DotnetCqrs.Codegen.Model.SumDerivation("sum", ["order-placed"], null, "customerEmail", "orderId")));
+
+        var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(doc, OrderFulfillmentOptions));
+
+        Assert.Contains(ex.Report.Errors, e => e.Contains("emailTotal") && e.Contains("amountField \"customerEmail\" is pii on event \"order-placed\""));
+    }
+
+    [Fact]
+    public void A_derived_read_model_field_cannot_itself_be_pii()
+    {
+        var doc = WithOrderSummaryFields(DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json")),
+            RmField("customerId", "uuid"),
+            RmField("orderCount", "integer", pii: true, piiSubject: "customerId",
+                derivation: new DotnetCqrs.Codegen.Model.CountDerivation("count", ["order-placed"], null, "orderId")));
+
+        var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(doc, OrderFulfillmentOptions));
+
+        Assert.Contains(ex.Report.Errors, e => e.Contains("orderCount") && e.Contains("is pii but derived (count)"));
+    }
+
     [Fact]
     public void Chapters_and_slice_status_are_named_as_lossy()
     {
