@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\DotnetCqrs\DotnetCqrs.csproj" />
+    <ProjectReference Include="..\..\src\DotnetCqrs.Crypto\DotnetCqrs.Crypto.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

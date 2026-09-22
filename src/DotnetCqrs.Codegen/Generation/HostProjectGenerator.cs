@@ -58,6 +58,7 @@ public static class HostProjectGenerator
         var srcDir = Path.GetDirectoryName(Path.GetDirectoryName(dotnetCqrsProjectPath))!;
         var hostProjectPath = Path.Combine(srcDir, "DotnetCqrs.Host", "DotnetCqrs.Host.csproj");
         var codegenProjectPath = Path.Combine(srcDir, "DotnetCqrs.Codegen", "DotnetCqrs.Codegen.csproj");
+        var cryptoProjectPath = Path.Combine(srcDir, "DotnetCqrs.Crypto", "DotnetCqrs.Crypto.csproj");
 
         var source = $"""
             <Project Sdk="Microsoft.NET.Sdk.Web">
@@ -73,6 +74,7 @@ public static class HostProjectGenerator
                 <ProjectReference Include="{dotnetCqrsProjectPath}" />
                 <ProjectReference Include="{hostProjectPath}" />
                 <ProjectReference Include="{codegenProjectPath}" />
+                <ProjectReference Include="{cryptoProjectPath}" />
               </ItemGroup>
 
               <ItemGroup>

@@ -88,6 +88,7 @@ public class CliTests : IDisposable
               </PropertyGroup>
               <ItemGroup>
                 <ProjectReference Include="{DotnetCqrsProjectPath()}" />
+                <ProjectReference Include="{Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(DotnetCqrsProjectPath()))!, "DotnetCqrs.Crypto", "DotnetCqrs.Crypto.csproj")}" />
               </ItemGroup>
             </Project>
             """;
@@ -137,7 +138,11 @@ public class CliTests : IDisposable
     /// event's JSON, so the generic field-merge projection can't produce it without an
     /// author writing the real rule). Milestone 7's whole point is reporting that
     /// failure, not hiding it, so a non-zero exit here IS the passing assertion.</summary>
-    [Fact(Timeout = 120000)]
+    // 300s, not 120s: `verify` is two nested builds (this test's `dotnet run` of the CLI,
+    // then the CLI's own scratch build of the harness, which since the field.pii work also
+    // references DotnetCqrs.Crypto). Warm it takes ~35s; the first run after a reboot pays a
+    // cold restore and was measured over 120s on the dev machine (2026-09-22). Not a fault.
+    [Fact(Timeout = 300000)]
     public async Task Verify_prints_every_scenario_result_and_exits_non_zero_on_a_real_failure()
     {
         var (exitCode, output) = await RunCliAsync(
@@ -154,7 +159,11 @@ public class CliTests : IDisposable
         Assert.DoesNotContain("at DotnetCqrs.Codegen", output);
     }
 
-    [Fact(Timeout = 120000)]
+    // 300s, not 120s: `verify` is two nested builds (this test's `dotnet run` of the CLI,
+    // then the CLI's own scratch build of the harness, which since the field.pii work also
+    // references DotnetCqrs.Crypto). Warm it takes ~35s; the first run after a reboot pays a
+    // cold restore and was measured over 120s on the dev machine (2026-09-22). Not a fault.
+    [Fact(Timeout = 300000)]
     public async Task Verify_exits_zero_when_every_scenario_passes()
     {
         const string json = """

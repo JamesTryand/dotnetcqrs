@@ -272,6 +272,10 @@ public static class ScenarioVerifier
             // dateRange preset math, per that type's own doc comment.
             var srcDir = Path.GetDirectoryName(Path.GetDirectoryName(dotnetCqrsProjectPath))!;
             var codegenProjectPath = Path.Combine(srcDir, "DotnetCqrs.Codegen", "DotnetCqrs.Codegen.csproj");
+            // DotnetCqrs.Crypto: a generated decider for a domain with field.pii fields
+            // references Pii<T>, and the harness registers its PiiProtector over an
+            // InMemoryKmsClient so scenarios run with no facade behind them.
+            var cryptoProjectPath = Path.Combine(srcDir, "DotnetCqrs.Crypto", "DotnetCqrs.Crypto.csproj");
             var csproj = $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
@@ -283,6 +287,7 @@ public static class ScenarioVerifier
                   <ItemGroup>
                     <ProjectReference Include="{dotnetCqrsProjectPath}" />
                     <ProjectReference Include="{codegenProjectPath}" />
+                    <ProjectReference Include="{cryptoProjectPath}" />
                   </ItemGroup>
                 </Project>
                 """;

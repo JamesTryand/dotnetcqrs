@@ -43,10 +43,11 @@ internal static class GenerationSupport
     /// locally-declared type, so the conflict is invisible to the compiler; only
     /// <see cref="Domain.Domain"/>'s unioned State record would be affected, and this
     /// generator does not attempt to unify per-event record shapes into it).</summary>
-    public static (List<(string Name, string Type)> Fields, List<string> Warnings) CollectEventFields(Domain.Domain domain)
+    public static (List<(string Name, string Type, bool Pii)> Fields, List<string> Warnings) CollectEventFields(Domain.Domain domain)
     {
         var order = new List<string>();
         var types = new Dictionary<string, string>();
+        var pii = new Dictionary<string, bool>();
         var firstEvent = new Dictionary<string, string>();
         var warnings = new List<string>();
 
@@ -59,6 +60,7 @@ internal static class GenerationSupport
                     if (!types.TryGetValue(field.Name, out var existing))
                     {
                         types[field.Name] = field.Type;
+                        pii[field.Name] = field.Pii;
                         firstEvent[field.Name] = @event.Name;
                         order.Add(field.Name);
                         continue;
@@ -67,13 +69,24 @@ internal static class GenerationSupport
                         warnings.Add($"field \"{field.Name}\" is declared as \"{existing}\" by event \"{firstEvent[field.Name]}\" " +
                             $"but \"{field.Type}\" by event \"{@event.Name}\"; the C# generator uses \"{existing}\" everywhere " +
                             "and keeps the first type it saw");
+                    // Once PII, always PII in state: a field one event marks pii cannot be
+                    // held in plaintext because another event forgot to.
+                    if (field.Pii) pii[field.Name] = true;
                 }
             }
         }
 
-        var fields = order.Select(name => (Name: name, Type: types[name])).ToList();
+        var fields = order.Select(name => (Name: name, Type: types[name], Pii: pii[name])).ToList();
         return (fields, warnings);
     }
+
+    /// <summary>The C# type a generated payload/state property gets: the folded CLR type,
+    /// wrapped in <c>Pii&lt;T&gt;</c> (<c>DotnetCqrs.Crypto</c>) when the field is
+    /// <c>field.pii</c>. The wrapper's JSON converter reads a command's bare value as
+    /// fresh plaintext and a stored envelope as pending ciphertext, so the generated
+    /// <c>Decide</c>/<c>Evolve</c> bodies need no PII-specific code at all.</summary>
+    public static string FieldCSharpType(string domainType, bool pii) =>
+        pii ? $"Pii<{CSharpType(domainType)}>" : CSharpType(domainType);
 
     /// <summary>Renders names as a C# string-literal array initializer, e.g.
     /// <c>["a", "b"]</c>.</summary>

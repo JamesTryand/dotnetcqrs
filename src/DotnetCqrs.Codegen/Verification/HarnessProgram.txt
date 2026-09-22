@@ -157,12 +157,24 @@ static void RegisterDecider(DeciderRegistry registry, string typeName, string ag
         ?? throw new InvalidOperationException($"{typeName}.Create() not found");
     var decider = createMethod.Invoke(null, null)!;
     var stateType = decider.GetType().GetGenericArguments()[0];
-    // The two-argument overload: verification never registers a PII protector (there is
-    // no facade in a harness run), and Register has a three-argument sibling.
-    var registerMethod = typeof(DeciderRegistry).GetMethods()
-        .Single(m => m.Name == "Register" && m.IsGenericMethodDefinition && m.GetParameters().Length == 2)
+    // A decider generated for a domain with field.pii fields carries a nested
+    // PiiProtector; the harness registers it over an InMemoryKmsClient so scenarios run
+    // with no facade behind them (the protector's own logic is exercised, the crypto is a
+    // reversible stand-in). Everything else takes the two-argument overload.
+    var protectorType = deciderType.GetNestedType("PiiProtector", BindingFlags.Public);
+    if (protectorType is null)
+    {
+        var registerMethod = typeof(DeciderRegistry).GetMethods()
+            .Single(m => m.Name == "Register" && m.IsGenericMethodDefinition && m.GetParameters().Length == 2)
+            .MakeGenericMethod(stateType);
+        registerMethod.Invoke(registry, [aggregate, decider]);
+        return;
+    }
+    var protector = Activator.CreateInstance(protectorType, [new DotnetCqrs.Crypto.InMemoryKmsClient()])!;
+    var registerWithProtector = typeof(DeciderRegistry).GetMethods()
+        .Single(m => m.Name == "Register" && m.IsGenericMethodDefinition && m.GetParameters().Length == 3)
         .MakeGenericMethod(stateType);
-    registerMethod.Invoke(registry, [aggregate, decider]);
+    registerWithProtector.Invoke(registry, [aggregate, decider, protector]);
 }
 
 static async Task CallInitAsync(object projection)

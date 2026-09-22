@@ -156,10 +156,14 @@ public class DocumentMapperTests
     }
 
     [Fact]
-    public void PII_fields_are_named_in_the_lossy_report()
+    public void An_event_PII_field_is_no_longer_reported_as_lossy_now_that_the_generator_encrypts_it()
     {
+        // Before the field.pii integration this asserted the opposite: customerEmail was
+        // named as "stored as an ordinary column". The decider generator now types it
+        // Pii<T> and emits a PiiProtector, so silently keeping the old note would be the
+        // exact kind of stale claim the note exists to prevent.
         var result = MapOrderFulfillment();
-        Assert.Contains(result.Report.Lossy, l => l.Contains("pii") && l.Contains("customerEmail"));
+        Assert.DoesNotContain(result.Report.Lossy, l => l.Contains("customerEmail"));
     }
 
     [Fact]

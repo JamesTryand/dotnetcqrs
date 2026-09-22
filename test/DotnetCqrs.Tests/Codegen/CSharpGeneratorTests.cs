@@ -55,6 +55,7 @@ public class CSharpGeneratorTests : IDisposable
               </PropertyGroup>
               <ItemGroup>
                 <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs", "DotnetCqrs.csproj")}" />
+                <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs.Crypto", "DotnetCqrs.Crypto.csproj")}" />
               </ItemGroup>
             </Project>
             """;
@@ -170,6 +171,76 @@ public class CSharpGeneratorTests : IDisposable
 
         var (success, output) = await BuildAsync(files, programCs);
         Assert.True(success, $"generated decider did not build/run correctly:\n{output}");
+        Assert.Contains("PASS", output);
+    }
+
+    [Fact]
+    public async Task A_field_pii_value_is_encrypted_before_append_and_never_stored_in_plaintext()
+    {
+        // The real order-fulfillment document (schema 3.0.0: customerEmail is pii with
+        // piiSubject customerId), generated for real, built for real, run for real over
+        // the actual DeciderRegistry with the generated PiiProtector -- against
+        // InMemoryKmsClient, since no facade is reachable from a test. Proves the whole
+        // write path end to end: Decide sees the plaintext, the protector encrypts under
+        // the SUBJECT's id (cust-1, not the stream id o1), the store holds only the
+        // envelope, and Evolve folds the envelope back into state without ever needing a
+        // reveal (ShipOrder only checks Exists).
+        var doc = DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json"));
+        var result = DocumentMapper.Map(doc, new MappingOptions
+        {
+            AggregateOverrides = new Dictionary<string, string> { ["notify-shipping-partner"] = "ShippingNotification" },
+        });
+        var order = result.Domains.Single(d => d.Aggregate == "order");
+        var files = CSharpGenerator.Generate(order);
+
+        const string programCs = """"
+            using DotnetCqrs.Crypto;
+            using DotnetCqrs.Deciders;
+            using DotnetCqrs.EventStore;
+            using Generated.Order;
+
+            var kms = new InMemoryKmsClient();
+            var store = await SqliteEventStore.OpenAsync(":memory:");
+            var registry = new DeciderRegistry(store);
+            registry.Register(OrderDecider.Aggregate, OrderDecider.Create(), new OrderDecider.PiiProtector(kms));
+
+            await registry.HandleAsync("order", "o1", new Command("PlaceOrder",
+                """{"orderId":"o1","customerId":"cust-1","customerEmail":"ada@example.com","items":[]}"""));
+            var stored = (await store.LoadStreamAsync("order", "o1")).Single().Data;
+
+            if (stored.Contains("ada@example.com")) { Console.WriteLine($"FAIL: plaintext in store: {stored}"); return 1; }
+            if (!stored.Contains("\"$pii\"")) { Console.WriteLine($"FAIL: no envelope in store: {stored}"); return 1; }
+            if (!stored.Contains("\"s\":\"cust-1\"")) { Console.WriteLine($"FAIL: wrong subject in store: {stored}"); return 1; }
+            if (!stored.Contains("\"customerId\":\"cust-1\"")) { Console.WriteLine($"FAIL: subject field missing: {stored}"); return 1; }
+            if (kms.EncryptCalls != 1) { Console.WriteLine($"FAIL: expected 1 encrypt call, got {kms.EncryptCalls}"); return 1; }
+
+            // Evolve folds the stored envelope into state (Pending) and the next decision,
+            // which never reads the email, must cost no reveal at all.
+            await registry.HandleAsync("order", "o1", new Command("ShipOrder", "{}"));
+            if (kms.DecryptBatchCalls != 0) { Console.WriteLine($"FAIL: ShipOrder should not reveal, got {kms.DecryptBatchCalls}"); return 1; }
+
+            // Fail closed: the same aggregate registered without its protector must refuse
+            // to append plaintext, and the store must be untouched.
+            var bare = new DeciderRegistry(store);
+            bare.Register(OrderDecider.Aggregate, OrderDecider.Create());
+            try
+            {
+                await bare.HandleAsync("order", "o2", new Command("PlaceOrder",
+                    """{"orderId":"o2","customerId":"cust-2","customerEmail":"grace@example.com","items":[]}"""));
+                Console.WriteLine("FAIL: expected fail-closed without a protector");
+                return 1;
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("unencrypted"))
+            {
+                if ((await store.LoadStreamAsync("order", "o2")).Count != 0) { Console.WriteLine("FAIL: o2 was appended"); return 1; }
+            }
+
+            Console.WriteLine("PASS");
+            return 0;
+            """";
+
+        var (success, output) = await BuildAsync(files, programCs);
+        Assert.True(success, $"generated PII decider did not build/run correctly:\n{output}");
         Assert.Contains("PASS", output);
     }
 

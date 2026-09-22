@@ -870,18 +870,19 @@ public sealed class DocumentMapper
             Recurse("", fields);
         }
 
-        if (_document.Events is not null)
-            foreach (var (id, e) in _document.Events) Walk($"event {id}", e.Fields);
-        if (_document.Commands is not null)
-            foreach (var (id, c) in _document.Commands) Walk($"command {id}", c.Fields);
+        // Event fields are no longer lossy: the decider generator types them Pii<T> and
+        // emits a PiiProtector, so they are encrypted before append. Command fields never
+        // persist (they arrive as plaintext and become event fields). What is still only
+        // partially handled is the read side: a projection copies the ciphertext envelope
+        // into its column as-is (safe at rest), but no generated query route reveals it yet.
         if (_document.ReadModels is not null)
             foreach (var (id, rm) in _document.ReadModels) Walk($"read model {id}", rm.Fields);
 
         if (flagged.Count > 0)
         {
             flagged.Sort(StringComparer.Ordinal);
-            _report.Note($"{flagged.Count} field(s) are marked pii and NOTHING here carries that flag: " +
-                $"{string.Join(", ", flagged)}. They are stored as ordinary columns; treat them accordingly");
+            _report.Note($"{flagged.Count} read-model field(s) are marked pii: {string.Join(", ", flagged)}. " +
+                "Their columns hold the ciphertext envelope; generated query routes do not reveal them yet");
         }
     }
 
