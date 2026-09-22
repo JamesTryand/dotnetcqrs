@@ -309,6 +309,10 @@ public static class ScenarioVerifier
                 RedirectStandardError = true,
                 UseShellExecute = false,
             };
+            // `dotnet run` otherwise leaves a reusable MSBuild node alive that inherits the
+            // redirected stdout/stderr handles, so ReadToEndAsync below waits on it until the
+            // node idles out (~10 minutes), not until the harness exits.
+            psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
             using var process = Process.Start(psi)!;
             var stdout = await process.StandardOutput.ReadToEndAsync(ct);
             var stderr = await process.StandardError.ReadToEndAsync(ct);
