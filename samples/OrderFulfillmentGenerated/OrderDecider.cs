@@ -74,7 +74,11 @@ public static class OrderDecider
     /// <summary>Encrypts this aggregate's field.pii values before they are appended and
     /// reveals stored ones only when a decision reads them. Register it next to the
     /// decider; see <see cref="Create"/>.</summary>
-    public sealed class PiiProtector(IKmsClient kms) : IPiiProtector
+    /// <summary>Encrypts fresh pii values after Decide and reveals stored ones on demand.
+    /// <paramref name="subjects"/> is optional: supply one (SubjectStatus over the event
+    /// store) and this refuses to store new PII for an erased data subject, since a
+    /// returning person is a new subject with a new id, never a reactivation of the old one.</summary>
+    public sealed class PiiProtector(IKmsClient kms, ISubjectStatus? subjects = null) : IPiiProtector
     {
         public async Task<object> RevealAsync(object state, CancellationToken ct)
         {
@@ -101,7 +105,7 @@ public static class OrderDecider
                             Payload = p with
                             {
                                 CustomerEmail = p.CustomerEmail is null ? null : await p.CustomerEmail.EncryptAsync(kms,
-                                    p.CustomerId ?? throw new InvalidOperationException("OrderPlaced.customerEmail is pii but its piiSubject customerId is null"), ct),
+                                    await SubjectAsync(p.CustomerId, "OrderPlaced.customerEmail", "customerId", ct), ct),
                             },
                         });
                         break;
@@ -111,6 +115,15 @@ public static class OrderDecider
                 }
             }
             return result;
+        }
+
+        /// <summary>Resolves the subject id a value is encrypted under, and refuses an
+        /// erased one. Without a guard (subjects is null) only the null check applies.</summary>
+        private async Task<string> SubjectAsync(string? subjectId, string field, string subjectField, CancellationToken ct)
+        {
+            var id = subjectId ?? throw new InvalidOperationException($"{field} is pii but its piiSubject {subjectField} is null");
+            if (subjects is not null && await subjects.IsErasedAsync(id, ct)) throw new SubjectErasedException(id);
+            return id;
         }
     }
 }

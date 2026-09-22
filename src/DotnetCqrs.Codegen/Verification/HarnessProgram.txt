@@ -170,7 +170,17 @@ static void RegisterDecider(DeciderRegistry registry, string typeName, string ag
         registerMethod.Invoke(registry, [aggregate, decider]);
         return;
     }
-    var protector = Activator.CreateInstance(protectorType, [new DotnetCqrs.Crypto.InMemoryKmsClient()])!;
+    // Bind the protector's constructor by filling each parameter rather than assuming an
+    // arity: the generated protector gained an optional ISubjectStatus (the erased-subject
+    // guard) and a fixed one-argument CreateInstance broke every scenario run. Scenarios
+    // have no erasure to honour, so the guard stays null here.
+    var protectorCtor = protectorType.GetConstructors().Single();
+    var protectorArgs = protectorCtor.GetParameters()
+        .Select(p => p.ParameterType == typeof(DotnetCqrs.Crypto.IKmsClient)
+            ? (object?)new DotnetCqrs.Crypto.InMemoryKmsClient()
+            : p.HasDefaultValue ? p.DefaultValue : null)
+        .ToArray();
+    var protector = protectorCtor.Invoke(protectorArgs)!;
     var registerWithProtector = typeof(DeciderRegistry).GetMethods()
         .Single(m => m.Name == "Register" && m.IsGenericMethodDefinition && m.GetParameters().Length == 3)
         .MakeGenericMethod(stateType);

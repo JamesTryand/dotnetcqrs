@@ -471,7 +471,30 @@ public sealed class DocumentMapper
             _report.Error($"{owner}: field \"{field.Name}\" names piiSubject \"{field.PiiSubject}\", which is itself pii -- a subject id cannot be encrypted under its own key");
             return null;
         }
+        WarnIfSubjectLooksPersonal(owner, field, subject);
         return Names.SanitizeName(subject.Name);
+    }
+
+    /// <summary>Erasure is terminal per subject id, so a person who is erased and later
+    /// returns is a NEW subject with a NEW id (see this issue's findings, P6). That only
+    /// works if subject ids are opaque: a model that uses the email address itself as the
+    /// subject id reuses the id on a rejoin, and either hits the terminal erased state or
+    /// silently re-links the new person to the erased one's history.
+    ///
+    /// <para>A warning, not an error, deliberately: this is a guess from a field NAME,
+    /// and a name-shaped heuristic that hard-fails generation would be worse than the
+    /// problem. A subject field that IS marked pii is already a hard error above -- this
+    /// catches the plain (unflagged) email/phone field used as a subject.</para></summary>
+    private void WarnIfSubjectLooksPersonal(string owner, Model.Field field, Model.Field subject)
+    {
+        string[] personalHints = ["email", "mail", "phone", "mobile", "telephone", "msisdn", "ssn", "nino", "passport"];
+        var name = subject.Name.ToLowerInvariant();
+        if (!personalHints.Any(h => name.Contains(h, StringComparison.Ordinal))) return;
+
+        _report.Warn($"{owner}: field \"{field.Name}\" names piiSubject \"{subject.Name}\", which looks like personal data " +
+            "rather than an opaque id. Erasure is terminal per subject id, so a subject who is erased and later returns " +
+            "needs a NEW id; a natural key like an email address is reused on their return and re-links them to erased " +
+            "history. Prefer a system-generated id, and mark the personal value itself pii.");
     }
 
     /// <summary>Resolves a field's <see cref="Model.FieldDerivation"/> (raw schema ids,

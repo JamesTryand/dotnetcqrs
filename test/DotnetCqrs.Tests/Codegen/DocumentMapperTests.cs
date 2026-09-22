@@ -302,6 +302,35 @@ public class DocumentMapperTests
     }
 
     [Fact]
+    public void A_piiSubject_that_looks_like_personal_data_is_warned_about_not_rejected()
+    {
+        // P6: erasure is terminal per subject id, so a returning person needs a NEW id.
+        // A natural key like an email is reused on their return, which re-links them to
+        // erased history. A warning, not an error: the signal is only the field's name.
+        var doc = DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json"));
+        var ev = doc.Events!["order-placed"];
+        var fields = ev.Fields!
+            .Select(f => f.Name == "customerEmail" ? f with { PiiSubject = "contactEmail" } : f)
+            .Append(RmField("contactEmail"))
+            .ToList();
+        var events = new Dictionary<string, DotnetCqrs.Codegen.Model.EventDef>(doc.Events!) { ["order-placed"] = ev with { Fields = fields } };
+
+        var result = DocumentMapper.Map(doc with { Events = events }, OrderFulfillmentOptions);
+
+        Assert.Contains(result.Report.Warnings, w => w.Contains("contactEmail") && w.Contains("opaque id"));
+        var orderPlaced = result.Domains.Single(d => d.Aggregate == "order")
+            .Commands.Single(c => c.Name == "PlaceOrder").Events.Single(e => e.Name == "OrderPlaced");
+        Assert.Equal("contactEmail", orderPlaced.Fields.Single(f => f.Name == "customerEmail").PiiSubject);
+    }
+
+    [Fact]
+    public void An_opaque_piiSubject_is_not_warned_about()
+    {
+        var result = MapOrderFulfillment(); // customerEmail's subject is customerId
+        Assert.DoesNotContain(result.Report.Warnings, w => w.Contains("opaque id"));
+    }
+
+    [Fact]
     public void Chapters_and_slice_status_are_named_as_lossy()
     {
         var result = MapOrderFulfillment();

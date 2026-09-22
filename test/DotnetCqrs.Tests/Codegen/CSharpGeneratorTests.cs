@@ -202,7 +202,8 @@ public class CSharpGeneratorTests : IDisposable
             var kms = new InMemoryKmsClient();
             var store = await SqliteEventStore.OpenAsync(":memory:");
             var registry = new DeciderRegistry(store);
-            registry.Register(OrderDecider.Aggregate, OrderDecider.Create(), new OrderDecider.PiiProtector(kms));
+            registry.RegisterDataSubjects();
+            registry.Register(OrderDecider.Aggregate, OrderDecider.Create(), new OrderDecider.PiiProtector(kms, new SubjectStatus(store)));
 
             await registry.HandleAsync("order", "o1", new Command("PlaceOrder",
                 """{"orderId":"o1","customerId":"cust-1","customerEmail":"ada@example.com","items":[]}"""));
@@ -233,6 +234,39 @@ public class CSharpGeneratorTests : IDisposable
             catch (InvalidOperationException ex) when (ex.Message.Contains("unencrypted"))
             {
                 if ((await store.LoadStreamAsync("order", "o2")).Count != 0) { Console.WriteLine("FAIL: o2 was appended"); return 1; }
+            }
+
+            // D1: erasure is a fact on the subject's own stream plus a destroyed key, and
+            // the erased state is terminal -- so no new PII may be stored under that id.
+            await registry.HandleAsync("dataSubject", "cust-1", new Command("EraseSubject", "{}"));
+            await new SubjectKeyDestroyer(kms).ApplyAsync(
+                (await store.LoadStreamAsync("dataSubject", "cust-1")).Single(), CancellationToken.None);
+
+            try
+            {
+                await registry.HandleAsync("order", "o3", new Command("PlaceOrder",
+                    """{"orderId":"o3","customerId":"cust-1","customerEmail":"ada@example.com","items":[]}"""));
+                Console.WriteLine("FAIL: stored new PII for an erased subject");
+                return 1;
+            }
+            catch (SubjectErasedException)
+            {
+                if ((await store.LoadStreamAsync("order", "o3")).Count != 0) { Console.WriteLine("FAIL: o3 was appended"); return 1; }
+            }
+
+            // The same person returns under a NEW subject id: that write succeeds, and the
+            // erased subject's own data stays unreadable.
+            await registry.HandleAsync("order", "o4", new Command("PlaceOrder",
+                """{"orderId":"o4","customerId":"cust-9","customerEmail":"ada@example.com","items":[]}"""));
+            if ((await store.LoadStreamAsync("order", "o4")).Count != 1) { Console.WriteLine("FAIL: rejoin under a new id did not append"); return 1; }
+
+            var erased = (await store.LoadStreamAsync("order", "o1")).First().Data;
+            var cipher = System.Text.Json.JsonDocument.Parse(erased).RootElement
+                .GetProperty("customerEmail").GetProperty("$pii").GetProperty("c").GetString()!;
+            if ((await kms.DecryptAsync("cust-1", cipher)).State != KmsKeyState.Destroyed)
+            {
+                Console.WriteLine("FAIL: the erased subject's ciphertext is still readable");
+                return 1;
             }
 
             Console.WriteLine("PASS");

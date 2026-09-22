@@ -55,7 +55,7 @@ public class DeciderRegistryPiiTests
     /// <summary>What a generated protector looks like for this aggregate: it knows which
     /// state fields and which payload fields are PII, and that the subject is the stream's
     /// own id.</summary>
-    private sealed class CustomerPiiProtector(IKmsClient kms) : IPiiProtector
+    private sealed class CustomerPiiProtector(IKmsClient kms, ISubjectStatus? subjects = null) : IPiiProtector
     {
         public async Task<object> RevealAsync(object state, CancellationToken ct)
         {
@@ -71,9 +71,12 @@ public class DeciderRegistryPiiTests
         {
             var result = new List<NewEvent>(events.Count);
             foreach (var e in events)
-                result.Add(e.Payload is RegisteredPayload r
-                    ? e with { Payload = r with { Email = await r.Email.EncryptAsync(kms, aggregateId, ct) } }
-                    : e);
+            {
+                if (e.Payload is not RegisteredPayload r) { result.Add(e); continue; }
+                if (subjects is not null && await subjects.IsErasedAsync(aggregateId, ct))
+                    throw new SubjectErasedException(aggregateId);
+                result.Add(e with { Payload = r with { Email = await r.Email.EncryptAsync(kms, aggregateId, ct) } });
+            }
             return result;
         }
     }
@@ -212,5 +215,43 @@ public class DeciderRegistryPiiTests
 
         Assert.Equal(2, decides); // pending -> reveal -> redacted on the re-run, then stop
         Assert.Equal(1, handler.DecryptBatchCallCount);
+    }
+    // ---- P6: erasure is terminal, and coming back means a new subject ----
+
+    [Fact]
+    public async Task Storing_new_PII_for_an_erased_subject_is_refused_and_nothing_is_appended()
+    {
+        var (kms, _) = MakeKms();
+        var store = await SqliteEventStore.OpenAsync(":memory:");
+        var registry = new DeciderRegistry(store);
+        registry.RegisterDataSubjects();
+        registry.Register("customer", Customer(), new CustomerPiiProtector(kms, new SubjectStatus(store)));
+        await registry.HandleAsync(DataSubject.Aggregate, "cust-1", new Command(DataSubject.EraseSubjectCommand, "{}"));
+
+        var ex = await Assert.ThrowsAsync<SubjectErasedException>(
+            () => registry.HandleAsync("customer", "cust-1", Register("ada@example.com")));
+
+        Assert.Equal("cust-1", ex.SubjectId);
+        Assert.Empty(await store.LoadStreamAsync("customer", "cust-1"));
+    }
+
+    [Fact]
+    public async Task A_returning_subject_uses_a_new_id_and_is_unlinked_from_the_erased_one()
+    {
+        var (kms, _) = MakeKms();
+        var store = await SqliteEventStore.OpenAsync(":memory:");
+        var registry = new DeciderRegistry(store);
+        registry.RegisterDataSubjects();
+        registry.Register("customer", Customer(), new CustomerPiiProtector(kms, new SubjectStatus(store)));
+        await registry.HandleAsync("customer", "cust-1", Register("ada@example.com"));
+        await registry.HandleAsync(DataSubject.Aggregate, "cust-1", new Command(DataSubject.EraseSubjectCommand, "{}"));
+
+        // The same person signs up again. Their new subject id is a fresh one, so the
+        // write succeeds and lands on its own stream; the erased stream is untouched.
+        await registry.HandleAsync("customer", "cust-2", Register("ada@example.com"));
+
+        Assert.Single(await store.LoadStreamAsync("customer", "cust-2"));
+        Assert.Single(await store.LoadStreamAsync("customer", "cust-1")); // still exactly the pre-erasure event
+        Assert.False(await new SubjectStatus(store).IsErasedAsync("cust-2"));
     }
 }

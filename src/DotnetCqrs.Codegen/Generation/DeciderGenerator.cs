@@ -187,7 +187,11 @@ internal static class DeciderGenerator
         b.AppendLine("    /// <summary>Encrypts this aggregate's field.pii values before they are appended and");
         b.AppendLine("    /// reveals stored ones only when a decision reads them. Register it next to the");
         b.AppendLine("    /// decider; see <see cref=\"Create\"/>.</summary>");
-        b.AppendLine("    public sealed class PiiProtector(IKmsClient kms) : IPiiProtector");
+        b.AppendLine("    /// <summary>Encrypts fresh pii values after Decide and reveals stored ones on demand.");
+        b.AppendLine("    /// <paramref name=\"subjects\"/> is optional: supply one (SubjectStatus over the event");
+        b.AppendLine("    /// store) and this refuses to store new PII for an erased data subject, since a");
+        b.AppendLine("    /// returning person is a new subject with a new id, never a reactivation of the old one.</summary>");
+        b.AppendLine("    public sealed class PiiProtector(IKmsClient kms, ISubjectStatus? subjects = null) : IPiiProtector");
         b.AppendLine("    {");
         b.AppendLine("        public async Task<object> RevealAsync(object state, CancellationToken ct)");
         b.AppendLine("        {");
@@ -225,7 +229,7 @@ internal static class DeciderGenerator
                     ? $"p.{subjectProp}"
                     : $"p.{subjectProp}.ToString()";
                 b.AppendLine($"                                {prop} = p.{prop} is null ? null : await p.{prop}.EncryptAsync(kms,");
-                b.AppendLine($"                                    {subjectExpr} ?? throw new InvalidOperationException(\"{@event.Name}.{field.Name} is pii but its piiSubject {field.PiiSubject} is null\"), ct),");
+                b.AppendLine($"                                    await SubjectAsync({subjectExpr}, \"{@event.Name}.{field.Name}\", \"{field.PiiSubject}\", ct), ct),");
             }
             b.AppendLine("                            },");
             b.AppendLine("                        });");
@@ -237,6 +241,15 @@ internal static class DeciderGenerator
         b.AppendLine("                }");
         b.AppendLine("            }");
         b.AppendLine("            return result;");
+        b.AppendLine("        }");
+        b.AppendLine();
+        b.AppendLine("        /// <summary>Resolves the subject id a value is encrypted under, and refuses an");
+        b.AppendLine("        /// erased one. Without a guard (subjects is null) only the null check applies.</summary>");
+        b.AppendLine("        private async Task<string> SubjectAsync(string? subjectId, string field, string subjectField, CancellationToken ct)");
+        b.AppendLine("        {");
+        b.AppendLine("            var id = subjectId ?? throw new InvalidOperationException($\"{field} is pii but its piiSubject {subjectField} is null\");");
+        b.AppendLine("            if (subjects is not null && await subjects.IsErasedAsync(id, ct)) throw new SubjectErasedException(id);");
+        b.AppendLine("            return id;");
         b.AppendLine("        }");
         b.AppendLine("    }");
     }
