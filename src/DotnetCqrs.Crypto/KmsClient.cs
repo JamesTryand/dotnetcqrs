@@ -11,6 +11,9 @@ namespace DotnetCqrs.Crypto;
 /// real host), same split every other facade caller in this repo uses.</summary>
 public sealed class KmsClient(HttpClient http) : IKmsClient
 {
+    /// <summary>The facade's per-call item limit for <c>encrypt-batch</c>/<c>decrypt-batch</c>.</summary>
+    public const int MaxBatchItems = 1000;
+
     private static string KeyPath(string subjectId) => $"v1/subjects/{Uri.EscapeDataString(subjectId)}/key";
     private static string EncryptPath(string subjectId) => $"v1/subjects/{Uri.EscapeDataString(subjectId)}/encrypt";
     private static string DecryptPath(string subjectId) => $"v1/subjects/{Uri.EscapeDataString(subjectId)}/decrypt";
@@ -46,7 +49,7 @@ public sealed class KmsClient(HttpClient http) : IKmsClient
 
     public async Task<IReadOnlyList<KmsBatchEncryptItem>> EncryptBatchAsync(string subjectId, IReadOnlyList<byte[]> plaintexts, CancellationToken ct = default)
     {
-        if (plaintexts.Count is 0 or > 1000)
+        if (plaintexts.Count is 0 or > MaxBatchItems)
             throw new ArgumentOutOfRangeException(nameof(plaintexts), "must contain 1-1000 items, matching the facade's own limit");
 
         var request = new EncryptBatchRequest([.. plaintexts.Select(Convert.ToBase64String)]);
@@ -60,7 +63,7 @@ public sealed class KmsClient(HttpClient http) : IKmsClient
 
     public async Task<KmsBatchDecryptResult> DecryptBatchAsync(string subjectId, IReadOnlyList<string> ciphertexts, CancellationToken ct = default)
     {
-        if (ciphertexts.Count is 0 or > 1000)
+        if (ciphertexts.Count is 0 or > MaxBatchItems)
             throw new ArgumentOutOfRangeException(nameof(ciphertexts), "must contain 1-1000 items, matching the facade's own limit");
 
         var request = new DecryptBatchRequest(ciphertexts);

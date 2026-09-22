@@ -98,7 +98,11 @@ public sealed class SubjectErasedException(string subjectId)
 /// failed event, so at-least-once delivery is exactly what this needs.</summary>
 public sealed class SubjectKeyDestroyer(IKmsClient kms) : DotnetCqrs.Consumers.IConsumer
 {
-    public string Name => "pii:key-destroyer";
+    /// <summary>The durable checkpoint name. <see cref="PiiCacheEvictor"/> reads it, so
+    /// keep the two in step.</summary>
+    public const string ConsumerName = "pii:key-destroyer";
+
+    public string Name => ConsumerName;
 
     public Task ApplyAsync(Event ev, CancellationToken ct) =>
         ev.Type == DataSubject.SubjectErasedEvent && ev.Aggregate == DataSubject.Aggregate

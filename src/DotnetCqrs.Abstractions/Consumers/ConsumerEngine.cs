@@ -17,7 +17,7 @@ public sealed class ConsumerEngine
     private readonly Action<string> _log;
 
     private readonly Lock _consumersLock = new();
-    private readonly List<IConsumer> _consumers = [];
+    private readonly List<Registration> _consumers = [];
 
     // Bounded to 1 and drops on a full channel: the same "non-blocking nudge,
     // coalesce bursts" shape as pocketcqrs's buffered-channel-with-default-case.
@@ -37,11 +37,18 @@ public sealed class ConsumerEngine
         _log = logger ?? (_ => { });
     }
 
-    /// <summary>Adds a consumer.</summary>
-    public void Register(IConsumer consumer)
+    /// <summary>Adds a consumer, checkpointed in the engine's store.</summary>
+    public void Register(IConsumer consumer) => Register(consumer, _checkpoints);
+
+    /// <summary>Adds a consumer whose position lives in <paramref name="checkpoints"/>
+    /// instead of the engine's store. For a consumer whose state belongs to this process
+    /// rather than the database (an in-memory cache, say): give it an
+    /// <see cref="InMemoryCheckpointStore"/>, so no other instance can move its position
+    /// and a restart starts it afresh.</summary>
+    public void Register(IConsumer consumer, ICheckpointStore checkpoints)
     {
         lock (_consumersLock)
-            _consumers.Add(consumer);
+            _consumers.Add(new Registration(consumer, checkpoints));
     }
 
     /// <summary>Drops the consumer with <paramref name="name"/> (no-op if absent). The
@@ -49,7 +56,7 @@ public sealed class ConsumerEngine
     public void Unregister(string name)
     {
         lock (_consumersLock)
-            _consumers.RemoveAll(c => c.Name == name);
+            _consumers.RemoveAll(r => r.Consumer.Name == name);
     }
 
     /// <summary>The registered consumer names, sorted (a snapshot).</summary>
@@ -58,7 +65,7 @@ public sealed class ConsumerEngine
         get
         {
             lock (_consumersLock)
-                return _consumers.Select(c => c.Name).Order().ToList();
+                return _consumers.Select(r => r.Consumer.Name).Order().ToList();
         }
     }
 
@@ -111,16 +118,16 @@ public sealed class ConsumerEngine
     /// succeeded.</summary>
     public async Task RunOnceAsync(CancellationToken ct = default)
     {
-        List<IConsumer> snapshot;
+        List<Registration> snapshot;
         lock (_consumersLock)
             snapshot = [.. _consumers];
 
         List<Exception>? errors = null;
-        foreach (var consumer in snapshot)
+        foreach (var (consumer, checkpoints) in snapshot)
         {
             try
             {
-                await RunOnceForAsync(consumer, ct);
+                await RunOnceForAsync(consumer, checkpoints, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -132,9 +139,9 @@ public sealed class ConsumerEngine
             throw new AggregateException(errors);
     }
 
-    private async Task RunOnceForAsync(IConsumer consumer, CancellationToken ct)
+    private async Task RunOnceForAsync(IConsumer consumer, ICheckpointStore checkpoints, CancellationToken ct)
     {
-        var pos = await _checkpoints.CheckpointAsync(consumer.Name, ct);
+        var pos = await checkpoints.CheckpointAsync(consumer.Name, ct);
         while (true)
         {
             var batch = await _source.PollAsync(pos, 100, ct);
@@ -142,9 +149,11 @@ public sealed class ConsumerEngine
             foreach (var ev in batch)
             {
                 await consumer.ApplyAsync(ev, ct);
-                await _checkpoints.SaveCheckpointAsync(consumer.Name, ev.Position, ct);
+                await checkpoints.SaveCheckpointAsync(consumer.Name, ev.Position, ct);
                 pos = ev.Position;
             }
         }
     }
+
+    private sealed record Registration(IConsumer Consumer, ICheckpointStore Checkpoints);
 }

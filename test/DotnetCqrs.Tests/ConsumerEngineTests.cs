@@ -128,4 +128,20 @@ public class ConsumerEngineTests
 
         Assert.Single(consumer.Applied);
     }
+
+    [Fact]
+    public async Task A_consumer_given_its_own_checkpoint_store_never_touches_the_engines()
+    {
+        await using var store = await SeededStoreAsync("c1", 3);
+        var engine = new ConsumerEngine(store, store);
+        var local = new InMemoryCheckpointStore(start: 1);
+        var consumer = new RecordingConsumer("local");
+        engine.Register(consumer, local);
+
+        await engine.RunOnceAsync();
+
+        Assert.Equal([2L, 3L], consumer.Applied.Select(e => e.Position));
+        Assert.Equal(3, await local.CheckpointAsync("local"));
+        Assert.Equal(0, await store.CheckpointAsync("local"));
+    }
 }

@@ -102,7 +102,8 @@ public sealed class Pii<T>
 
     /// <summary>A <see cref="PiiState.Pending"/> value enqueues into
     /// <paramref name="buffer"/> and returns a task that completes only once
-    /// <see cref="PiiRevealBuffer.FlushAsync"/> runs. Any other state returns itself
+    /// <see cref="PiiRevealBuffer.FlushAsync"/> runs, or at once when the buffer's
+    /// <see cref="PiiRevealCache"/> can answer it. Any other state returns itself
     /// immediately with no facade traffic.</summary>
     public Task<Pii<T>> RevealAsync(PiiRevealBuffer buffer, CancellationToken ct = default) =>
         State == PiiState.Pending ? RevealPendingAsync(buffer, ct) : Task.FromResult(this);
