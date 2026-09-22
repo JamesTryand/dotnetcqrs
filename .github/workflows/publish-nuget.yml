@@ -51,6 +51,7 @@ jobs:
           for proj in \
             src/DotnetCqrs.Abstractions/DotnetCqrs.Abstractions.csproj \
             src/DotnetCqrs/DotnetCqrs.csproj \
+            src/DotnetCqrs.Crypto/DotnetCqrs.Crypto.csproj \
             src/DotnetCqrs.Host/DotnetCqrs.Host.csproj \
             src/DotnetCqrs.Codegen/DotnetCqrs.Codegen.csproj \
             src/DotnetCqrs.Codegen.Cli/DotnetCqrs.Codegen.Cli.csproj \

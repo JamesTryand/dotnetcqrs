@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>JamesTryand.DotnetCqrs.Crypto</PackageId>
+    <Description>Crypto-shredding support for dotnetcqrs -- the Pii&lt;T&gt; wrapper, its fail-closed JSON envelope, and the HTTP client for the key-management facade. Generated deciders with field.pii values reference this.</Description>
   </PropertyGroup>
 
   <!-- BCL only (System.Net.Http.Json, System.Text.Json) plus the provider-neutral
