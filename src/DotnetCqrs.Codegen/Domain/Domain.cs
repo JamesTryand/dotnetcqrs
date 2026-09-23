@@ -225,7 +225,16 @@ public sealed record ReadModelScope(string Param, string ViaCollection, string M
 /// <c>Presets</c> names which of <c>last7Days</c>/<c>lastCalendarMonth</c>/<c>custom</c>
 /// this param accepts at query time; resolving one to concrete bounds is
 /// <see cref="Generation.DateRangeResolver"/>'s job, not this record's.</summary>
-public sealed record ReadModelFilter(string Param, string Field, string Kind, IReadOnlyList<string> Presets);
+///
+/// <para><c>Kind</c> <c>"match"</c> (schema 3.1.0) searches <c>Field</c>: <c>Mode</c> is
+/// <c>exact</c>/<c>prefix</c>/<c>contains</c>, <c>Normalize</c> is resolved (never null for
+/// a match; the schema's default is <c>caseFold</c>), and <c>MinPrefixLength</c> is the
+/// shortest accepted prefix term, if declared. <c>Presets</c> is empty for a match.</para>
+public sealed record ReadModelFilter(string Param, string Field, string Kind, IReadOnlyList<string> Presets,
+    string? Mode = null, string? Normalize = null, int? MinPrefixLength = null)
+{
+    public bool IsMatch => Kind == "match";
+}
 
 /// <summary>Maps events to a command on another aggregate — the automation shape.</summary>
 public sealed class Reactor

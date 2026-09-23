@@ -635,4 +635,154 @@ public class ReadModelQueryGeneratorTests : IDisposable
             }
         }
     }
+
+    // Milestone D5: schema 3.1.0 match filters. A plain `name` searched three ways (shadow
+    // columns) and a pii `email` searched by contains (the separate search store).
+    private const string MatchJson = """
+        {
+          "eventModelingSchemaVersion": "3.1.0", "id": "match-route-test", "name": "Match Route Test",
+          "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+          "events": {
+            "customer-registered": {"name": "Customer Registered", "swimlaneId": "s", "aggregate": "Customer",
+              "fields": [
+                {"name": "customerId", "type": "string", "idAttribute": true},
+                {"name": "name", "type": "string"},
+                {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
+              ]}
+          },
+          "commands": {"register-customer": {"name": "Register Customer", "aggregate": "Customer"}},
+          "readModels": {
+            "customers": {
+              "name": "Customers",
+              "builtFromEventIds": ["customer-registered"],
+              "fields": [
+                {"name": "customerId", "type": "string", "idAttribute": true},
+                {"name": "name", "type": "string"},
+                {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
+              ],
+              "filters": [
+                {"param": "nameSearch", "field": "name", "kind": "match", "mode": "contains", "normalize": "personName"},
+                {"param": "namePrefix", "field": "name", "kind": "match", "mode": "prefix", "minPrefixLength": 2},
+                {"param": "nameExact", "field": "name", "kind": "match", "mode": "exact"},
+                {"param": "emailSearch", "field": "email", "kind": "match", "mode": "contains", "normalize": "email"}
+              ]
+            }
+          },
+          "screens": {"scr1": {"name": "Register Screen"}},
+          "slices": [
+            {
+              "id": "register-customer-slice", "name": "Register Customer", "pattern": "stateChange",
+              "swimlaneId": "s", "status": "created",
+              "screenId": "scr1", "commandId": "register-customer", "eventIds": ["customer-registered"],
+              "scenarios": []
+            }
+          ]
+        }
+        """;
+
+    private const string MatchProgramCs = """
+        using System.Text.Json;
+        using DotnetCqrs.Crypto;
+        using DotnetCqrs.EventStore;
+        using DotnetCqrs.ReadModels;
+        using Generated.Customer;
+
+        var kms = new InMemoryKmsClient();
+        var store = await SqliteReadModelStore.OpenAsync(":memory:");
+        var projection = new CustomersProjection(store);
+        await projection.InitAsync();
+        var searchPath = Path.Combine(AppContext.BaseDirectory, "search.db");
+        File.Delete(searchPath);
+        var searchStore = await SqliteSearchIndexStore.OpenAsync(searchPath);
+        await SqliteSearchIndexStore.AttachAsync(store.Connection, searchPath);
+        var searchIndex = new CustomersSearchIndex(searchStore, kms);
+        await searchIndex.InitAsync();
+
+        long position = 0;
+        foreach (var (id, name, email) in new[] { ("c1", "José Núñez", "Alice@Example.com"), ("c2", "Bob 50% Off", "bob@example.com"), ("c3", "Joseph", "carol@example.com") })
+        {
+            var sealedEmail = await Pii<string>.EncryptAsync(kms, id, email);
+            var ev = new Event(++position, $"seed-{position}", "customer", id, 1, "CustomerRegistered",
+                JsonSerializer.Serialize(new { customerId = id, name, email = sealedEmail }), "{}", "1970-01-01T00:00:00.000Z");
+            await projection.ApplyAsync(ev, CancellationToken.None);
+            await searchIndex.ApplyAsync(ev, CancellationToken.None);
+        }
+
+        var builder = WebApplication.CreateBuilder(args);
+        builder.Services.AddSingleton<IReadModelStore>(store);
+        builder.Services.AddSingleton<IKmsClient>(kms);
+        var app = builder.Build();
+        app.MapCustomersRoute();
+        app.MapPost("/test/erase/{id}", async (string id) =>
+        {
+            var erased = new Event(99, "erase", DataSubject.Aggregate, id, 1, DataSubject.SubjectErasedEvent, "{}", "{}", "");
+            await new SubjectKeyDestroyer(kms).ApplyAsync(erased, CancellationToken.None);
+            await searchIndex.ApplyAsync(erased, CancellationToken.None);
+        });
+        await app.RunAsync();
+        """;
+
+    [Fact(Timeout = 300000)]
+    public async Task Generated_query_route_searches_match_filters_on_shadow_columns_and_the_pii_search_index()
+    {
+        var mapped = DocumentMapper.Map(DocumentLoader.Parse(MatchJson));
+        var domain = Assert.Single(mapped.Domains);
+        var readModel = Assert.Single(domain.ReadModels);
+        var files = new List<GeneratedFile>(CSharpGenerator.Generate(domain)) { ReadModelQueryGenerator.Generate(domain, readModel) };
+        Assert.Contains(files, f => f.Name == "CustomersSearchIndex.cs");
+        var port = await StartHostAndBuildAsync([.. files], MatchProgramCs, _scratchDir);
+
+        var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        foreach (var a in new[] { "run", "--project", _scratchDir, "--no-build" }) psi.ArgumentList.Add(a);
+        psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+
+        using var process = Process.Start(psi)!;
+        try
+        {
+            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            for (var attempt = 0; attempt < 60; attempt++)
+            {
+                await Task.Delay(500);
+                try { (await client.GetAsync("/api/query/customers")).EnsureSuccessStatusCode(); break; }
+                catch (HttpRequestException) { /* not listening yet -- retry */ }
+            }
+            Assert.False(process.HasExited, "generated host process exited early");
+
+            async Task<string[]> IdsAsync(string query)
+            {
+                var rows = await client.GetFromJsonAsync<JsonElement>($"/api/query/customers?{query}");
+                return [.. rows.EnumerateArray().Select(r => r.GetProperty("customer_id").GetString()!).Order()];
+            }
+
+            // Non-pii, via shadow columns: the query term is normalized exactly as the stored side.
+            Assert.Equal(["c1"], await IdsAsync("nameSearch=NUNEZ"));              // personName: case and diacritics
+            Assert.Equal(["c1", "c3"], await IdsAsync("namePrefix=JO"));           // caseFold prefix
+            Assert.Equal(["c3"], await IdsAsync("nameExact=%20joseph%20"));        // caseFold exact, trimmed
+            Assert.Equal(["c2"], await IdsAsync("nameSearch=%25"));                // a literal %, not a wildcard
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/query/customers?namePrefix=j")).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/query/customers?nameSearch=%20")).StatusCode);
+
+            // The shadow columns are an implementation detail: never in the response.
+            var all = await client.GetFromJsonAsync<JsonElement>("/api/query/customers");
+            Assert.DoesNotContain(all[0].EnumerateObject(), p => p.Name.Contains("__match"));
+
+            // pii contains, via the search store: the row comes back with its email revealed.
+            var hit = await client.GetFromJsonAsync<JsonElement>("/api/query/customers?emailSearch=ALICE%40");
+            Assert.Equal("c1", Assert.Single(hit.EnumerateArray()).GetProperty("customer_id").GetString());
+            Assert.Equal("Alice@Example.com", hit[0].GetProperty("email").GetString());
+
+            // Erasure deletes the subject's index entries: "no match" is now the right answer.
+            (await client.PostAsync("/test/erase/c1", null)).EnsureSuccessStatusCode();
+            Assert.Empty(await IdsAsync("emailSearch=alice"));
+            Assert.Equal(["c2"], await IdsAsync("emailSearch=bob"));
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
+            }
+        }
+    }
 }

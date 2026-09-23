@@ -237,6 +237,30 @@ public static class HostProjectGenerator
                 b.AppendLine($"engine.Register(new ReactorConsumer(new {typeName}(), registry));");
             }
         }
+        var searchIndexed = mapped.Domains
+            .SelectMany(d => d.ReadModels.Where(rm => GenerationSupport.IndexedMatchFilters(rm).Any()).Select(rm => (Domain: d, ReadModel: rm)))
+            .ToList();
+        if (searchIndexed.Count > 0)
+        {
+            // pii contains filters keep a normalized PLAINTEXT index. It lives in its own file
+            // so it can be left out of backups whole (rebuilt from the log), with its
+            // consumers' checkpoints inside it, so losing the file means a rebuild rather than
+            // a silently partial index. Attached to the read-model connection as "search" so
+            // the query routes can select row keys from it.
+            b.AppendLine("// search.db holds PLAINTEXT search indexes over personal data: exclude it from backups.");
+            b.AppendLine("// It is rebuilt from the event log whenever it is missing.");
+            b.AppendLine("var searchPath = Path.Combine(dataDir, \"search.db\");");
+            b.AppendLine("var searchStore = await SqliteSearchIndexStore.OpenAsync(searchPath);");
+            b.AppendLine("await SqliteSearchIndexStore.AttachAsync(readModelDb.Connection, searchPath);");
+            foreach (var (_, readModel) in searchIndexed)
+            {
+                var typeName = GenerationSupport.ExportName(readModel.Collection) + "SearchIndex";
+                var varName = readModel.Collection + "SearchIndex";
+                b.AppendLine($"var {varName} = new {typeName}(searchStore, kms, piiCache);");
+                b.AppendLine($"await {varName}.InitAsync();");
+                b.AppendLine($"engine.Register({varName}, searchStore);");
+            }
+        }
         if (hasPii)
         {
             // SubjectErased destroys the key (durable checkpoint) and empties this process's

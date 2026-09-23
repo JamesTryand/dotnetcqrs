@@ -19,7 +19,11 @@ public static class CSharpGenerator
 
         var files = new List<GeneratedFile> { DeciderGenerator.Generate(domain) };
         foreach (var readModel in domain.ReadModels)
+        {
             files.Add(ProjectionGenerator.Generate(domain, readModel));
+            if (SearchIndexGenerator.Generate(domain, readModel) is { } searchIndex)
+                files.Add(searchIndex);
+        }
         foreach (var reactor in domain.Reactors)
             files.Add(ReactorGenerator.Generate(domain, reactor));
         return files;

@@ -279,6 +279,44 @@ the scenario verifier. A real host uses `KmsClient` against the
 key-management facade, which holds each subject's key in Vault and never
 lets it out.
 
+## Searching: `match` filters
+
+A read model declares which fields can be searched, and how, in its
+`filters` (schema 3.1.0):
+
+```json
+"filters": [
+  {"param": "nameSearch", "field": "name", "kind": "match", "mode": "contains", "normalize": "personName"},
+  {"param": "emailSearch", "field": "email", "kind": "match", "mode": "contains", "normalize": "email"}
+]
+```
+
+`mode` is `exact`, `prefix` or `contains`. `normalize` says how both the
+stored value and the search term are cleaned before comparing: `caseFold`
+(the default) ignores case and surrounding space, `personName` also ignores
+accents and repeated spaces, `email` is `caseFold`, `phone` keeps a leading
+`+` and the digits, and `none` compares exactly. A query then passes the
+term as that param: `GET /api/query/customers?nameSearch=nunez` finds
+"José Núñez".
+
+How the generator serves it depends on the field:
+
+- **An ordinary field** gets a normalized copy (a *shadow column*) kept
+  beside it by the projection, searched with plain SQL. It never appears in
+  query responses.
+- **A personal field** (`pii`) only supports `contains` for now. Its values
+  are ciphertext, so the generator builds a separate search index of
+  normalized plaintext in its own file, `search.db`. That file is deleted
+  from when a person is erased, must be left out of backups, and is rebuilt
+  from the log whenever it's missing (it keeps its own position inside
+  itself, so it can never be silently half-built). The mapping report flags
+  every such index. `exact` and `prefix` on a personal field are refused at
+  generation time: they will use keyed hashes from the key service, which
+  isn't available yet.
+
+A search returns the matching rows with their personal values revealed as
+usual. Searches and scenario checks run the same SQL.
+
 ## Running it as a host
 
 `generate --host` writes a complete runnable ASP.NET Core project for the

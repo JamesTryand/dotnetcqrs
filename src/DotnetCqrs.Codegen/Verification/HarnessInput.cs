@@ -57,7 +57,8 @@ public sealed record ViewScenarioInput(
     string ExpectedResult,
     IReadOnlyList<ViewScopeInput> Scopes, // only entries whose param is present in QueryParams
     IReadOnlyList<ViewFilterInput> Filters, // every readModel.filters entry -- the harness only acts on one whose param is actually present in QueryParams
-    IReadOnlyList<string> PiiColumns); // snake_case columns holding the envelope; revealed through PiiColumnRevealer like a real query route
+    IReadOnlyList<string> PiiColumns, // snake_case columns holding the envelope; revealed through PiiColumnRevealer like a real query route
+    string? SearchIndexTypeName = null); // the generated {Collection}SearchIndex, when the read model has pii contains filters
 
 /// <summary>One active <c>readModel.scopes</c> entry for this scenario's query --
 /// resolved to the VIA read model's own generated projection, so the harness can seed
@@ -80,4 +81,9 @@ public sealed record ViewScopeInput(
 /// generated at all): a filter references no other element, so there's no failure mode
 /// to check ahead of time, and the harness's own <c>SelectRowsAsync</c> only consults an
 /// entry whose param it actually sees.</summary>
-public sealed record ViewFilterInput(string Param, string Field, string Kind);
+///
+/// <para>For a schema 3.1.0 <c>match</c> filter, <c>MatchClause</c> is the exact WHERE
+/// clause the generated route uses (from <c>GenerationSupport.MatchClause</c>), with
+/// <c>{0}</c> where the parameter goes, so the two can't drift.</para>
+public sealed record ViewFilterInput(string Param, string Field, string Kind,
+    string? Mode = null, string? Normalize = null, int? MinPrefixLength = null, string? MatchClause = null);

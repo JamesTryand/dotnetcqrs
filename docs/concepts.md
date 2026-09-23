@@ -214,8 +214,12 @@ keep working if the key service is down.
 The cost: encryption is randomized, so a personal column can't be filtered
 or indexed with plain SQL, and the full-text search suggested above doesn't
 apply to it. Searching personal data needs a purpose-built index that is
-itself deleted from on erasure. The schema declares it as a `match` filter;
-generator support for those is still being built.
+itself deleted from on erasure. The schema declares it as a `match` filter
+with mode `contains`. The generator keeps that index in a separate
+`search.db`, which holds normalized plaintext, is deleted from on erasure,
+must be left out of backups, and is rebuilt from the log whenever it's
+missing. Exact and prefix search over personal data will use keyed hashes
+instead, and are waiting on the key service.
 
 ## A CRUD → `dotnetcqrs` glossary
 

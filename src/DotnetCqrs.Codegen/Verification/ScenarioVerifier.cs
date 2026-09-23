@@ -182,16 +182,23 @@ public static class ScenarioVerifier
                 index.EventPiiFields.GetValueOrDefault(index.EventType.GetValueOrDefault(g.EventId, g.EventId)) ?? EmptyPiiFields))
             .ToList();
 
+        var readModelDomain = index.ReadModelDomain[readModelId];
         var filters = info.Filters
-            .Select(f => new ViewFilterInput(f.Param, ToSnakeCase(f.Field), f.Kind))
+            .Select(f => f.IsMatch
+                ? new ViewFilterInput(f.Param, ToSnakeCase(f.Field), f.Kind, f.Mode, f.Normalize, f.MinPrefixLength,
+                    GenerationSupport.MatchClause(readModelDomain, f, "{0}"))
+                : new ViewFilterInput(f.Param, ToSnakeCase(f.Field), f.Kind))
             .ToList();
+        var searchIndexTypeName = GenerationSupport.IndexedMatchFilters(readModelDomain).Any()
+            ? $"Generated.{aggregatePascal}.{GenerationSupport.ExportName(info.Collection)}SearchIndex"
+            : null;
 
         viewScenarios.Add(new ViewScenarioInput(
             slice.Id, scenario.Id, scenario.Name, projectionTypeName, info.Aggregate,
             info.Collection, given,
             scenario.When.QueryParams?.GetRawText(), scenario.When.AsOf,
             scenario.Then.Result.GetRawText(), scopes, filters,
-            index.ReadModelPiiColumns.GetValueOrDefault(readModelId) ?? []));
+            index.ReadModelPiiColumns.GetValueOrDefault(readModelId) ?? [], searchIndexTypeName));
     }
 
     private static readonly IReadOnlyDictionary<string, string> EmptyPiiFields = new Dictionary<string, string>();
@@ -362,6 +369,7 @@ public static class ScenarioVerifier
         public required Dictionary<string, string> ReadModelIdByCollection; // physical collection name -> schema read model id, for looking a via-model's own idAttribute field back up in the document
         public required Dictionary<string, IReadOnlyDictionary<string, string>> EventPiiFields; // generated event type -> (pii field -> its piiSubject field)
         public required Dictionary<string, IReadOnlyList<string>> ReadModelPiiColumns; // schema read model id -> snake_case pii columns
+        public required Dictionary<string, Domain.ReadModel> ReadModelDomain; // schema read model id -> the mapped read model (match clauses need it)
 
         public static GeneratedIndex Build(Document document, IReadOnlyList<Domain.Domain> domains)
         {
@@ -415,6 +423,7 @@ public static class ScenarioVerifier
             var readModelByCollection = new Dictionary<string, (string, string)>();
             var readModelIdByCollection = new Dictionary<string, string>();
             var readModelPiiColumns = new Dictionary<string, IReadOnlyList<string>>();
+            var readModelDomain = new Dictionary<string, Domain.ReadModel>();
             if (document.ReadModels is not null)
             {
                 foreach (var (id, rm) in document.ReadModels)
@@ -425,6 +434,7 @@ public static class ScenarioVerifier
                         var match = d.ReadModels.FirstOrDefault(r => r.Collection == collection);
                         if (match is null) continue;
                         readModel[id] = (d.Aggregate, collection, ToSnakeCase(match.Key), match.Scopes, match.Filters);
+                        readModelDomain[id] = match;
                         readModelByCollection[collection] = (d.Aggregate, collection);
                         readModelIdByCollection[collection] = id;
                         readModelPiiColumns[id] = [.. match.Fields.Where(f => f.Pii).Select(f => ToSnakeCase(f.Name))];
@@ -444,6 +454,7 @@ public static class ScenarioVerifier
                 ReadModelIdByCollection = readModelIdByCollection,
                 EventPiiFields = eventPiiFields,
                 ReadModelPiiColumns = readModelPiiColumns,
+                ReadModelDomain = readModelDomain,
             };
         }
     }

@@ -12,8 +12,8 @@
     <PackageReference Include="JsonSchema.Net" Version="9.4.0" />
   </ItemGroup>
 
-  <!-- Pinned copy of eventmodelschema's eventmodeling.schema.json (v2.0.0, fetched
-       2026-08-27 from github.com/jamestryand/eventmodelschema): vendored rather than
+  <!-- Pinned copy of eventmodelschema's eventmodeling.schema.json (v3.1.0, eventmodelschema@34e8f60,
+       copied 2026-09-23 from the local clone of lab/eventmodelschema): vendored rather than
        fetched at runtime, so validation works offline and deterministically. Update by
        re-fetching from that repo when a new schema version is needed. -->
   <ItemGroup>

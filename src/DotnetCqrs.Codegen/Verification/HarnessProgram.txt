@@ -93,6 +93,23 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
         // `given` is already cross-cutting fixture history (see ScenarioVerifier's own
         // comment), so the very same events seed the via-projection too, whichever
         // stream they actually belong to.
+        // A read model with pii contains filters has a search index in a separate store. The
+        // harness gives it a real (temporary) search.db, attached as "search" exactly as a
+        // generated host does, so the scenario's match query runs the route's own SQL.
+        DotnetCqrs.Consumers.IConsumer? searchIndex = null;
+        DotnetCqrs.ReadModels.SqliteSearchIndexStore? searchStore = null;
+        string? searchPath = null;
+        if (scenario.SearchIndexTypeName is not null)
+        {
+            searchPath = Path.Combine(Path.GetTempPath(), $"dotnetcqrs-verify-search-{Guid.NewGuid():N}.db");
+            searchStore = await DotnetCqrs.ReadModels.SqliteSearchIndexStore.OpenAsync(searchPath);
+            await DotnetCqrs.ReadModels.SqliteSearchIndexStore.AttachAsync(readModel.Connection, searchPath);
+            var indexType = Type.GetType(scenario.SearchIndexTypeName)
+                ?? throw new InvalidOperationException($"search index type not found: {scenario.SearchIndexTypeName}");
+            searchIndex = (DotnetCqrs.Consumers.IConsumer)Activator.CreateInstance(indexType, searchStore, kms, null)!;
+            await CallInitAsync(searchIndex);
+        }
+
         var viaProjections = new Dictionary<string, IProjection>();
         foreach (var scope in scenario.Scopes)
         {
@@ -116,6 +133,7 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
             var data = await SealPiiAsync(g.Data, g.PiiFields, kms);
             var mainEv = new Event(position, $"scenario-{position}", scenario.Aggregate, g.MainKey, position, g.Type, data, "{}", "1970-01-01T00:00:00.000Z");
             await projection.ApplyAsync(mainEv, CancellationToken.None);
+            if (searchIndex is not null) await searchIndex.ApplyAsync(mainEv, CancellationToken.None);
             foreach (var (viaTypeName, viaProjection) in viaProjections)
             {
                 var viaKey = g.ViaKeys.GetValueOrDefault(viaTypeName, g.MainKey);
@@ -126,6 +144,11 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
 
         var rows = await SelectRowsAsync(readModel.Connection, scenario.TableName, scenario.QueryParams, scenario.AsOf, scenario.Scopes, scenario.Filters);
         await DotnetCqrs.Crypto.PiiColumnRevealer.RevealAsync(rows, scenario.PiiColumns ?? [], kms);
+        if (searchStore is not null)
+        {
+            await searchStore.DisposeAsync();
+            try { File.Delete(searchPath!); } catch (IOException) { /* attached; the OS temp dir cleans it */ }
+        }
 
         // Two `then.result` shapes are supported. A single-property object whose value
         // is a JSON array (e.g. `{"entries": [...]}`) is a NAMED-LIST result: the query
@@ -256,6 +279,20 @@ static async Task<List<Dictionary<string, object?>>> SelectRowsAsync(
             // (see its own doc comment), so the two can't independently drift on what
             // "last7Days" actually means.
             var filter = filters.Find(f => f.Param == key);
+            // schema 3.1.0 match: the same normalizer, clause and pattern as the generated
+            // route (MatchClause is GenerationSupport.MatchClause's output with {0} for the
+            // parameter), so a scenario exercises the route's real search.
+            if (filter is { Kind: "match" })
+            {
+                var term = MatchNormalizer.Normalize(filter.Normalize!, value.ValueKind == JsonValueKind.String ? value.GetString()! : value.GetRawText());
+                if (term.Length == 0) throw new InvalidOperationException($"match param \"{key}\" has an empty search term");
+                if (filter.MinPrefixLength is { } min && term.Length < min)
+                    throw new InvalidOperationException($"match param \"{key}\" needs at least {min} characters");
+                var matchParam = $"@p{i++}";
+                clauses.Add(filter.MatchClause!.Replace("{0}", matchParam));
+                parameters[matchParam] = MatchNormalizer.Pattern(filter.Mode!, term);
+                continue;
+            }
             if (filter is not null && value.ValueKind == JsonValueKind.Object)
             {
                 var kind = value.GetProperty("kind").GetString()!;
@@ -517,7 +554,8 @@ record CommandScenarioInput(string SliceId, string ScenarioId, string Name, stri
     string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes);
 record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,
     string TableName, List<ViewGivenEventInput> Given, string? QueryParams, string? AsOf, string ExpectedResult,
-    List<ViewScopeInput> Scopes, List<ViewFilterInput> Filters, List<string>? PiiColumns = null);
+    List<ViewScopeInput> Scopes, List<ViewFilterInput> Filters, List<string>? PiiColumns = null, string? SearchIndexTypeName = null);
 record ViewScopeInput(string Param, string ViaProjectionTypeName, string ViaTableName, string MatchParamToColumn, string SelectColumn, string FilterLocalColumn);
-record ViewFilterInput(string Param, string Field, string Kind);
+record ViewFilterInput(string Param, string Field, string Kind,
+    string? Mode = null, string? Normalize = null, int? MinPrefixLength = null, string? MatchClause = null);
 record ScenarioResultDto(string SliceId, string ScenarioId, string Name, string Kind, bool Passed, bool Skipped, string Detail);

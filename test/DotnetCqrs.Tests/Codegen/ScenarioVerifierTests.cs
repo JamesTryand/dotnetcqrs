@@ -320,6 +320,98 @@ public class ScenarioVerifierTests
     }
 
     [Fact(Timeout = VerifyTimeoutMs)]
+    public async Task View_scenarios_run_match_queries_through_the_routes_own_sql_pii_included()
+    {
+        // Milestone D5: a scenario's queryParams can name match filters. The harness uses the
+        // clause GenerationSupport.MatchClause builds for the route, the same normalizer and
+        // pattern, and for a pii field a real temporary search.db filled by the generated
+        // search index from the (sealed) given events.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "3.1.0", "id": "match-view-test", "name": "Match View Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "customer-registered": {"name": "Customer Registered", "swimlaneId": "s", "aggregate": "Customer",
+                  "fields": [
+                    {"name": "customerId", "type": "string", "idAttribute": true},
+                    {"name": "name", "type": "string"},
+                    {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
+                  ]}
+              },
+              "commands": {"register-customer": {"name": "Register Customer", "aggregate": "Customer"}},
+              "readModels": {
+                "customers": {
+                  "name": "Customers",
+                  "builtFromEventIds": ["customer-registered"],
+                  "fields": [
+                    {"name": "customerId", "type": "string", "idAttribute": true},
+                    {"name": "name", "type": "string"},
+                    {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
+                  ],
+                  "filters": [
+                    {"param": "nameSearch", "field": "name", "kind": "match", "mode": "contains", "normalize": "personName"},
+                    {"param": "emailSearch", "field": "email", "kind": "match", "mode": "contains", "normalize": "email"}
+                  ]
+                }
+              },
+              "screens": {"scr1": {"name": "Register Screen"}, "scr2": {"name": "Search Screen"}},
+              "slices": [
+                {
+                  "id": "register-slice", "name": "Register", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr1", "commandId": "register-customer", "eventIds": ["customer-registered"],
+                  "scenarios": []
+                },
+                {
+                  "id": "search-slice", "name": "Search Customers", "pattern": "stateView",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr2", "readModelId": "customers",
+                  "scenarios": [
+                    {
+                      "id": "by-name", "name": "Name search ignores case and accents", "kind": "stateView",
+                      "given": [
+                        {"eventId": "customer-registered", "data": {"customerId": "c1", "name": "José Núñez", "email": "alice@example.com"}},
+                        {"eventId": "customer-registered", "data": {"customerId": "c2", "name": "Bob", "email": "bob@example.com"}}
+                      ],
+                      "when": {"readModelId": "customers", "queryParams": {"nameSearch": "nunez"}},
+                      "then": {"result": {"customers": [{"customerId": "c1", "email": "alice@example.com"}]}}
+                    },
+                    {
+                      "id": "by-email", "name": "Email search finds the pii field", "kind": "stateView",
+                      "given": [
+                        {"eventId": "customer-registered", "data": {"customerId": "c1", "name": "José Núñez", "email": "alice@example.com"}},
+                        {"eventId": "customer-registered", "data": {"customerId": "c2", "name": "Bob", "email": "bob@example.com"}}
+                      ],
+                      "when": {"readModelId": "customers", "queryParams": {"emailSearch": "BOB@"}},
+                      "then": {"result": {"customers": [{"customerId": "c2", "name": "Bob"}]}}
+                    },
+                    {
+                      "id": "wrong-hit", "name": "A wrong expectation still fails", "kind": "stateView",
+                      "given": [
+                        {"eventId": "customer-registered", "data": {"customerId": "c1", "name": "José Núñez", "email": "alice@example.com"}},
+                        {"eventId": "customer-registered", "data": {"customerId": "c2", "name": "Bob", "email": "bob@example.com"}}
+                      ],
+                      "when": {"readModelId": "customers", "queryParams": {"emailSearch": "alice"}},
+                      "then": {"result": {"customers": [{"customerId": "c2"}]}}
+                    }
+                  ]
+                }
+              ]
+            }
+            """;
+        var doc = DocumentLoader.Parse(json);
+        var mapped = DocumentMapper.Map(doc);
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+
+        var byName = results.Single(r => r.ScenarioId == "by-name");
+        Assert.True(byName.Passed, byName.Detail);
+        var byEmail = results.Single(r => r.ScenarioId == "by-email");
+        Assert.True(byEmail.Passed, byEmail.Detail);
+        Assert.False(results.Single(r => r.ScenarioId == "wrong-hit").Passed);
+    }
+
+    [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_count_derivation_rolls_up_across_streams()
     {
         // Finding 3's case #3 (projects.staffCount): the counted events

@@ -206,7 +206,7 @@ public class HostGenerationTests : IDisposable
     // shows it.
     private const string PiiHostJson = """
         {
-          "eventModelingSchemaVersion": "3.0.0", "id": "pii-host-test", "name": "Pii Host Test",
+          "eventModelingSchemaVersion": "3.1.0", "id": "pii-host-test", "name": "Pii Host Test",
           "swimlanes": [{"id":"s","name":"S","kind":"team"}],
           "events": {
             "customer-registered": {"name": "Customer Registered", "swimlaneId": "s", "aggregate": "Customer",
@@ -229,7 +229,8 @@ public class HostGenerationTests : IDisposable
               "fields": [
                 {"name": "customerId", "type": "string", "idAttribute": true},
                 {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
-              ]
+              ],
+              "filters": [{"param": "emailSearch", "field": "email", "kind": "match", "mode": "contains", "normalize": "email"}]
             }
           },
           "screens": {"scr1": {"name": "Register Screen"}},
@@ -320,6 +321,19 @@ public class HostGenerationTests : IDisposable
             var email = await PollEmailAsync(e => e.ValueKind == JsonValueKind.String);
             Assert.Equal("alice@example.com", email.GetString());
 
+            // Search: the pii contains filter is served from search.db, which the generated host
+            // opens, attaches and fills through the consumer engine.
+            async Task<int> SearchHitsAsync(string term) =>
+                (await client.GetFromJsonAsync<JsonElement>($"/api/query/customers?emailSearch={term}")).GetArrayLength();
+            var found = 0;
+            for (var attempt = 0; attempt < 40 && found == 0; attempt++)
+            {
+                found = await SearchHitsAsync("ALICE");
+                if (found == 0) await Task.Delay(500);
+            }
+            Assert.Equal(1, found);
+            Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(eventsDbPath)!, "search.db")), "search.db should sit beside events.db");
+
             // Erase through the gateway: the built-in data-subject aggregate is registered.
             using var erased = await client.PostAsJsonAsync("/api/cqrs/dataSubject/c1/EraseSubject", new { });
             Assert.True(erased.IsSuccessStatusCode, await erased.Content.ReadAsStringAsync());
@@ -328,6 +342,15 @@ public class HostGenerationTests : IDisposable
             // the evictor is wired (and the destroyer, for anything not cached).
             var redacted = await PollEmailAsync(e => e.ValueKind == JsonValueKind.Object);
             Assert.True(redacted.GetProperty("$redacted").GetBoolean());
+
+            // ...and the search index forgot the subject: "no match" is the right answer now.
+            var remaining = 1;
+            for (var attempt = 0; attempt < 40 && remaining > 0; attempt++)
+            {
+                remaining = await SearchHitsAsync("alice");
+                if (remaining > 0) await Task.Delay(500);
+            }
+            Assert.Equal(0, remaining);
 
             // A returning person is a new subject: the guard refuses the old id.
             using var again = await client.PostAsJsonAsync("/api/cqrs/customer/c1b/RegisterCustomer",

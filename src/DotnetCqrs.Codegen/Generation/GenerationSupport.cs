@@ -92,4 +92,64 @@ internal static class GenerationSupport
     /// <c>["a", "b"]</c>.</summary>
     public static string QuotedArray(IEnumerable<string> names) =>
         "[" + string.Join(", ", names.Select(n => $"\"{n}\"")) + "]";
+
+    /// <summary>The shadow column a non-pii <c>match</c> filter searches: the field's value
+    /// after <see cref="MatchNormalizer"/>, kept by the projection beside the field itself,
+    /// e.g. <c>customer_email__match_case_fold</c>. One per (field, normalizer), so two
+    /// filters that share both share the column.</summary>
+    public static string MatchColumn(string fieldName, string normalize) =>
+        $"{SnakeCase(fieldName)}__match_{SnakeCase(normalize)}";
+
+    /// <summary>The search-index table for a pii <c>contains</c> filter, in the separate
+    /// search store (see <c>SqliteSearchIndexStore</c>).</summary>
+    public static string MatchIndexTable(string collection, string fieldName, string normalize) =>
+        $"{collection}__match_{SnakeCase(fieldName)}_{SnakeCase(normalize)}";
+
+    /// <summary>The WHERE clause for one <c>match</c> filter, with <paramref name="paramToken"/>
+    /// where the parameter goes (its value comes from <c>MatchNormalizer.Pattern</c>). A
+    /// non-pii field compares its shadow column. A pii field (contains only) selects row
+    /// keys from its index in the attached <c>search</c> store. Used by both the generated
+    /// route and the scenario verifier, so the two build the same SQL.</summary>
+    public static string MatchClause(Domain.ReadModel readModel, Domain.ReadModelFilter filter, string paramToken)
+    {
+        var comparison = filter.Mode == "exact" ? $"= {paramToken}" : $"LIKE {paramToken} ESCAPE '\\'";
+        var pii = readModel.Fields.Any(f => f.Name == filter.Field && f.Pii);
+        return pii
+            ? $"{SnakeCase(readModel.Key)} IN (SELECT row_key FROM search.{MatchIndexTable(readModel.Collection, filter.Field, filter.Normalize!)} WHERE term {comparison})"
+            : $"{MatchColumn(filter.Field, filter.Normalize!)} {comparison}";
+    }
+
+    /// <summary>Non-pii <c>match</c> filters, one per shadow column.</summary>
+    public static IEnumerable<Domain.ReadModelFilter> ShadowMatchFilters(Domain.ReadModel readModel)
+    {
+        var pii = readModel.Fields.Where(f => f.Pii).Select(f => f.Name).ToHashSet(StringComparer.Ordinal);
+        return readModel.Filters.Where(f => f.IsMatch && !pii.Contains(f.Field))
+            .DistinctBy(f => MatchColumn(f.Field, f.Normalize!));
+    }
+
+    /// <summary>pii <c>contains</c> filters, one per index (field, normalizer).</summary>
+    public static IEnumerable<Domain.ReadModelFilter> IndexedMatchFilters(Domain.ReadModel readModel)
+    {
+        var pii = readModel.Fields.Where(f => f.Pii).Select(f => f.Name).ToHashSet(StringComparer.Ordinal);
+        return readModel.Filters.Where(f => f.IsMatch && pii.Contains(f.Field)).DistinctBy(f => (f.Field, f.Normalize));
+    }
+
+    private static string SnakeCase(string name)
+    {
+        var b = new System.Text.StringBuilder();
+        for (var i = 0; i < name.Length; i++)
+        {
+            var c = name[i];
+            if (char.IsUpper(c))
+            {
+                if (i > 0) b.Append('_');
+                b.Append(char.ToLowerInvariant(c));
+            }
+            else
+            {
+                b.Append(c);
+            }
+        }
+        return b.ToString();
+    }
 }

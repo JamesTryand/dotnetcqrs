@@ -695,10 +695,16 @@ public sealed class DocumentMapper
                 // guard exists for a Document built directly (a defensive unit test, or
                 // any future non-JSON front-end), the same belt-and-suspenders posture
                 // ResolveRowKeyField already takes for count/sum's own optional field.
+                if (filterDef.Kind == "match")
+                {
+                    if (MapMatchFilter(id, readModel, filterDef) is { } match)
+                        readModel.Filters.Add(match);
+                    continue;
+                }
                 if (filterDef.Kind != "dateRange")
                 {
                     _report.Error($"read model \"{id}\" filter on param \"{filterDef.Param}\" declares unsupported kind " +
-                        $"\"{filterDef.Kind}\" -- only \"dateRange\" is supported");
+                        $"\"{filterDef.Kind}\" -- only \"dateRange\" and \"match\" are supported");
                     continue;
                 }
                 if (filterDef.Presets is not { Count: > 0 })
@@ -717,11 +723,69 @@ public sealed class DocumentMapper
             foreach (var scope in readModel.Scopes.Where(sc => piiColumns.Contains(sc.FilterLocalField)))
                 _report.Error($"read model \"{id}\" scope on param \"{scope.Param}\" filters on pii field \"{scope.FilterLocalField}\" -- " +
                     "an encrypted column cannot be compared in SQL");
-            foreach (var filter in readModel.Filters.Where(fl => piiColumns.Contains(fl.Field)))
+            foreach (var filter in readModel.Filters.Where(fl => !fl.IsMatch && piiColumns.Contains(fl.Field)))
                 _report.Error($"read model \"{id}\" filter on param \"{filter.Param}\" ranges over pii field \"{filter.Field}\" -- " +
                     "an encrypted column cannot be compared in SQL");
             GetOrCreateDomain(chosenOwner).ReadModels.Add(readModel);
         }
+    }
+
+    private static readonly HashSet<string> MatchModes = ["exact", "prefix", "contains"];
+    private static readonly HashSet<string> MatchNormalizers = ["none", "caseFold", "email", "phone", "personName"];
+
+    /// <summary>A schema 3.1.0 <c>match</c> filter. The schema can't resolve that the field
+    /// exists or check its type (its own design notes leave those to generators), so they
+    /// are checked here. For a pii field the technique follows data minimisation:
+    /// <c>contains</c> needs a readable-at-rest index, so it is allowed but warned about,
+    /// and <c>exact</c>/<c>prefix</c> need keyed hashes from the key service, which has
+    /// no HMAC endpoint yet (D6), so they are refused rather than generated unsearchable.</summary>
+    private Domain.ReadModelFilter? MapMatchFilter(string id, Domain.ReadModel readModel, ReadModelFilterDef def)
+    {
+        var owner = $"read model \"{id}\" match filter on param \"{def.Param}\"";
+        var fieldName = Names.SanitizeName(def.Field);
+        var field = readModel.Fields.FirstOrDefault(f => f.Name == fieldName);
+        if (field is null)
+        {
+            _report.Error($"{owner} names field \"{def.Field}\", which the read model does not declare");
+            return null;
+        }
+        if (def.Mode is null || !MatchModes.Contains(def.Mode))
+        {
+            _report.Error($"{owner} needs mode exact, prefix or contains (got \"{def.Mode}\")");
+            return null;
+        }
+        var normalize = def.Normalize ?? "caseFold";
+        if (!MatchNormalizers.Contains(normalize))
+        {
+            _report.Error($"{owner} declares unknown normalize \"{normalize}\"");
+            return null;
+        }
+        if (def.MinPrefixLength is not null && def.Mode != "prefix")
+        {
+            _report.Error($"{owner} declares minPrefixLength, which only applies to mode prefix");
+            return null;
+        }
+        if (field.Derivation is not null)
+        {
+            _report.Error($"{owner} targets derived field \"{field.Name}\"; only a plain copied field can be searched");
+            return null;
+        }
+        if (field.Type != "text")
+        {
+            // The schema allows exact on any type; this generator supports text only so far.
+            _report.Error($"{owner} targets \"{field.Name}\", a {field.Type} field; match is supported on text fields only");
+            return null;
+        }
+        if (field.Pii && def.Mode != "contains")
+        {
+            _report.Error($"{owner}: {def.Mode} on pii field \"{field.Name}\" needs a keyed-hash index, which needs the " +
+                "key-management facade's HMAC endpoint -- not available yet (see platform/eventmodeling-codegen D6)");
+            return null;
+        }
+        if (field.Pii)
+            _report.Warn($"{owner}: contains on pii field \"{field.Name}\" keeps a normalized PLAINTEXT index at rest " +
+                "(search.db). It is deleted from on erasure and must be excluded from backups.");
+        return new Domain.ReadModelFilter(def.Param, field.Name, "match", [], def.Mode, normalize, def.MinPrefixLength);
     }
 
     /// <summary>A projection copies a plain column from any same-named field on a seed

@@ -144,7 +144,32 @@ public static class ReadModelQueryGenerator
         b.AppendLine("                var raw = values.ToString();");
         b.AppendLine("                switch (key)");
         b.AppendLine("                {");
-        foreach (var filter in readModel.Filters)
+        foreach (var filter in readModel.Filters.Where(f => f.IsMatch))
+        {
+            // Schema 3.1.0 match: the raw param value is the search term, normalized exactly as
+            // the stored side was. A non-pii field searches its shadow column; a pii field
+            // (contains only; DocumentMapper refuses the hashed modes until D6) resolves row
+            // keys through its index in the attached "search" store.
+            b.AppendLine($"                    case \"{filter.Param}\":");
+            b.AppendLine("                    {");
+            b.AppendLine($"                        var term = MatchNormalizer.Normalize(\"{filter.Normalize}\", raw);");
+            b.AppendLine("                        if (term.Length == 0)");
+            b.AppendLine($"                            return Results.Problem(\"'{filter.Param}' needs a non-empty search term\", statusCode: StatusCodes.Status400BadRequest);");
+            if (filter.MinPrefixLength is { } minLength)
+            {
+                b.AppendLine($"                        if (term.Length < {minLength})");
+                b.AppendLine($"                            return Results.Problem(\"'{filter.Param}' needs at least {minLength} characters\", statusCode: StatusCodes.Status400BadRequest);");
+            }
+            b.AppendLine("                        var matchParam = $\"@p{i++}\";");
+            // The clause text lands inside a generated C# string literal, so its backslash
+            // (the LIKE escape character) is doubled here.
+            var clause = GenerationSupport.MatchClause(readModel, filter, "{matchParam}").Replace("\\", "\\\\");
+            b.AppendLine($"                        clauses.Add($\"{clause}\");");
+            b.AppendLine($"                        parameters[matchParam] = MatchNormalizer.Pattern(\"{filter.Mode}\", term);");
+            b.AppendLine("                        break;");
+            b.AppendLine("                    }");
+        }
+        foreach (var filter in readModel.Filters.Where(f => !f.IsMatch))
         {
             b.AppendLine($"                    case \"{filter.Param}\":");
             b.AppendLine("                    {");
@@ -190,7 +215,10 @@ public static class ReadModelQueryGenerator
         b.AppendLine("                }");
         b.AppendLine("            }");
         b.AppendLine();
-        b.AppendLine($"            var sql = clauses.Count == 0 ? \"SELECT * FROM {readModel.Collection}\" : \"SELECT * FROM {readModel.Collection} WHERE \" + string.Join(\" AND \", clauses);");
+        // The table's own columns, named: never SELECT *, which would also return match
+        // shadow columns (a second, normalized copy of a field) to the caller.
+        var selectList = string.Join(", ", columns);
+        b.AppendLine($"            var sql = clauses.Count == 0 ? \"SELECT {selectList} FROM {readModel.Collection}\" : \"SELECT {selectList} FROM {readModel.Collection} WHERE \" + string.Join(\" AND \", clauses);");
         b.AppendLine("            await using var command = store.Connection.CreateCommand();");
         b.AppendLine("            command.CommandText = sql;");
         b.AppendLine("            foreach (var (name, value) in parameters) command.AddParam(name, value);");

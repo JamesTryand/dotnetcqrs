@@ -46,7 +46,13 @@ public sealed record ReadModelScopeVia(string ReadModelId, string MatchParamTo, 
 /// <see cref="Mapping.DocumentMapper"/> with it missing, since JSON Schema validation
 /// already rejects that shape before mapping runs, but a <see cref="Document"/> built
 /// directly in C# (as a defensive unit test does) can, so the mapper still guards it.</summary>
-public sealed record ReadModelFilterDef(string Param, string Field, string Kind, IReadOnlyList<string>? Presets);
+///
+/// <para>Schema 3.1.0 adds <c>kind: "match"</c>: <c>Mode</c> (<c>exact</c>/<c>prefix</c>/
+/// <c>contains</c>, required for match), <c>Normalize</c> (optional, default
+/// <c>caseFold</c>) and <c>MinPrefixLength</c> (prefix only). They are null for a
+/// dateRange filter, just as <c>Presets</c> is null for a match.</para>
+public sealed record ReadModelFilterDef(string Param, string Field, string Kind, IReadOnlyList<string>? Presets,
+    string? Mode = null, string? Normalize = null, int? MinPrefixLength = null);
 
 public sealed record ScreenDef(string Name, string? Description, string? ActorLaneId);
 

@@ -38,10 +38,14 @@ internal static class ProjectionGenerator
         var rollupColumns = allColumns.Where(f => f.Derivation is Domain.CountDerivation or Domain.SumDerivation).ToList();
         var groupByColumns = allColumns.Where(f => f.Derivation is Domain.GroupByDerivation).ToList();
         var typeName = GenerationSupport.ExportName(readModel.Collection) + "Projection";
+        // Schema 3.1.0 match filters on non-pii fields search a normalized copy of the field
+        // (a shadow column), because SQL can't apply the normalizer itself.
+        var shadowFilters = GenerationSupport.ShadowMatchFilters(readModel).ToList();
 
         var b = new StringBuilder();
         b.AppendLine("using System.Text.Json;");
         if (groupByColumns.Count > 0) b.AppendLine("using System.Text.Json.Nodes;");
+        if (shadowFilters.Count > 0) b.AppendLine("using DotnetCqrs.Codegen.Generation;");
         b.AppendLine("using DotnetCqrs.EventStore;");
         b.AppendLine("using DotnetCqrs.Projections;");
         b.AppendLine("using DotnetCqrs.ReadModels;");
@@ -61,11 +65,12 @@ internal static class ProjectionGenerator
         b.AppendLine("        await using var command = store.Connection.CreateCommand();");
         b.AppendLine("        command.CommandText = \"\"\"");
         b.AppendLine($"            CREATE TABLE IF NOT EXISTS {readModel.Collection} (");
-        b.AppendLine($"                {keyColumn} TEXT PRIMARY KEY" + (allColumns.Count > 0 ? "," : ""));
+        var columnCount = allColumns.Count + shadowFilters.Count;
+        b.AppendLine($"                {keyColumn} TEXT PRIMARY KEY" + (columnCount > 0 ? "," : ""));
         for (var i = 0; i < allColumns.Count; i++)
         {
             var field = allColumns[i];
-            var comma = i < allColumns.Count - 1 ? "," : "";
+            var comma = i < columnCount - 1 ? "," : "";
             var sqlType = field.Derivation switch
             {
                 Domain.CountDerivation => "INTEGER",
@@ -90,6 +95,11 @@ internal static class ProjectionGenerator
                 _ => "",
             };
             b.AppendLine($"                {ToSnakeCase(field.Name)} {sqlType}{defaultClause}{comma}");
+        }
+        for (var i = 0; i < shadowFilters.Count; i++)
+        {
+            var comma = allColumns.Count + i < columnCount - 1 ? "," : "";
+            b.AppendLine($"                {GenerationSupport.MatchColumn(shadowFilters[i].Field, shadowFilters[i].Normalize!)} TEXT{comma}");
         }
         b.AppendLine("            )");
         b.AppendLine("            \"\"\";");
@@ -236,6 +246,15 @@ internal static class ProjectionGenerator
             // a non-pii column never receives an envelope.
             var accessor = field.Pii ? $"{valueVar}.GetRawText()" : JsonElementAccessor(field.Type, valueVar);
             b.AppendLine($"            update.AddParam(\"@{field.Name}\", {accessor});");
+            // A match filter's shadow column follows its field in the same UPDATE, so the
+            // two can never disagree. DocumentMapper only allows match on a plain text field.
+            foreach (var filter in GenerationSupport.ShadowMatchFilters(readModel).Where(f => f.Field == field.Name))
+            {
+                var shadow = GenerationSupport.MatchColumn(filter.Field, filter.Normalize!);
+                b.AppendLine($"            setClauses.Add(\"{shadow} = @{shadow}\");");
+                b.AppendLine($"            update.AddParam(\"@{shadow}\", {valueVar}.ValueKind == JsonValueKind.String");
+                b.AppendLine($"                ? MatchNormalizer.Normalize(\"{filter.Normalize}\", {valueVar}.GetString()!) : null);");
+            }
             b.AppendLine("        }");
         }
         foreach (var field in toggleColumns)
