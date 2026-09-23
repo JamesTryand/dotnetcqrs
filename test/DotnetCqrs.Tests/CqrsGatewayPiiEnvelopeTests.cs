@@ -99,7 +99,7 @@ public class CqrsGatewayPiiEnvelopeTests : IAsyncDisposable
     [Theory]
     [InlineData("""{"email":{"$pii":{"s":"victim","c":"fake:victim:YWRh"}}}""")]
     [InlineData("""{"email":{"$pii":{"s":"victim","c":null}}}""")]
-    // The converter only checks the first key, so a sibling doesn't make it plaintext.
+    // With siblings: the converter would throw on these, but the gateway refuses any $pii key up front.
     [InlineData("""{"email":{"$pii":{"s":"victim","c":"fake:victim:YWRh"},"x":1}}""")]
     [InlineData("""{"email":{"x":1,"$pii":{"s":"victim","c":"fake:victim:YWRh"}}}""")]
     [InlineData("""{"email":"ada@example.com","tags":[{"$pii":{"s":"victim","c":"x"}}]}""")]

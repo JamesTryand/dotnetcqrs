@@ -90,6 +90,24 @@ public class PiiJsonConverterTests
 
     private sealed record Record(Pii<JsonElement>? Address);
 
+    [Theory]
+    [InlineData("""{"orderId":"o1","customerEmail":{"$pii":{"s":"cust-1","c":"vault:v1:abc"},"x":1}}""")]
+    [InlineData("""{"orderId":"o1","customerEmail":{"$pii":{"s":"cust-1","c":"vault:v1:abc"},"$pii":{"s":"cust-2","c":"vault:v1:def"}}}""")]
+    public void An_object_that_starts_with_the_envelope_key_but_has_more_keys_is_rejected_not_read_as_ciphertext(string json)
+    {
+        var ex = Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<Payload>(json, CamelCase));
+        Assert.Contains("only key", ex.Message);
+    }
+
+    [Fact]
+    public void A_json_typed_PII_object_with_the_envelope_key_later_on_is_plaintext()
+    {
+        var p = JsonSerializer.Deserialize<Record>("""{"address":{"city":"Leeds","$pii":"not an envelope"}}""", CamelCase)!;
+
+        Assert.Equal(PiiState.Fresh, p.Address!.State);
+        Assert.Equal("Leeds", p.Address.Value.GetProperty("city").GetString());
+    }
+
     [Fact]
     public void A_null_property_stays_null()
     {

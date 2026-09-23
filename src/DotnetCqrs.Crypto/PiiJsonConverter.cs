@@ -35,13 +35,21 @@ internal sealed class PiiJsonConverter<T> : JsonConverter<Pii<T>>
         if (reader.TokenType != JsonTokenType.StartObject)
             return Pii<T>.Fresh(JsonSerializer.Deserialize<T>(ref reader, options)!);
 
-        // Peek without committing: a JSON object is only an envelope if its single key is
-        // "$pii"; anything else (e.g. a json-typed PII field carrying an object) is plaintext.
+        // Peek without committing: an object whose first key isn't "$pii" (e.g. a json-typed
+        // PII field carrying an object) is plaintext.
         var probe = reader;
         if (!probe.Read() || probe.TokenType != JsonTokenType.PropertyName || probe.GetString() != Envelope)
             return Pii<T>.Fresh(JsonSerializer.Deserialize<T>(ref reader, options)!);
 
+        // One that starts with "$pii" must be exactly the envelope: Write never adds a sibling
+        // (or a second "$pii"), so extra keys mean a malformed or tampered value. Fail rather
+        // than read it as ciphertext with the rest silently dropped.
         using var doc = JsonDocument.ParseValue(ref reader);
+        var properties = 0;
+        foreach (var _ in doc.RootElement.EnumerateObject())
+            properties++;
+        if (properties != 1)
+            throw new JsonException($"a {Envelope} envelope must have \"{Envelope}\" as its only key");
         var body = doc.RootElement.GetProperty(Envelope);
         var subject = body.GetProperty(Subject).GetString()
             ?? throw new JsonException($"{Envelope}.{Subject} must be a string");

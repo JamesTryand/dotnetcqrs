@@ -227,11 +227,12 @@ public static class CqrsGatewayEndpoints
     /// call <see cref="DeciderRegistry"/> directly and never pass through here. This gateway
     /// is where outside callers supply command JSON, so an envelope arriving here would be
     /// appended as-is, bound to whatever subject the caller named. Broader than "the
-    /// object's only key": the converter only checks the <em>first</em> key, so
-    /// <c>{"$pii":{...},"x":1}</c> binds as ciphertext too. Parsed leniently, so nothing
-    /// the dispatcher could read slips past, and property names are compared unescaped
-    /// (a key spelled with JSON escapes still counts); a body that doesn't parse at all is left for dispatch
-    /// to reject as before.</summary>
+    /// object's only key" (the converter's own rule) on purpose: no outside caller has a
+    /// reason to send a <c>"$pii"</c> key at all, so refusing any leaves no near-miss shape
+    /// for a later converter change to reopen. Parsed leniently, so nothing the dispatcher
+    /// could read slips past, and property names are compared unescaped (a key spelled with
+    /// JSON escapes still counts); a body that doesn't parse at all is left for dispatch to
+    /// reject as before.</summary>
     private static bool ContainsPiiEnvelope(string payload)
     {
         try
