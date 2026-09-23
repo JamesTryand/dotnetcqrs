@@ -276,6 +276,46 @@ public class DocumentMapperTests
         Assert.False(summary.Fields.Single(f => f.Name == "customerId").Pii);
     }
 
+    // Milestone D3: ciphertext is non-deterministic, so SQL can never match a pii column.
+    private static DotnetCqrs.Codegen.Model.Document WithPiiOrderSummary(
+        Func<DotnetCqrs.Codegen.Model.ReadModelDef, DotnetCqrs.Codegen.Model.ReadModelDef> change)
+    {
+        var doc = WithOrderSummaryFields(DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json")),
+            RmField("customerId", "uuid"), RmField("customerEmail", pii: true, piiSubject: "customerId"));
+        var readModels = new Dictionary<string, DotnetCqrs.Codegen.Model.ReadModelDef>(doc.ReadModels!)
+        {
+            ["order-summary"] = change(doc.ReadModels!["order-summary"]),
+        };
+        return doc with { ReadModels = readModels };
+    }
+
+    [Fact]
+    public void A_scope_that_filters_on_a_pii_column_is_rejected()
+    {
+        var doc = WithPiiOrderSummary(rm => rm with
+        {
+            Scopes = [new DotnetCqrs.Codegen.Model.ReadModelScopeDef("who",
+                new DotnetCqrs.Codegen.Model.ReadModelScopeVia("order-summary", "orderId", "customerEmail", "customerEmail"))],
+        });
+
+        var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(doc, OrderFulfillmentOptions));
+
+        Assert.Contains(ex.Report.Errors, e => e.Contains("scope on param \"who\"") && e.Contains("pii field \"customerEmail\""));
+    }
+
+    [Fact]
+    public void A_dateRange_filter_over_a_pii_column_is_rejected()
+    {
+        var doc = WithPiiOrderSummary(rm => rm with
+        {
+            Filters = [new DotnetCqrs.Codegen.Model.ReadModelFilterDef("when", "customerEmail", "dateRange", ["last7Days"])],
+        });
+
+        var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(doc, OrderFulfillmentOptions));
+
+        Assert.Contains(ex.Report.Errors, e => e.Contains("filter on param \"when\"") && e.Contains("pii field \"customerEmail\""));
+    }
+
     [Fact]
     public void A_derivation_that_reads_a_pii_event_field_as_plaintext_is_rejected()
     {

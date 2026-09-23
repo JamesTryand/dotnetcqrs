@@ -342,6 +342,7 @@ public class ReadModelQueryGeneratorTests : IDisposable
               <ItemGroup>
                 <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs", "DotnetCqrs.csproj")}" />
                 <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs.Codegen", "DotnetCqrs.Codegen.csproj")}" />
+                <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs.Crypto", "DotnetCqrs.Crypto.csproj")}" />
               </ItemGroup>
             </Project>
             """;
@@ -454,6 +455,176 @@ public class ReadModelQueryGeneratorTests : IDisposable
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             var rows = await response.Content.ReadFromJsonAsync<JsonElement>();
             Assert.Equal(1, rows.GetArrayLength());
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
+            }
+        }
+    }
+
+    // Milestone D3: a read model with a pii column. The event carries the {"$pii":...}
+    // envelope, as the generated protector writes it; the projection stores it as-is.
+    private const string PiiJson = """
+        {
+          "eventModelingSchemaVersion": "3.0.0", "id": "pii-route-test", "name": "Pii Route Test",
+          "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+          "events": {
+            "customer-registered": {"name": "Customer Registered", "swimlaneId": "s", "aggregate": "Customer",
+              "fields": [
+                {"name": "customerId", "type": "string", "idAttribute": true},
+                {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
+              ]}
+          },
+          "commands": {
+            "register-customer": {"name": "Register Customer", "aggregate": "Customer",
+              "fields": [
+                {"name": "customerId", "type": "string", "idAttribute": true},
+                {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
+              ]}
+          },
+          "readModels": {
+            "customers": {
+              "name": "Customers",
+              "builtFromEventIds": ["customer-registered"],
+              "fields": [
+                {"name": "customerId", "type": "string", "idAttribute": true},
+                {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
+              ]
+            }
+          },
+          "screens": {"scr1": {"name": "Register Screen"}},
+          "slices": [
+            {
+              "id": "register-customer-slice", "name": "Register Customer", "pattern": "stateChange",
+              "swimlaneId": "s", "status": "created",
+              "screenId": "scr1", "commandId": "register-customer", "eventIds": ["customer-registered"],
+              "scenarios": []
+            }
+          ]
+        }
+        """;
+
+    private const string PiiProgramCs = """
+        using System.Text.Json;
+        using DotnetCqrs.Crypto;
+        using DotnetCqrs.EventStore;
+        using DotnetCqrs.ReadModels;
+        using Generated.Customer;
+
+        var kms = new InMemoryKmsClient();
+        var cache = new PiiRevealCache();
+        var store = await SqliteReadModelStore.OpenAsync(":memory:");
+        var projection = new CustomersProjection(store);
+        await projection.InitAsync();
+
+        long position = 0;
+        foreach (var (id, email) in new[] { ("c1", "alice@example.com"), ("c2", "bob@example.com") })
+        {
+            var sealedEmail = await Pii<string>.EncryptAsync(kms, id, email);
+            var data = JsonSerializer.Serialize(new { customerId = id, email = sealedEmail });
+            position++;
+            await projection.ApplyAsync(new Event(position, $"seed-{position}", "customer", id, 1, "CustomerRegistered",
+                data, "{}", "1970-01-01T00:00:00.000Z"), CancellationToken.None);
+        }
+
+        var builder = WebApplication.CreateBuilder(args);
+        builder.Services.AddSingleton<IReadModelStore>(store);
+        builder.Services.AddSingleton<IKmsClient>(kms);
+        builder.Services.AddSingleton(cache);
+        var app = builder.Build();
+
+        app.MapCustomersRoute();
+        app.MapGet("/test/calls", () => kms.DecryptBatchCalls);
+        // Erasure as a host sees it: the key destroyer and the cache evictor both react
+        // to SubjectErased.
+        app.MapPost("/test/erase/{id}", async (string id) =>
+        {
+            var erased = new Event(99, "erase", DataSubject.Aggregate, id, 1, DataSubject.SubjectErasedEvent, "{}", "{}", "");
+            await new SubjectKeyDestroyer(kms).ApplyAsync(erased, CancellationToken.None);
+            await new PiiCacheEvictor(cache).ApplyAsync(erased, CancellationToken.None);
+        });
+        await app.RunAsync();
+        """;
+
+    [Fact(Timeout = 300000)]
+    public async Task Generated_query_route_reveals_pii_columns_redacts_erased_subjects_and_refuses_pii_filters()
+    {
+        var mapped = DocumentMapper.Map(DocumentLoader.Parse(PiiJson));
+        var domain = Assert.Single(mapped.Domains);
+        var readModel = Assert.Single(domain.ReadModels);
+        Assert.True(readModel.Fields.Single(f => f.Name == "email").Pii);
+        var files = new List<GeneratedFile>(CSharpGenerator.Generate(domain)) { ReadModelQueryGenerator.Generate(domain, readModel) };
+        var port = await StartHostAndBuildAsync([.. files], PiiProgramCs, _scratchDir);
+
+        var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        psi.ArgumentList.Add("run");
+        psi.ArgumentList.Add("--project");
+        psi.ArgumentList.Add(_scratchDir);
+        psi.ArgumentList.Add("--no-build");
+        psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+
+        using var process = Process.Start(psi)!;
+        try
+        {
+            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+
+            async Task<JsonElement> PollAsync()
+            {
+                for (var attempt = 0; attempt < 60; attempt++)
+                {
+                    await Task.Delay(500);
+                    try { return await client.GetFromJsonAsync<JsonElement>("/api/query/customers"); }
+                    catch (HttpRequestException) { /* not listening yet -- retry */ }
+                }
+                throw new TimeoutException("generated host never answered /api/query/customers");
+            }
+
+            static string Email(JsonElement rows, string id)
+            {
+                var e = rows.EnumerateArray().Single(r => r.GetProperty("customer_id").GetString() == id).GetProperty("email");
+                return e.ValueKind == JsonValueKind.String ? e.GetString()! : e.GetRawText();
+            }
+
+            // Revealed: one decrypt-batch per subject on the page.
+            var first = await PollAsync();
+            Assert.False(process.HasExited, "generated host process exited early");
+            Assert.Equal("alice@example.com", Email(first, "c1"));
+            Assert.Equal("bob@example.com", Email(first, "c2"));
+            Assert.Equal(2, await client.GetFromJsonAsync<int>("/test/calls"));
+
+            // Warm: the cache answers, no further calls.
+            var warm = await client.GetFromJsonAsync<JsonElement>("/api/query/customers");
+            Assert.Equal("alice@example.com", Email(warm, "c1"));
+            Assert.Equal(2, await client.GetFromJsonAsync<int>("/test/calls"));
+
+            // A pii column can't be a filter: ciphertext never equals the query value.
+            using var byEmail = await client.GetAsync("/api/query/customers?email=alice%40example.com");
+            Assert.Equal(HttpStatusCode.BadRequest, byEmail.StatusCode);
+
+            // A query key becomes a column name in the SQL, so only the table's own columns
+            // are accepted. An injected UNION aliasing ciphertext as a pii column would
+            // otherwise get it decrypted by the reveal.
+            var injectedKey = Uri.EscapeDataString("customer_id = 'x' union select customer_id, email as email from customers --");
+            using var injected = await client.GetAsync($"/api/query/customers?{injectedKey}=1");
+            Assert.Equal(HttpStatusCode.BadRequest, injected.StatusCode);
+            using var unknown = await client.GetAsync("/api/query/customers?nope=1");
+            Assert.Equal(HttpStatusCode.BadRequest, unknown.StatusCode);
+            using var byKey = await client.GetAsync("/api/query/customers?customerId=c2");
+            Assert.Equal(HttpStatusCode.OK, byKey.StatusCode);
+            Assert.Equal(1, (await byKey.Content.ReadFromJsonAsync<JsonElement>()).GetArrayLength());
+            Assert.Equal(2, await client.GetFromJsonAsync<int>("/test/calls")); // c2 was cached
+
+            // Erased: the marker, not the value and not null. The other subject is unaffected.
+            using var erase = await client.PostAsync("/test/erase/c1", null);
+            erase.EnsureSuccessStatusCode();
+            var after = await client.GetFromJsonAsync<JsonElement>("/api/query/customers");
+            Assert.Equal("""{"$redacted":true}""", Email(after, "c1"));
+            Assert.Equal("bob@example.com", Email(after, "c2"));
+            Assert.Equal(2, await client.GetFromJsonAsync<int>("/test/calls"));
         }
         finally
         {

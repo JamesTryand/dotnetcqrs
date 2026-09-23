@@ -231,6 +231,89 @@ public class ScenarioVerifierTests
         Assert.True(view.Passed, view.Detail);
     }
 
+    [Fact(Timeout = 300000)]
+    public async Task A_view_over_a_pii_column_is_verified_against_plaintext_through_the_real_reveal_path()
+    {
+        // Milestone D3 (the read half of E): the given events are sealed the way the real
+        // write path seals them, the projection stores the envelope, and the rows are
+        // revealed through the same PiiColumnRevealer a query route uses. So the scenario
+        // states plaintext and is compared with what a caller would actually see.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "3.0.0", "id": "pii-view-test", "name": "Pii View Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "customer-registered": {"name": "Customer Registered", "swimlaneId": "s", "aggregate": "Customer",
+                  "fields": [
+                    {"name": "customerId", "type": "string", "idAttribute": true},
+                    {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
+                  ]}
+              },
+              "commands": {
+                "register-customer": {"name": "Register Customer", "aggregate": "Customer",
+                  "fields": [
+                    {"name": "customerId", "type": "string", "idAttribute": true},
+                    {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
+                  ]}
+              },
+              "readModels": {
+                "customers": {
+                  "name": "Customers",
+                  "builtFromEventIds": ["customer-registered"],
+                  "fields": [
+                    {"name": "customerId", "type": "string", "idAttribute": true},
+                    {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
+                  ]
+                }
+              },
+              "screens": {"scr1": {"name": "Register Screen"}, "scr2": {"name": "View Screen"}},
+              "slices": [
+                {
+                  "id": "register-slice", "name": "Register", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr1", "commandId": "register-customer", "eventIds": ["customer-registered"],
+                  "scenarios": []
+                },
+                {
+                  "id": "view-customers-slice", "name": "View Customers", "pattern": "stateView",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr2", "readModelId": "customers",
+                  "scenarios": [
+                    {
+                      "id": "all-customers", "name": "Every customer, emails in the clear", "kind": "stateView",
+                      "given": [
+                        {"eventId": "customer-registered", "data": {"customerId": "c1", "email": "alice@example.com"}},
+                        {"eventId": "customer-registered", "data": {"customerId": "c2", "email": "bob@example.com"}}
+                      ],
+                      "when": {"readModelId": "customers"},
+                      "then": {"result": {"customers": [
+                        {"customerId": "c1", "email": "alice@example.com"},
+                        {"customerId": "c2", "email": "bob@example.com"}
+                      ]}}
+                    },
+                    {
+                      "id": "wrong-email", "name": "A wrong expectation still fails", "kind": "stateView",
+                      "given": [{"eventId": "customer-registered", "data": {"customerId": "c1", "email": "alice@example.com"}}],
+                      "when": {"readModelId": "customers", "queryParams": {"customerId": "c1"}},
+                      "then": {"result": {"email": "mallory@example.com"}}
+                    }
+                  ]
+                }
+              ]
+            }
+            """;
+        var doc = DocumentLoader.Parse(json);
+        var mapped = DocumentMapper.Map(doc);
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+
+        var all = results.Single(r => r.ScenarioId == "all-customers");
+        Assert.True(all.Passed, all.Detail);
+        var wrong = results.Single(r => r.ScenarioId == "wrong-email");
+        Assert.False(wrong.Passed);
+        Assert.Contains("alice@example.com", wrong.Detail);
+    }
+
     [Fact(Timeout = 60000)]
     public async Task A_count_derivation_rolls_up_across_streams()
     {

@@ -24,7 +24,8 @@ public sealed record ViewGivenEventInput(
     string Type,
     string Data,
     string MainKey,
-    IReadOnlyDictionary<string, string> ViaKeys); // via-projection type name -> row key
+    IReadOnlyDictionary<string, string> ViaKeys, // via-projection type name -> row key
+    IReadOnlyDictionary<string, string> PiiFields); // pii field -> its piiSubject field; the harness encrypts these before applying, as the real write path would
 
 /// <summary>A stateChange or error scenario, ready for the harness to run without
 /// consulting the document again.</summary>
@@ -55,7 +56,8 @@ public sealed record ViewScenarioInput(
     string? AsOf, // schema 2.6.0 -- when present, pins "today" for a dateRange preset in QueryParams instead of the live clock
     string ExpectedResult,
     IReadOnlyList<ViewScopeInput> Scopes, // only entries whose param is present in QueryParams
-    IReadOnlyList<ViewFilterInput> Filters); // every readModel.filters entry -- the harness only acts on one whose param is actually present in QueryParams
+    IReadOnlyList<ViewFilterInput> Filters, // every readModel.filters entry -- the harness only acts on one whose param is actually present in QueryParams
+    IReadOnlyList<string> PiiColumns); // snake_case columns holding the envelope; revealed through PiiColumnRevealer like a real query route
 
 /// <summary>One active <c>readModel.scopes</c> entry for this scenario's query --
 /// resolved to the VIA read model's own generated projection, so the harness can seed

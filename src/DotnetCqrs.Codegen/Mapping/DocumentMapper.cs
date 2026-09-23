@@ -710,6 +710,16 @@ public sealed class DocumentMapper
                 readModel.Filters.Add(new Domain.ReadModelFilter(
                     filterDef.Param, Names.SanitizeName(filterDef.Field), filterDef.Kind, filterDef.Presets));
             }
+            // A pii column holds non-deterministic ciphertext (P4), so a SQL comparison
+            // against it can never match: a scope or range filter on one is a modelling
+            // error, not something to discover as an always-empty result at query time.
+            var piiColumns = readModel.Fields.Where(f => f.Pii).Select(f => f.Name).ToHashSet(StringComparer.Ordinal);
+            foreach (var scope in readModel.Scopes.Where(sc => piiColumns.Contains(sc.FilterLocalField)))
+                _report.Error($"read model \"{id}\" scope on param \"{scope.Param}\" filters on pii field \"{scope.FilterLocalField}\" -- " +
+                    "an encrypted column cannot be compared in SQL");
+            foreach (var filter in readModel.Filters.Where(fl => piiColumns.Contains(fl.Field)))
+                _report.Error($"read model \"{id}\" filter on param \"{filter.Param}\" ranges over pii field \"{filter.Field}\" -- " +
+                    "an encrypted column cannot be compared in SQL");
             GetOrCreateDomain(chosenOwner).ReadModels.Add(readModel);
         }
     }

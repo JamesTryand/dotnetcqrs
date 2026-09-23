@@ -14,6 +14,7 @@
 using System.Data.Common;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using DotnetCqrs.Codegen.Generation;
 using DotnetCqrs.Deciders;
 using DotnetCqrs.EventStore;
@@ -76,6 +77,11 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
     try
     {
         await using var readModel = await SqliteReadModelStore.OpenAsync(":memory:");
+        // PII round trip without a facade: given events are sealed on the way in, the same
+        // way the real write path would, and the rows are revealed on the way out through
+        // the same PiiColumnRevealer a generated query route uses. So a scenario's
+        // expected plaintext is compared with what a real caller would actually see.
+        var kms = new DotnetCqrs.Crypto.InMemoryKmsClient();
         var projectionType = Type.GetType(scenario.ProjectionTypeName)
             ?? throw new InvalidOperationException($"projection type not found: {scenario.ProjectionTypeName}");
         var projection = (IProjection)Activator.CreateInstance(projectionType, readModel)!;
@@ -107,17 +113,19 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
         foreach (var g in scenario.Given)
         {
             position++;
-            var mainEv = new Event(position, $"scenario-{position}", scenario.Aggregate, g.MainKey, position, g.Type, g.Data, "{}", "1970-01-01T00:00:00.000Z");
+            var data = await SealPiiAsync(g.Data, g.PiiFields, kms);
+            var mainEv = new Event(position, $"scenario-{position}", scenario.Aggregate, g.MainKey, position, g.Type, data, "{}", "1970-01-01T00:00:00.000Z");
             await projection.ApplyAsync(mainEv, CancellationToken.None);
             foreach (var (viaTypeName, viaProjection) in viaProjections)
             {
                 var viaKey = g.ViaKeys.GetValueOrDefault(viaTypeName, g.MainKey);
-                var viaEv = new Event(position, $"scenario-{position}", scenario.Aggregate, viaKey, position, g.Type, g.Data, "{}", "1970-01-01T00:00:00.000Z");
+                var viaEv = new Event(position, $"scenario-{position}", scenario.Aggregate, viaKey, position, g.Type, data, "{}", "1970-01-01T00:00:00.000Z");
                 await viaProjection.ApplyAsync(viaEv, CancellationToken.None);
             }
         }
 
         var rows = await SelectRowsAsync(readModel.Connection, scenario.TableName, scenario.QueryParams, scenario.AsOf, scenario.Scopes, scenario.Filters);
+        await DotnetCqrs.Crypto.PiiColumnRevealer.RevealAsync(rows, scenario.PiiColumns ?? [], kms);
 
         // Two `then.result` shapes are supported. A single-property object whose value
         // is a JSON array (e.g. `{"entries": [...]}`) is a NAMED-LIST result: the query
@@ -148,6 +156,30 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
     {
         return ViewResult(scenario, passed: false, "verification error: " + ex.Message);
     }
+}
+
+// Replaces each pii field's plaintext with the {"$pii":...} envelope, encrypted under the
+// value of its piiSubject sibling, as the generated PiiProtector does before an append.
+// A missing or null field is left alone; a missing subject is an error, same as the
+// protector, since there is no safe default subject.
+static async Task<string> SealPiiAsync(string data, Dictionary<string, string>? piiFields, DotnetCqrs.Crypto.IKmsClient kms)
+{
+    if (piiFields is not { Count: > 0 }) return data;
+    if (JsonNode.Parse(data) is not JsonObject obj) return data;
+    foreach (var (field, subjectField) in piiFields)
+    {
+        if (obj[field] is not { } value) continue;
+        var subject = obj[subjectField] switch
+        {
+            JsonValue v when v.TryGetValue<string>(out var str) => str,
+            null => throw new InvalidOperationException($"pii field \"{field}\" has no \"{subjectField}\" (its piiSubject) in the given event"),
+            var other => other.ToJsonString(),
+        };
+        var plaintext = JsonSerializer.Deserialize<JsonElement>(value.ToJsonString());
+        var sealedValue = await DotnetCqrs.Crypto.Pii<JsonElement>.EncryptAsync(kms, subject, plaintext);
+        obj[field] = JsonSerializer.SerializeToNode(sealedValue);
+    }
+    return obj.ToJsonString();
 }
 
 static void RegisterDecider(DeciderRegistry registry, string typeName, string aggregate)
@@ -260,6 +292,11 @@ static async Task<List<Dictionary<string, object?>>> SelectRowsAsync(
             // An unscoped param is the ordinary case: it names one of this table's own
             // columns directly.
             var scope = scopes.Find(s => s.Param == key);
+            // The key becomes a column name in the SQL text. Scenario input comes from a
+            // document rather than the network, but it is still refused unless it is a
+            // plain identifier, matching the generated route's refusal of unknown keys.
+            if (scope is null && !System.Text.RegularExpressions.Regex.IsMatch(key, "^[A-Za-z_][A-Za-z0-9_]*$"))
+                throw new InvalidOperationException($"query param \"{key}\" is not a column name");
             clauses.Add(scope is null
                 ? $"{ToSnakeCase(key)} = {paramName}"
                 : $"{scope.FilterLocalColumn} IN (SELECT {scope.SelectColumn} FROM {scope.ViaTableName} WHERE {scope.MatchParamToColumn} = {paramName})");
@@ -475,12 +512,12 @@ static ScenarioResultDto ViewResult(ViewScenarioInput s, bool passed, string det
 
 record HarnessInput(List<CommandScenarioInput> CommandScenarios, List<ViewScenarioInput> ViewScenarios);
 record GivenEventInput(string Type, string Data);
-record ViewGivenEventInput(string Type, string Data, string MainKey, Dictionary<string, string> ViaKeys);
+record ViewGivenEventInput(string Type, string Data, string MainKey, Dictionary<string, string> ViaKeys, Dictionary<string, string>? PiiFields = null);
 record CommandScenarioInput(string SliceId, string ScenarioId, string Name, string Kind, string DeciderTypeName,
     string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes);
 record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,
     string TableName, List<ViewGivenEventInput> Given, string? QueryParams, string? AsOf, string ExpectedResult,
-    List<ViewScopeInput> Scopes, List<ViewFilterInput> Filters);
+    List<ViewScopeInput> Scopes, List<ViewFilterInput> Filters, List<string>? PiiColumns = null);
 record ViewScopeInput(string Param, string ViaProjectionTypeName, string ViaTableName, string MatchParamToColumn, string SelectColumn, string FilterLocalColumn);
 record ViewFilterInput(string Param, string Field, string Kind);
 record ScenarioResultDto(string SliceId, string ScenarioId, string Name, string Kind, bool Passed, bool Skipped, string Detail);

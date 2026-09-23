@@ -178,7 +178,8 @@ public static class ScenarioVerifier
                 index.EventType.GetValueOrDefault(g.EventId, g.EventId),
                 g.Data?.GetRawText() ?? "{}",
                 RowKey(mainIdFieldName, g.Data, sharedDefault),
-                scopes.ToDictionary(s => s.ViaProjectionTypeName, s => RowKey(viaIdFieldNames.GetValueOrDefault(s.ViaProjectionTypeName), g.Data, sharedDefault))))
+                scopes.ToDictionary(s => s.ViaProjectionTypeName, s => RowKey(viaIdFieldNames.GetValueOrDefault(s.ViaProjectionTypeName), g.Data, sharedDefault)),
+                index.EventPiiFields.GetValueOrDefault(index.EventType.GetValueOrDefault(g.EventId, g.EventId)) ?? EmptyPiiFields))
             .ToList();
 
         var filters = info.Filters
@@ -189,8 +190,11 @@ public static class ScenarioVerifier
             slice.Id, scenario.Id, scenario.Name, projectionTypeName, info.Aggregate,
             info.Collection, given,
             scenario.When.QueryParams?.GetRawText(), scenario.When.AsOf,
-            scenario.Then.Result.GetRawText(), scopes, filters));
+            scenario.Then.Result.GetRawText(), scopes, filters,
+            index.ReadModelPiiColumns.GetValueOrDefault(readModelId) ?? []));
     }
+
+    private static readonly IReadOnlyDictionary<string, string> EmptyPiiFields = new Dictionary<string, string>();
 
     /// <summary>The schema field a read model itself declares <c>idAttribute: true</c>
     /// on -- its own key/id column, as opposed to <see cref="StreamId"/>'s EVENT-level
@@ -356,15 +360,25 @@ public static class ScenarioVerifier
         public required Dictionary<string, (string Aggregate, string Collection, string KeyColumn, IReadOnlyList<Domain.ReadModelScope> Scopes, IReadOnlyList<Domain.ReadModelFilter> Filters)> ReadModel; // schema read model id -> info
         public required Dictionary<string, (string Aggregate, string Collection)> ReadModelByCollection; // physical collection name -> info, for resolving a scope's `via`
         public required Dictionary<string, string> ReadModelIdByCollection; // physical collection name -> schema read model id, for looking a via-model's own idAttribute field back up in the document
+        public required Dictionary<string, IReadOnlyDictionary<string, string>> EventPiiFields; // generated event type -> (pii field -> its piiSubject field)
+        public required Dictionary<string, IReadOnlyList<string>> ReadModelPiiColumns; // schema read model id -> snake_case pii columns
 
         public static GeneratedIndex Build(Document document, IReadOnlyList<Domain.Domain> domains)
         {
             var generatedCommandToAggregate = new Dictionary<string, string>();
             var generatedEventToAggregate = new Dictionary<string, string>();
+            var eventPiiFields = new Dictionary<string, IReadOnlyDictionary<string, string>>();
             foreach (var d in domains)
             {
                 foreach (var c in d.Commands)
+                {
                     generatedCommandToAggregate[c.Name] = d.Aggregate;
+                    foreach (var ev in c.Events)
+                    {
+                        var pii = ev.Fields.Where(f => f.Pii && f.PiiSubject is not null).ToDictionary(f => f.Name, f => f.PiiSubject!);
+                        if (pii.Count > 0) eventPiiFields.TryAdd(ev.Name, pii);
+                    }
+                }
                 foreach (var e in d.Events())
                     generatedEventToAggregate.TryAdd(e, d.Aggregate); // first wins -- an event produced by more than one command/aggregate is legitimate, not an error
             }
@@ -400,6 +414,7 @@ public static class ScenarioVerifier
             var readModel = new Dictionary<string, (string, string, string, IReadOnlyList<Domain.ReadModelScope>, IReadOnlyList<Domain.ReadModelFilter>)>();
             var readModelByCollection = new Dictionary<string, (string, string)>();
             var readModelIdByCollection = new Dictionary<string, string>();
+            var readModelPiiColumns = new Dictionary<string, IReadOnlyList<string>>();
             if (document.ReadModels is not null)
             {
                 foreach (var (id, rm) in document.ReadModels)
@@ -412,6 +427,7 @@ public static class ScenarioVerifier
                         readModel[id] = (d.Aggregate, collection, ToSnakeCase(match.Key), match.Scopes, match.Filters);
                         readModelByCollection[collection] = (d.Aggregate, collection);
                         readModelIdByCollection[collection] = id;
+                        readModelPiiColumns[id] = [.. match.Fields.Where(f => f.Pii).Select(f => ToSnakeCase(f.Name))];
                         break;
                     }
                 }
@@ -426,6 +442,8 @@ public static class ScenarioVerifier
                 ReadModel = readModel,
                 ReadModelByCollection = readModelByCollection,
                 ReadModelIdByCollection = readModelIdByCollection,
+                EventPiiFields = eventPiiFields,
+                ReadModelPiiColumns = readModelPiiColumns,
             };
         }
     }
