@@ -21,7 +21,12 @@ public class ScenarioVerifierTests
 
     private static string DotnetCqrsProjectPath() => Path.Combine(RepoRoot(), "src", "DotnetCqrs", "DotnetCqrs.csproj");
 
-    [Fact(Timeout = 60000)]
+    // Every test here compiles a scratch harness (dotnet build + run). That takes 25-55s
+    // warm, so the old 60s budget failed two tests under full-suite load on 2026-09-23;
+    // both passed alone in ~30s. Same budget, and the same reason, as CliTests' verify tests.
+    private const int VerifyTimeoutMs = 300000;
+
+    [Fact(Timeout = VerifyTimeoutMs)]
     public async Task Verifies_every_scenario_kind_in_the_order_fulfillment_document()
     {
         var doc = DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json"));
@@ -69,7 +74,7 @@ public class ScenarioVerifierTests
         Assert.True(notify.Passed, notify.Detail);
     }
 
-    [Fact(Timeout = 60000)]
+    [Fact(Timeout = VerifyTimeoutMs)]
     public async Task An_error_scenario_that_should_be_rejected_is_reported_as_passed()
     {
         const string json = """
@@ -113,7 +118,7 @@ public class ScenarioVerifierTests
         Assert.Contains("refused", errorScenario.Detail);
     }
 
-    [Fact(Timeout = 60000)]
+    [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_scenario_whose_read_model_was_skipped_during_mapping_is_reported_skipped_not_failed()
     {
         // A read model with no builtFromEventIds is a WARNING during mapping (the
@@ -164,7 +169,7 @@ public class ScenarioVerifierTests
         Assert.Contains("empty-rm", result.Detail);
     }
 
-    [Fact(Timeout = 60000)]
+    [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_toggle_derivation_sets_the_field_from_which_event_fired()
     {
         // Finding 3's case #2 (staff-roster.ssoEnabled): the generic field-merge can
@@ -314,7 +319,7 @@ public class ScenarioVerifierTests
         Assert.Contains("alice@example.com", wrong.Detail);
     }
 
-    [Fact(Timeout = 60000)]
+    [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_count_derivation_rolls_up_across_streams()
     {
         // Finding 3's case #3 (projects.staffCount): the counted events
@@ -387,7 +392,7 @@ public class ScenarioVerifierTests
         Assert.True(view.Passed, view.Detail);
     }
 
-    [Fact(Timeout = 60000)]
+    [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_count_derivation_honours_an_explicit_rowKeyField_that_differs_from_the_read_models_own_key()
     {
         // Regression for a bug found in review: the counted event's payload here names
@@ -462,7 +467,7 @@ public class ScenarioVerifierTests
         Assert.True(view.Passed, view.Detail);
     }
 
-    [Fact(Timeout = 60000)]
+    [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_groupBy_derivation_produces_one_nested_row_per_distinct_group_key()
     {
         // Schema 2.3.0's payroll-periods.staffTotals shape: hours-logged lives on a
@@ -554,7 +559,7 @@ public class ScenarioVerifierTests
         Assert.True(view.Passed, view.Detail);
     }
 
-    [Fact(Timeout = 60000)]
+    [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_dateRange_filter_narrows_a_view_query_to_the_declared_bounds()
     {
         // Group C item 4's grounding finding: before this, ANY object-shaped
@@ -630,7 +635,7 @@ public class ScenarioVerifierTests
         Assert.True(view.Passed, view.Detail);
     }
 
-    [Fact(Timeout = 60000)]
+    [Fact(Timeout = VerifyTimeoutMs)]
     public async Task An_asOf_pin_resolves_a_last7Days_preset_against_a_fixed_date_not_the_live_clock()
     {
         // Schema 2.6.0's readModelQuery.asOf: without it, last7Days/lastCalendarMonth
