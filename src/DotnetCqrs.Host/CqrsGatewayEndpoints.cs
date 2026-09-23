@@ -156,6 +156,11 @@ public static class CqrsGatewayEndpoints
         if (string.IsNullOrWhiteSpace(payload))
             payload = "{}";
 
+        if (ContainsPiiEnvelope(payload))
+            return Results.Problem(
+                $"command payload contains a \"{PiiEnvelopeKey}\" object; send personal data as plaintext, " +
+                "the host encrypts it", statusCode: StatusCodes.Status400BadRequest);
+
         if (authorize is not null)
         {
             // Parsed once, here, alongside the raw string still used for dispatch below
@@ -210,6 +215,56 @@ public static class CqrsGatewayEndpoints
             // 400 covers all of them, matching the gateway's own job: refuse the
             // command, don't guess why more precisely than the decider said.
             return Results.Problem(ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
+    }
+
+    private const string PiiEnvelopeKey = "$pii";
+
+    /// <summary>True when any object anywhere in <paramref name="payload"/> has a
+    /// <c>"$pii"</c> property. <c>DotnetCqrs.Crypto</c>'s <c>Pii&lt;T&gt;</c> converter reads
+    /// such an object as an already-encrypted value (subject + ciphertext), which is right
+    /// for stored events and for commands a reactor or ext-caller builds from them -- those
+    /// call <see cref="DeciderRegistry"/> directly and never pass through here. This gateway
+    /// is where outside callers supply command JSON, so an envelope arriving here would be
+    /// appended as-is, bound to whatever subject the caller named. Broader than "the
+    /// object's only key": the converter only checks the <em>first</em> key, so
+    /// <c>{"$pii":{...},"x":1}</c> binds as ciphertext too. Parsed leniently, so nothing
+    /// the dispatcher could read slips past, and property names are compared unescaped
+    /// (a key spelled with JSON escapes still counts); a body that doesn't parse at all is left for dispatch
+    /// to reject as before.</summary>
+    private static bool ContainsPiiEnvelope(string payload)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payload, new JsonDocumentOptions
+            {
+                AllowTrailingCommas = true,
+                CommentHandling = JsonCommentHandling.Skip,
+            });
+            return ContainsPiiEnvelope(document.RootElement);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool ContainsPiiEnvelope(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                    if (property.NameEquals(PiiEnvelopeKey) || ContainsPiiEnvelope(property.Value))
+                        return true;
+                return false;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                    if (ContainsPiiEnvelope(item))
+                        return true;
+                return false;
+            default:
+                return false;
         }
     }
 }
