@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
 using DotnetCqrs.EventStore;
+using DotnetCqrs.Tests.Crypto;
 
 namespace DotnetCqrs.Tests.Codegen;
 
@@ -120,6 +121,21 @@ public class HostGenerationTests : IDisposable
         Assert.Contains("PASS [stateChange] place-order-slice/place-order-happy-path", verifyOutput);
         Assert.Contains("FAIL [stateView] order-status-slice/view-order-summary-after-placement", verifyOutput);
 
+        // order-fulfillment.json has a field.pii value (order-placed.customerEmail), so the
+        // host must refuse to start with no key service rather than fail on the first
+        // request that touches PII.
+        var noKms = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        foreach (var a in new[] { "run", "--project", _scratchDir, "--no-build" }) noKms.ArgumentList.Add(a);
+        noKms.Environment.Remove("KMS_FACADE_URL");
+        using (var refused = Process.Start(noKms)!)
+        {
+            var refusedErr = await refused.StandardError.ReadToEndAsync();
+            Assert.True(refused.WaitForExit(60000), "a pii host with no KMS_FACADE_URL should exit, not serve");
+            Assert.Equal(1, refused.ExitCode);
+            Assert.Contains("KMS_FACADE_URL", refusedErr);
+        }
+        await using var facade = await StandInKmsFacade.StartAsync();
+
         // Real HTTP round trip: run the generated host for real and dispatch a command
         // through its MapCqrsGateway(), the same proof CqrsGatewayEndpointsTests uses
         // for the hand-written host -- not just that the process starts without
@@ -131,6 +147,7 @@ public class HostGenerationTests : IDisposable
         psi.ArgumentList.Add(_scratchDir);
         psi.ArgumentList.Add("--no-build");
         psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+        psi.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
 
         using var process = Process.Start(psi)!;
         try
@@ -174,6 +191,148 @@ public class HostGenerationTests : IDisposable
                 shipped = stream.Any(e => e.Type == "OrderShipped");
             }
             Assert.True(shipped, "auto-ship reactor never dispatched OrderShipped onto the triggering order's own stream");
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
+            }
+        }
+    }
+
+    // Milestone D4: a document whose only aggregate stores PII, and whose read model
+    // shows it.
+    private const string PiiHostJson = """
+        {
+          "eventModelingSchemaVersion": "3.0.0", "id": "pii-host-test", "name": "Pii Host Test",
+          "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+          "events": {
+            "customer-registered": {"name": "Customer Registered", "swimlaneId": "s", "aggregate": "Customer",
+              "fields": [
+                {"name": "customerId", "type": "string", "idAttribute": true},
+                {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
+              ]}
+          },
+          "commands": {
+            "register-customer": {"name": "Register Customer", "aggregate": "Customer",
+              "fields": [
+                {"name": "customerId", "type": "string", "idAttribute": true},
+                {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
+              ]}
+          },
+          "readModels": {
+            "customers": {
+              "name": "Customers",
+              "builtFromEventIds": ["customer-registered"],
+              "fields": [
+                {"name": "customerId", "type": "string", "idAttribute": true},
+                {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
+              ]
+            }
+          },
+          "screens": {"scr1": {"name": "Register Screen"}},
+          "slices": [
+            {
+              "id": "register-customer-slice", "name": "Register Customer", "pattern": "stateChange",
+              "swimlaneId": "s", "status": "created",
+              "screenId": "scr1", "commandId": "register-customer", "eventIds": ["customer-registered"],
+              "scenarios": [{"id":"register","name":"Register","kind":"stateChange","given":[],
+                "when":{"commandId":"register-customer"},"then":{"events":[{"eventId":"customer-registered"}]}}]
+            }
+          ]
+        }
+        """;
+
+    [Fact(Timeout = 300000)]
+    public async Task A_generated_pii_host_encrypts_on_write_reveals_on_read_and_redacts_after_erasure()
+    {
+        var inputPath = Path.Combine(_scratchDir, "..", $"pii-host-{Guid.NewGuid():N}.json");
+        await File.WriteAllTextAsync(inputPath, PiiHostJson);
+        try
+        {
+            var (genExit, genOutput) = await RunAsync("dotnet",
+            [
+                "run", "--project", CliProjectPath(), "--",
+                "generate", "--input", inputPath, "--output", _scratchDir, "--host",
+                "--dotnetcqrs-project", DotnetCqrsProjectPath(),
+            ]);
+            Assert.True(genExit == 0, $"generate --host exited {genExit}:\n{genOutput}");
+        }
+        finally
+        {
+            File.Delete(inputPath);
+        }
+
+        var (buildExit, buildOutput) = await RunAsync("dotnet", ["build", _scratchDir, "-v", "quiet"]);
+        Assert.True(buildExit == 0, $"generated host project did not compile:\n{buildOutput}");
+
+        await using var facade = await StandInKmsFacade.StartAsync();
+        var port = FreeTcpPort();
+        var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        foreach (var a in new[] { "run", "--project", _scratchDir, "--no-build" }) psi.ArgumentList.Add(a);
+        psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+        psi.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
+
+        using var process = Process.Start(psi)!;
+        try
+        {
+            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+
+            // Write: the command carries plaintext; the protector encrypts before append.
+            HttpResponseMessage? registered = null;
+            for (var attempt = 0; attempt < 60 && registered is null; attempt++)
+            {
+                await Task.Delay(500);
+                try
+                {
+                    registered = await client.PostAsJsonAsync("/api/cqrs/customer/c1/RegisterCustomer",
+                        new { customerId = "c1", email = "alice@example.com" });
+                }
+                catch (HttpRequestException) { /* not listening yet -- retry */ }
+            }
+            Assert.False(process.HasExited, $"generated host exited early (code {(process.HasExited ? process.ExitCode : (int?)null)})");
+            Assert.NotNull(registered);
+            Assert.True(registered!.IsSuccessStatusCode, await registered.Content.ReadAsStringAsync());
+
+            var eventsDbPath = Directory.GetFiles(_scratchDir, "events.db", SearchOption.AllDirectories).Single();
+            await using (var store = await SqliteEventStore.OpenAsync(eventsDbPath))
+            {
+                var data = (await store.LoadStreamAsync("customer", "c1")).Single().Data;
+                Assert.DoesNotContain("alice@example.com", data);
+                Assert.Contains("\"$pii\"", data);
+            }
+
+            async Task<JsonElement> PollEmailAsync(Func<JsonElement, bool> until)
+            {
+                for (var attempt = 0; attempt < 40; attempt++)
+                {
+                    var rows = await client.GetFromJsonAsync<JsonElement>("/api/query/customers");
+                    var row = rows.EnumerateArray().FirstOrDefault(r => r.GetProperty("customer_id").GetString() == "c1");
+                    if (row.ValueKind == JsonValueKind.Object && until(row.GetProperty("email"))) return row.GetProperty("email");
+                    await Task.Delay(500);
+                }
+                throw new TimeoutException("the customers read model never reached the expected state");
+            }
+
+            // Read: the projection stored the envelope; the route reveals it through DI's KmsClient.
+            var email = await PollEmailAsync(e => e.ValueKind == JsonValueKind.String);
+            Assert.Equal("alice@example.com", email.GetString());
+
+            // Erase through the gateway: the built-in data-subject aggregate is registered.
+            using var erased = await client.PostAsJsonAsync("/api/cqrs/dataSubject/c1/EraseSubject", new { });
+            Assert.True(erased.IsSuccessStatusCode, await erased.Content.ReadAsStringAsync());
+
+            // The value was cached by the read above, so this only turns into the marker if
+            // the evictor is wired (and the destroyer, for anything not cached).
+            var redacted = await PollEmailAsync(e => e.ValueKind == JsonValueKind.Object);
+            Assert.True(redacted.GetProperty("$redacted").GetBoolean());
+
+            // A returning person is a new subject: the guard refuses the old id.
+            using var again = await client.PostAsJsonAsync("/api/cqrs/customer/c1b/RegisterCustomer",
+                new { customerId = "c1", email = "alice@example.com" });
+            Assert.False(again.IsSuccessStatusCode, "PII for an erased subject id must be refused");
         }
         finally
         {

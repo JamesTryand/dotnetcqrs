@@ -25,6 +25,15 @@ namespace DotnetCqrs.Codegen.Generation;
 /// <see cref="Verification.ScenarioReport.Print"/> exactly as the CLI's own <c>verify</c>
 /// command does — reusing that print/exit-code helper is the entire reason it lives in
 /// this project rather than DotnetCqrs.Codegen.Cli (see README's Milestone 7 note).
+///
+/// <para><b>PII (Milestone D4):</b> when any event carries <c>field.pii</c>, the generated
+/// host reads <c>KMS_FACADE_URL</c> and refuses to start without it (exit 1, before
+/// opening anything; <c>--verify</c> is unaffected). It registers one <c>KmsClient</c> and
+/// one <c>PiiRevealCache</c> in DI for the query routes, and registers each PII aggregate's
+/// <c>PiiProtector</c> with the erased-subject guard and the cache. It also registers the
+/// built-in data-subject aggregate, so erasure is <c>POST
+/// /api/cqrs/dataSubject/{id}/EraseSubject</c>, plus <c>SubjectKeyDestroyer</c> and the
+/// per-process <c>PiiCacheEvictor</c>.</para>
 /// </summary>
 public static class HostProjectGenerator
 {
@@ -89,11 +98,19 @@ public static class HostProjectGenerator
     private static GeneratedFile GenerateProgram(
         MappingResult mapped, string dotnetCqrsProjectPath, IReadOnlyDictionary<string, string> aggregateOverrides)
     {
+        // A domain whose events carry field.pii gets a generated PiiProtector; only those
+        // aggregates register one. Any PII at all switches on the key-service wiring.
+        var piiAggregates = mapped.Domains
+            .Where(d => GenerationSupport.CollectEventFields(d).Item1.Any(f => f.Pii))
+            .Select(d => d.Aggregate).ToHashSet(StringComparer.Ordinal);
+        var hasPii = piiAggregates.Count > 0 || mapped.Domains.Any(d => d.ReadModels.Any(rm => rm.Fields.Any(f => f.Pii)));
+
         var b = new StringBuilder();
         b.AppendLine("using DotnetCqrs.Codegen;");
         b.AppendLine("using DotnetCqrs.Codegen.Mapping;");
         b.AppendLine("using DotnetCqrs.Codegen.Verification;");
         b.AppendLine("using DotnetCqrs.Consumers;");
+        if (hasPii) b.AppendLine("using DotnetCqrs.Crypto;");
         b.AppendLine("using DotnetCqrs.Deciders;");
         b.AppendLine("using DotnetCqrs.EventStore;");
         b.AppendLine("using DotnetCqrs.Host;");
@@ -128,6 +145,22 @@ public static class HostProjectGenerator
         b.AppendLine("var eventsPath = Path.Combine(dataDir, \"events.db\");");
         b.AppendLine("var readModelPath = Path.Combine(dataDir, \"readmodel.db\");");
         b.AppendLine();
+        if (hasPii)
+        {
+            // Fail fast, before anything opens: a domain with PII cannot write it (the
+            // protector would have no key service) or read it (every route would 500), so
+            // starting up without one would only defer the failure to the first request.
+            // There is deliberately no fallback to InMemoryKmsClient, which is not encryption.
+            b.AppendLine("// This domain stores field.pii values encrypted under per-subject keys held by the");
+            b.AppendLine("// key-management facade (crypto-shredding). The host refuses to start without one.");
+            b.AppendLine("var kmsFacadeUrl = Environment.GetEnvironmentVariable(\"KMS_FACADE_URL\");");
+            b.AppendLine("if (string.IsNullOrWhiteSpace(kmsFacadeUrl) || !Uri.TryCreate(kmsFacadeUrl.TrimEnd('/') + \"/\", UriKind.Absolute, out var kmsBaseAddress))");
+            b.AppendLine("{");
+            b.AppendLine("    Console.Error.WriteLine(\"KMS_FACADE_URL must be set to the key-management facade's base URL: this domain has field.pii data.\");");
+            b.AppendLine("    return 1;");
+            b.AppendLine("}");
+            b.AppendLine();
+        }
         b.AppendLine("var builder = WebApplication.CreateBuilder(args);");
         b.AppendLine();
         b.AppendLine("var eventStore = await SqliteEventStore.OpenAsync(eventsPath);");
@@ -141,11 +174,31 @@ public static class HostProjectGenerator
         // all endpoints together and one bad inference poisons the whole data source).
         b.AppendLine("builder.Services.AddSingleton<IReadModelStore>(readModelDb);");
         b.AppendLine();
+        if (hasPii)
+        {
+            // One client and one reveal cache for the process. The cache is per-process by
+            // design (never shared or persisted) and is emptied by the evictor below.
+            b.AppendLine("var kms = new KmsClient(new HttpClient { BaseAddress = kmsBaseAddress });");
+            b.AppendLine("var piiCache = new PiiRevealCache();");
+            b.AppendLine("var subjects = new SubjectStatus(eventStore);");
+            b.AppendLine("builder.Services.AddSingleton<IKmsClient>(kms);");
+            b.AppendLine("builder.Services.AddSingleton(piiCache);");
+            b.AppendLine();
+        }
         b.AppendLine("var registry = new DeciderRegistry(eventStore);");
         foreach (var domain in mapped.Domains)
         {
             var aggregate = GenerationSupport.ExportName(domain.Aggregate);
-            b.AppendLine($"registry.Register({aggregate}Decider.Aggregate, {aggregate}Decider.Create());");
+            b.AppendLine(piiAggregates.Contains(domain.Aggregate)
+                ? $"registry.Register({aggregate}Decider.Aggregate, {aggregate}Decider.Create(), new {aggregate}Decider.PiiProtector(kms, subjects, piiCache));"
+                : $"registry.Register({aggregate}Decider.Aggregate, {aggregate}Decider.Create());");
+        }
+        if (hasPii)
+        {
+            // Erasure: POST /api/cqrs/dataSubject/{subjectId}/EraseSubject through the
+            // gateway below. Who may call it is the operator's auth decision, like every
+            // other command here.
+            b.AppendLine("registry.RegisterDataSubjects();");
         }
         b.AppendLine("builder.Services.AddSingleton(registry);");
         b.AppendLine();
@@ -183,6 +236,15 @@ public static class HostProjectGenerator
                 var typeName = GenerationSupport.ExportName(reactor.Name) + "Reactor";
                 b.AppendLine($"engine.Register(new ReactorConsumer(new {typeName}(), registry));");
             }
+        }
+        if (hasPii)
+        {
+            // SubjectErased destroys the key (durable checkpoint) and empties this process's
+            // cache (in-memory checkpoint, seeded from the destroyer's; see
+            // RegisterPiiCacheEvictorAsync). The seed is read once, here, before the engine
+            // starts; any position at or behind the destroyer's is safe.
+            b.AppendLine("engine.Register(new SubjectKeyDestroyer(kms));");
+            b.AppendLine("await engine.RegisterPiiCacheEvictorAsync(piiCache, eventStore);");
         }
         b.AppendLine();
 

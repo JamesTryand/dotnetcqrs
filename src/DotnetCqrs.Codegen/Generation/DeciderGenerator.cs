@@ -190,13 +190,15 @@ internal static class DeciderGenerator
         b.AppendLine("    /// <summary>Encrypts fresh pii values after Decide and reveals stored ones on demand.");
         b.AppendLine("    /// <paramref name=\"subjects\"/> is optional: supply one (SubjectStatus over the event");
         b.AppendLine("    /// store) and this refuses to store new PII for an erased data subject, since a");
-        b.AppendLine("    /// returning person is a new subject with a new id, never a reactivation of the old one.</summary>");
-        b.AppendLine("    public sealed class PiiProtector(IKmsClient kms, ISubjectStatus? subjects = null) : IPiiProtector");
+        b.AppendLine("    /// returning person is a new subject with a new id, never a reactivation of the old one.");
+        b.AppendLine("    /// <paramref name=\"cache\"/> is optional too: the process's PiiRevealCache, so a decision");
+        b.AppendLine("    /// that reads stored PII recently revealed elsewhere needs no round trip.</summary>");
+        b.AppendLine("    public sealed class PiiProtector(IKmsClient kms, ISubjectStatus? subjects = null, PiiRevealCache? cache = null) : IPiiProtector");
         b.AppendLine("    {");
         b.AppendLine("        public async Task<object> RevealAsync(object state, CancellationToken ct)");
         b.AppendLine("        {");
         b.AppendLine($"            var s = ({aggregate}State)state;");
-        b.AppendLine("            var buffer = new PiiRevealBuffer(kms);");
+        b.AppendLine("            var buffer = new PiiRevealBuffer(kms, cache);");
         foreach (var name in piiState)
             b.AppendLine($"            var reveal{name} = s.{name}?.RevealAsync(buffer, ct);");
         b.AppendLine("            await buffer.FlushAsync(ct);");

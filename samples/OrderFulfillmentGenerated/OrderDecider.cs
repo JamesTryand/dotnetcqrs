@@ -77,13 +77,15 @@ public static class OrderDecider
     /// <summary>Encrypts fresh pii values after Decide and reveals stored ones on demand.
     /// <paramref name="subjects"/> is optional: supply one (SubjectStatus over the event
     /// store) and this refuses to store new PII for an erased data subject, since a
-    /// returning person is a new subject with a new id, never a reactivation of the old one.</summary>
-    public sealed class PiiProtector(IKmsClient kms, ISubjectStatus? subjects = null) : IPiiProtector
+    /// returning person is a new subject with a new id, never a reactivation of the old one.
+    /// <paramref name="cache"/> is optional too: the process's PiiRevealCache, so a decision
+    /// that reads stored PII recently revealed elsewhere needs no round trip.</summary>
+    public sealed class PiiProtector(IKmsClient kms, ISubjectStatus? subjects = null, PiiRevealCache? cache = null) : IPiiProtector
     {
         public async Task<object> RevealAsync(object state, CancellationToken ct)
         {
             var s = (OrderState)state;
-            var buffer = new PiiRevealBuffer(kms);
+            var buffer = new PiiRevealBuffer(kms, cache);
             var revealCustomerEmail = s.CustomerEmail?.RevealAsync(buffer, ct);
             await buffer.FlushAsync(ct);
             return s with
