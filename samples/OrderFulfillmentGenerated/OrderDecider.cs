@@ -71,10 +71,9 @@ public static class OrderDecider
 
     private sealed record OrderPlacedPayload(string OrderId, string CustomerId, Pii<string>? CustomerEmail, JsonElement Items);
 
-    /// <summary>Encrypts this aggregate's field.pii values before they are appended and
-    /// reveals stored ones only when a decision reads them. Register it next to the
-    /// decider; see <see cref="Create"/>.</summary>
-    /// <summary>Encrypts fresh pii values after Decide and reveals stored ones on demand.
+    /// <summary>Encrypts this aggregate's field.pii values after Decide, before they are
+    /// appended, and reveals stored ones only when a decision reads them. Register it next
+    /// to the decider; see <see cref="Create"/>.
     /// <paramref name="subjects"/> is optional: supply one (SubjectStatus over the event
     /// store) and this refuses to store new PII for an erased data subject, since a
     /// returning person is a new subject with a new id, never a reactivation of the old one.

@@ -184,10 +184,9 @@ internal static class DeciderGenerator
         var piiState = stateFields.Where(f => f.Pii).Select(f => GenerationSupport.ExportName(f.Name)).ToList();
 
         b.AppendLine();
-        b.AppendLine("    /// <summary>Encrypts this aggregate's field.pii values before they are appended and");
-        b.AppendLine("    /// reveals stored ones only when a decision reads them. Register it next to the");
-        b.AppendLine("    /// decider; see <see cref=\"Create\"/>.</summary>");
-        b.AppendLine("    /// <summary>Encrypts fresh pii values after Decide and reveals stored ones on demand.");
+        b.AppendLine("    /// <summary>Encrypts this aggregate's field.pii values after Decide, before they are");
+        b.AppendLine("    /// appended, and reveals stored ones only when a decision reads them. Register it next");
+        b.AppendLine("    /// to the decider; see <see cref=\"Create\"/>.");
         b.AppendLine("    /// <paramref name=\"subjects\"/> is optional: supply one (SubjectStatus over the event");
         b.AppendLine("    /// store) and this refuses to store new PII for an erased data subject, since a");
         b.AppendLine("    /// returning person is a new subject with a new id, never a reactivation of the old one.");
