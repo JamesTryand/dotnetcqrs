@@ -36,21 +36,31 @@ Go/PocketBase to C#/.NET rather than wrapping it.
   auth (bring your own `AddJwtBearer`/Entra ID/etc. — the library only
   reads whatever `HttpContext.User` your scheme populates) and file
   storage (`IFileStore`, a local-disk implementation included).
-- **Codegen** (`DotnetCqrs.Codegen`): generate a starting decider,
-  projections, and reactors straight from an
+- **Personal data** (`DotnetCqrs.Crypto`): GDPR erasure by
+  crypto-shredding. A personal field is a `Pii<T>`, encrypted under its
+  data subject's own key (held by a separate key-management service)
+  before it reaches the log, and revealed only when something reads it.
+  Erasing the subject destroys the key, so every copy of their data becomes
+  unreadable without editing the log. See
+  [Concepts](docs/concepts.md#personal-data-crypto-shredding-instead-of-delete).
+- **Codegen** (`DotnetCqrs.Codegen`, CLI `dotnetcqrs-codegen`): generate a
+  starting decider, projections, reactors and query routes straight from an
   [EventModeling](https://eventmodeling.org) document — wiring correct,
-  business rules left as stubs for you to fill in — and verify a
-  document's own scenarios against the result.
+  business rules left as stubs for you to fill in — or a whole runnable
+  host with `--host`, and verify a document's own scenarios against the
+  result. Fields the document marks `pii` are wired for encryption and
+  erasure end to end.
 
 ## Docs
 
 - [Getting started](docs/getting-started.md) — run the sample host, send a
   real command, see a real rejection, look at the raw event log
 - [Tutorial](docs/tutorial.md) — an EventModeling document, generated code,
-  a running slice, including a real collision and the field-mapping gap
-  the generator leaves for you
+  a running slice, including a real collision, the field-mapping gap the
+  generator leaves for you, personal data and erasure, and a generated host
 - [Concepts](docs/concepts.md) — coming from CRUD: commands vs. events,
-  deciders, aggregates, projections, the write-guard, reactors
+  deciders, aggregates, projections, the write-guard, reactors,
+  crypto-shredding
 - [Cross-host replication](docs/cross-host-replication.md) — a same-host
   read-only secondary plus write-forwarding, extended across real hosts
   via LiteFS (dotnetcqrs-multi-node Milestone 3)

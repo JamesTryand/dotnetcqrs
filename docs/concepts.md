@@ -181,6 +181,42 @@ POSTs it to a configured command gateway — another `dotnetcqrs` instance, or a
 Either way the target decider still gets to accept or reject it; `extcaller`
 never appends a raw event.
 
+## Personal data: crypto-shredding instead of `DELETE`
+
+"The log is never updated or deleted" runs straight into a legal
+requirement: a person can ask for their personal data to be erased (GDPR
+Article 17). CRUD deletes the row. Here the answer is **crypto-shredding**:
+
+- Each personal value is stored **encrypted** under a key that belongs to one
+  person, the *data subject*. The log, the read models and every backup of
+  them only ever hold ciphertext.
+- Erasing the person **destroys their key**. Nothing is edited: the events
+  stay where they were, but their personal data can no longer be decrypted,
+  anywhere, including in backups. That is the "delete".
+- Erasure is itself a fact: `EraseSubject` on the built-in `dataSubject`
+  aggregate records `SubjectErased`, and a consumer destroys the key when it
+  lands. Readability of personal data is therefore a projection of that
+  lifecycle, eventually consistent like any other read.
+- It is terminal. A person who comes back is a new subject with a new id and
+  a new key, so subject ids are opaque and never reused. An email address
+  can never be a subject id.
+
+In code, a personal field is a `Pii<T>` (from `DotnetCqrs.Crypto`), and the
+keys live in a separate key-management service (Vault behind a small facade)
+that never lets them out. Encryption happens in the registry's shell, after
+`Decide` and before the append, so deciders stay pure. `Decide` can still
+read personal data, which is revealed on demand. Read models keep the
+ciphertext envelope; query routes reveal it just before responding, and an
+erased person's value comes back as `{"$redacted":true}`. Values revealed
+recently are cached in the reader's memory, never on disk, so warm reads
+keep working if the key service is down.
+
+The cost: encryption is randomized, so a personal column can't be filtered
+or indexed with plain SQL, and the full-text search suggested above doesn't
+apply to it. Searching personal data needs a purpose-built index that is
+itself deleted from on erasure. The schema declares it as a `match` filter;
+generator support for those is still being built.
+
 ## A CRUD → `dotnetcqrs` glossary
 
 | CRUD instinct | `dotnetcqrs` equivalent |
@@ -194,6 +230,8 @@ never appends a raw event.
 | DB trigger cascading a second write | reactor dispatching a follow-up command |
 | direct table write | rejected by the write-guard (a SQL trigger, bypassed only inside a projection's own scoped write) |
 | audit log bolted on afterward | not needed — the event log already *is* the full history |
+| `DELETE` a person's personal data | erase the data subject: their key is destroyed, and every copy of their data becomes unreadable |
+| encrypting a column | a `field.pii` field: `Pii<T>` in code, a `{"$pii":…}` envelope at rest |
 
 ## Where next
 
