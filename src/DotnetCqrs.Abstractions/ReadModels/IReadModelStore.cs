@@ -33,4 +33,15 @@ public interface IReadModelStore : IAsyncDisposable
     /// lifetime of the returned scope. Nests: writes stay allowed until every nested
     /// scope has been disposed.</summary>
     ValueTask<IAsyncDisposable> BeginBypassAsync(CancellationToken ct = default);
+
+    /// <summary>Runs a read-only query that may overlap with other reads and with the
+    /// projections' writes -- what an HTTP query route or an authorization check does,
+    /// one per request. <see cref="Connection"/> belongs to the projections, and not every
+    /// provider lets two commands share one connection at once: Npgsql refuses ("A command
+    /// is already in progress"), so the Postgres store runs <paramref name="read"/> on its
+    /// own pooled connection. The default runs it on <see cref="Connection"/>, which SQLite
+    /// serializes internally. <paramref name="read"/> must not write, and must not keep the
+    /// connection it is given.</summary>
+    Task<T> ReadAsync<T>(Func<DbConnection, CancellationToken, Task<T>> read, CancellationToken ct = default)
+        => read(Connection, ct);
 }

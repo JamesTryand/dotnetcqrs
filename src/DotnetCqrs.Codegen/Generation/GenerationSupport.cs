@@ -25,13 +25,31 @@ internal static class GenerationSupport
         _ => "string",
     };
 
-    /// <summary>Maps a domain field type onto its SQLite column type, for a generated
-    /// projection's <c>CREATE TABLE</c>.</summary>
-    public static string SqliteType(string domainType) => domainType switch
+    /// <summary>Maps a domain field type onto its column type, for a generated projection's
+    /// <c>CREATE TABLE</c>. Every name here means the same thing on SQLite and Postgres, so one
+    /// generated projection runs on either: <c>DOUBLE PRECISION</c> is SQLite REAL affinity and
+    /// Postgres's 8-byte float (plain <c>REAL</c> is only 4 bytes on Postgres), and a bool is an
+    /// <c>INTEGER</c> 0/1 on both, written as 0/1 (see <c>ProjectionGenerator</c>), so a query
+    /// returns the same value whichever database answers it.</summary>
+    public static string ColumnType(string domainType) => domainType switch
     {
-        "number" => "REAL",
+        "number" => "DOUBLE PRECISION",
         "bool" => "INTEGER",
         _ => "TEXT", // text, date (ISO 8601 string), json (raw text)
+    };
+
+    /// <summary>How a plain query-string value for <paramref name="field"/>'s column must be
+    /// converted before it is bound (<c>QueryParamParser</c>), or null for a text column, which
+    /// takes the raw string. Postgres has no implicit text-to-number comparison, so a numeric
+    /// or bool column compared with a string parameter is an error there, not a mismatch.</summary>
+    public static string? QueryParamKind(Domain.Field field) => field.Derivation switch
+    {
+        Domain.CountDerivation => "integer",
+        Domain.SumDerivation => "number",
+        Domain.ToggleDerivation => "bool",
+        Domain.GroupByDerivation => null,
+        _ when field.Pii => null,
+        _ => field.Type switch { "number" => "number", "bool" => "bool", _ => null },
     };
 
     /// <summary>Unions every field every event this domain's commands declare, in

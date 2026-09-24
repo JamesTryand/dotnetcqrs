@@ -21,17 +21,25 @@ namespace DotnetCqrs.Postgres;
 /// <c>UPDATE</c>/<c>DELETE</c> privilege and is refused by the database. That makes
 /// <see cref="BeginBypassAsync"/> a genuine no-op here: the store's own connection is
 /// always the owner, so projection bodies are byte-identical across providers.</para>
+///
+/// <para><b>Concurrent reads get their own connections.</b> The dedicated connection
+/// serves one command at a time (Npgsql refuses an overlapping one), so
+/// <see cref="ReadAsync"/> -- the query routes' path -- takes a pooled connection from a
+/// data source on the same connection string (same database, same search path) instead
+/// of queueing behind the projections.</para>
 /// </summary>
 public sealed class PostgresReadModelStore : IReadModelStore
 {
     private static readonly IAsyncDisposable NoopBypass = new NoopScope();
 
     private readonly NpgsqlConnection _connection;
+    private readonly NpgsqlDataSource _reads;
     private readonly string? _readerRole;
 
-    private PostgresReadModelStore(NpgsqlConnection connection, string? readerRole)
+    private PostgresReadModelStore(NpgsqlConnection connection, NpgsqlDataSource reads, string? readerRole)
     {
         _connection = connection;
+        _reads = reads;
         _readerRole = readerRole;
     }
 
@@ -51,7 +59,7 @@ public sealed class PostgresReadModelStore : IReadModelStore
     {
         var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(ct);
-        return new PostgresReadModelStore(connection, readerRole);
+        return new PostgresReadModelStore(connection, NpgsqlDataSource.Create(connectionString), readerRole);
     }
 
     /// <summary>Revokes write privileges on <paramref name="tables"/> from <c>PUBLIC</c>
@@ -82,6 +90,12 @@ public sealed class PostgresReadModelStore : IReadModelStore
     public ValueTask<IAsyncDisposable> BeginBypassAsync(CancellationToken ct = default)
         => ValueTask.FromResult(NoopBypass);
 
+    public async Task<T> ReadAsync<T>(Func<DbConnection, CancellationToken, Task<T>> read, CancellationToken ct = default)
+    {
+        await using var connection = await _reads.OpenConnectionAsync(ct);
+        return await read(connection, ct);
+    }
+
     private async Task ExecuteAsync(string sql, CancellationToken ct)
     {
         await using var command = _connection.CreateCommand();
@@ -99,5 +113,9 @@ public sealed class PostgresReadModelStore : IReadModelStore
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    public ValueTask DisposeAsync() => _connection.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        await _connection.DisposeAsync();
+        await _reads.DisposeAsync();
+    }
 }

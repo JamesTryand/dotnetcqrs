@@ -87,6 +87,12 @@ public static class ReadModelQueryGenerator
         // SQL as a column name, so anything else would be an injection point.
         var columns = new[] { readModel.Key }.Concat(readModel.Fields.Select(f => f.Name))
             .Select(ToSnakeCase).Distinct().ToList();
+        // A numeric or bool column's plain param is converted before binding (QueryParamParser):
+        // Postgres can't compare such a column with a text parameter.
+        var columnKinds = readModel.Fields
+            .Select(f => (Column: ToSnakeCase(f.Name), Kind: GenerationSupport.QueryParamKind(f)))
+            .Where(c => c.Kind is not null && c.Column != ToSnakeCase(readModel.Key))
+            .DistinctBy(c => c.Column).ToList();
 
         var b = new StringBuilder();
         b.AppendLine("using System.Security.Claims;");
@@ -108,6 +114,16 @@ public static class ReadModelQueryGenerator
         b.AppendLine("    /// <summary>This table's own columns: the only names a plain query param may use.</summary>");
         b.AppendLine($"    private static readonly string[] Columns = {GenerationSupport.QuotedArray(columns)};");
         b.AppendLine();
+        if (columnKinds.Count > 0)
+        {
+            b.AppendLine("    /// <summary>Non-text columns: a plain param naming one is parsed to this kind (QueryParamParser).</summary>");
+            b.AppendLine("    private static readonly Dictionary<string, string> ColumnKinds = new()");
+            b.AppendLine("    {");
+            foreach (var (column, kind) in columnKinds)
+                b.AppendLine($"        [\"{column}\"] = \"{kind}\",");
+            b.AppendLine("    };");
+            b.AppendLine();
+        }
         if (hasPii)
         {
             b.AppendLine("    /// <summary>Columns holding the ciphertext envelope: revealed on the way out, never filtered on.</summary>");
@@ -235,7 +251,17 @@ public static class ReadModelQueryGenerator
         }
         b.AppendLine("                        var plainParam = $\"@p{i++}\";");
         b.AppendLine("                        clauses.Add($\"{ToSnakeCase(key)} = {plainParam}\");");
-        b.AppendLine("                        parameters[plainParam] = raw;");
+        if (columnKinds.Count > 0)
+        {
+            b.AppendLine("                        object? plainValue = raw;");
+            b.AppendLine("                        if (ColumnKinds.TryGetValue(ToSnakeCase(key), out var kind) && !QueryParamParser.TryParse(kind, raw, out plainValue))");
+            b.AppendLine("                            return Results.Problem($\"'{key}' must be a {kind}\", statusCode: StatusCodes.Status400BadRequest);");
+            b.AppendLine("                        parameters[plainParam] = plainValue;");
+        }
+        else
+        {
+            b.AppendLine("                        parameters[plainParam] = raw;");
+        }
         b.AppendLine("                        break;");
         b.AppendLine("                    }");
         b.AppendLine("                }");
@@ -245,21 +271,25 @@ public static class ReadModelQueryGenerator
         // shadow columns (a second, normalized copy of a field) to the caller.
         var selectList = string.Join(", ", columns);
         b.AppendLine($"            var sql = clauses.Count == 0 ? \"SELECT {selectList} FROM {readModel.Collection}\" : \"SELECT {selectList} FROM {readModel.Collection} WHERE \" + string.Join(\" AND \", clauses);");
-        b.AppendLine("            await using var command = store.Connection.CreateCommand();");
-        b.AppendLine("            command.CommandText = sql;");
-        b.AppendLine("            foreach (var (name, value) in parameters) command.AddParam(name, value);");
-        b.AppendLine();
-        b.AppendLine("            var rows = new List<Dictionary<string, object?>>();");
-        b.AppendLine("            await using (var reader = await command.ExecuteReaderAsync(ct))");
+        // ReadAsync, not store.Connection: requests overlap each other and the projections'
+        // writes, and the Postgres store needs a pooled connection per read for that.
+        b.AppendLine("            var rows = await store.ReadAsync(async (connection, readCt) =>");
         b.AppendLine("            {");
-        b.AppendLine("                while (await reader.ReadAsync(ct))");
+        b.AppendLine("                await using var command = connection.CreateCommand();");
+        b.AppendLine("                command.CommandText = sql;");
+        b.AppendLine("                foreach (var (name, value) in parameters) command.AddParam(name, value);");
+        b.AppendLine();
+        b.AppendLine("                var found = new List<Dictionary<string, object?>>();");
+        b.AppendLine("                await using var reader = await command.ExecuteReaderAsync(readCt);");
+        b.AppendLine("                while (await reader.ReadAsync(readCt))");
         b.AppendLine("                {");
         b.AppendLine("                    var row = new Dictionary<string, object?>();");
         b.AppendLine("                    for (var c = 0; c < reader.FieldCount; c++)");
         b.AppendLine("                        row[reader.GetName(c)] = reader.IsDBNull(c) ? null : reader.GetValue(c);");
-        b.AppendLine("                    rows.Add(row);");
+        b.AppendLine("                    found.Add(row);");
         b.AppendLine("                }");
-        b.AppendLine("            }");
+        b.AppendLine("                return found;");
+        b.AppendLine("            }, ct);");
         if (hasPii)
             b.AppendLine("            await PiiColumnRevealer.RevealAsync(rows, PiiColumns, kms, cache, ct);");
         b.AppendLine("            return Results.Ok(rows);");

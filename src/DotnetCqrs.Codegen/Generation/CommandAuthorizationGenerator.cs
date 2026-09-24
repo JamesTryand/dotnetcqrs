@@ -135,14 +135,17 @@ public static class CommandAuthorizationGenerator
         b.AppendLine("        return true;");
         b.AppendLine("    }");
         b.AppendLine();
-        b.AppendLine("    private static async Task<string?> ScalarStringAsync(IReadModelStore store, string sql, (string, object?)[] parameters, CancellationToken ct)");
-        b.AppendLine("    {");
-        b.AppendLine("        await using var cmd = store.Connection.CreateCommand();");
-        b.AppendLine("        cmd.CommandText = sql;");
-        b.AppendLine("        foreach (var (name, value) in parameters) cmd.AddParam(name, value);");
-        b.AppendLine("        var result = await cmd.ExecuteScalarAsync(ct);");
-        b.AppendLine("        return result is null or DBNull ? null : result.ToString();");
-        b.AppendLine("    }");
+        // ReadAsync: an authorization check runs per request, alongside other requests and
+        // the projections' writes (see IReadModelStore.ReadAsync).
+        b.AppendLine("    private static Task<string?> ScalarStringAsync(IReadModelStore store, string sql, (string, object?)[] parameters, CancellationToken ct) =>");
+        b.AppendLine("        store.ReadAsync(async (connection, readCt) =>");
+        b.AppendLine("        {");
+        b.AppendLine("            await using var cmd = connection.CreateCommand();");
+        b.AppendLine("            cmd.CommandText = sql;");
+        b.AppendLine("            foreach (var (name, value) in parameters) cmd.AddParam(name, value);");
+        b.AppendLine("            var result = await cmd.ExecuteScalarAsync(readCt);");
+        b.AppendLine("            return result is null or DBNull ? null : result.ToString();");
+        b.AppendLine("        }, ct);");
         b.AppendLine("}");
         b.AppendLine();
 

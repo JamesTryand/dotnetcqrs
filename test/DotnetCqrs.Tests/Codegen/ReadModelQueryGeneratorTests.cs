@@ -7,6 +7,7 @@ using DotnetCqrs.Codegen;
 using DotnetCqrs.Codegen.Domain;
 using DotnetCqrs.Codegen.Generation;
 using DotnetCqrs.Codegen.Mapping;
+using DotnetCqrs.Tests.Postgres;
 
 namespace DotnetCqrs.Tests.Codegen;
 
@@ -19,12 +20,14 @@ namespace DotnetCqrs.Tests.Codegen;
 /// generated query route into a real generated-or-hand-written host is Stage 3a's job,
 /// out of scope for this generator's own proof.
 /// </summary>
-public class ReadModelQueryGeneratorTests : IDisposable
+public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresFixture>
 {
     private readonly string _scratchDir;
+    private readonly PostgresFixture _pg;
 
-    public ReadModelQueryGeneratorTests()
+    public ReadModelQueryGeneratorTests(PostgresFixture pg)
     {
+        _pg = pg;
         _scratchDir = Path.Combine(Path.GetTempPath(), $"dotnetcqrs-query-route-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_scratchDir);
     }
@@ -89,7 +92,8 @@ public class ReadModelQueryGeneratorTests : IDisposable
               "fields": [
                 {"name": "entryId", "type": "string", "idAttribute": true},
                 {"name": "taskDate", "type": "date"},
-                {"name": "hours", "type": "double"}
+                {"name": "hours", "type": "double"},
+                {"name": "billable", "type": "boolean"}
               ]}
           },
           "commands": {
@@ -102,7 +106,8 @@ public class ReadModelQueryGeneratorTests : IDisposable
               "fields": [
                 {"name": "entryId", "type": "string", "idAttribute": true},
                 {"name": "taskDate", "type": "date"},
-                {"name": "hours", "type": "double"}
+                {"name": "hours", "type": "double"},
+                {"name": "billable", "type": "boolean"}
               ],
               "filters": [
                 {"param": "dateRange", "field": "taskDate", "kind": "dateRange", "presets": ["last7Days", "lastCalendarMonth", "custom"]}
@@ -124,26 +129,30 @@ public class ReadModelQueryGeneratorTests : IDisposable
     // Hand-written, not generated -- this test's own scratch web host, seeding rows by
     // calling the generated projection's ApplyAsync directly (the same technique
     // HarnessProgram.txt's own RunViewScenarioAsync uses), then mapping the generated
-    // query route and running for real.
+    // query route and running for real. TEST_PG names a Postgres schema to use instead of
+    // an in-memory SQLite database: the same generated code runs on either.
     private const string ProgramCs = """
         using DotnetCqrs.EventStore;
+        using DotnetCqrs.Postgres;
         using DotnetCqrs.ReadModels;
         using Generated.TimeEntry;
 
-        var store = await SqliteReadModelStore.OpenAsync(":memory:");
+        IReadModelStore store = Environment.GetEnvironmentVariable("TEST_PG") is { Length: > 0 } pg
+            ? await PostgresReadModelStore.OpenAsync(pg)
+            : await SqliteReadModelStore.OpenAsync(":memory:");
         var projection = new TimeEntriesProjection(store);
         await projection.InitAsync();
 
-        async Task SeedAsync(string entryId, string taskDate, double hours, long position)
+        async Task SeedAsync(string entryId, string taskDate, double hours, bool billable, long position)
         {
-            var data = System.Text.Json.JsonSerializer.Serialize(new { entryId, taskDate, hours });
+            var data = System.Text.Json.JsonSerializer.Serialize(new { entryId, taskDate, hours, billable });
             var ev = new Event(position, $"seed-{position}", "timeEntry", entryId, position, "TimeEntryLogged", data, "{}", "1970-01-01T00:00:00.000Z");
             await projection.ApplyAsync(ev, CancellationToken.None);
         }
 
-        await SeedAsync("e1", "2026-08-15", 4, 1);
-        await SeedAsync("e2", "2026-08-20", 3, 2);
-        await SeedAsync("e3", "2026-09-01", 2, 3);
+        await SeedAsync("e1", "2026-08-15", 1234567.89, true, 1);
+        await SeedAsync("e2", "2026-08-20", 3, false, 2);
+        await SeedAsync("e3", "2026-09-01", 2, true, 3);
 
         var builder = WebApplication.CreateBuilder(args);
         builder.Services.AddSingleton<IReadModelStore>(store);
@@ -153,7 +162,20 @@ public class ReadModelQueryGeneratorTests : IDisposable
         """;
 
     [Fact(Timeout = 300000)]
-    public async Task Generated_query_route_filters_by_dateRange_and_by_a_plain_field_over_real_http()
+    public Task Generated_query_route_filters_by_dateRange_and_by_a_plain_field_over_real_http()
+        => RunPlainFilterRouteAsync(postgresConnectionString: null);
+
+    // The same generated projection and route on Postgres: a bool column is written 0/1 into
+    // an integer, a number keeps 8-byte precision, typed plain params compare without an
+    // "integer = text" error, and concurrent requests don't collide on one connection.
+    [SkippableFact(Timeout = 300000)]
+    public async Task Generated_query_route_filters_by_dateRange_and_by_a_plain_field_on_postgres()
+    {
+        Skip.IfNot(_pg.Available, _pg.SkipReason);
+        await RunPlainFilterRouteAsync(await _pg.NewSchemaAsync());
+    }
+
+    private async Task RunPlainFilterRouteAsync(string? postgresConnectionString)
     {
         var doc = DocumentLoader.Parse(Json);
         var mapped = DocumentMapper.Map(doc);
@@ -178,6 +200,7 @@ public class ReadModelQueryGeneratorTests : IDisposable
               </PropertyGroup>
               <ItemGroup>
                 <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs", "DotnetCqrs.csproj")}" />
+                <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs.Postgres", "DotnetCqrs.Postgres.csproj")}" />
                 <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs.Codegen", "DotnetCqrs.Codegen.csproj")}" />
               </ItemGroup>
             </Project>
@@ -197,6 +220,7 @@ public class ReadModelQueryGeneratorTests : IDisposable
         psi.ArgumentList.Add(_scratchDir);
         psi.ArgumentList.Add("--no-build");
         psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+        psi.Environment["TEST_PG"] = postgresConnectionString ?? "";
 
         using var process = Process.Start(psi)!;
         try
@@ -213,18 +237,36 @@ public class ReadModelQueryGeneratorTests : IDisposable
                 }
                 throw new TimeoutException($"generated host never answered {path}");
             }
+            static List<string?> EntryIds(JsonElement rows) =>
+                rows.EnumerateArray().Select(r => r.GetProperty("entry_id").GetString()).OrderBy(x => x).ToList();
 
             var dateRangeQuery = "/api/query/timeEntries?dateRange=" +
                 Uri.EscapeDataString("""{"kind":"custom","from":"2026-08-01","to":"2026-08-31"}""");
             var byDateRange = await PollAsync(dateRangeQuery);
             Assert.False(process.HasExited, "generated host process exited early");
-            Assert.Equal(2, byDateRange.GetArrayLength());
-            var entryIds = byDateRange.EnumerateArray().Select(r => r.GetProperty("entry_id").GetString()).OrderBy(x => x).ToList();
-            Assert.Equal(["e1", "e2"], entryIds);
+            Assert.Equal(["e1", "e2"], EntryIds(byDateRange));
 
             var byPlainField = await client.GetFromJsonAsync<JsonElement>("/api/query/timeEntries?entryId=e1");
-            Assert.Equal(1, byPlainField.GetArrayLength());
-            Assert.Equal("e1", byPlainField[0].GetProperty("entry_id").GetString());
+            var e1 = Assert.Single(byPlainField.EnumerateArray());
+            Assert.Equal("e1", e1.GetProperty("entry_id").GetString());
+            // Identical on both databases: full double precision, and a bool as 1/0.
+            Assert.Equal(1234567.89, e1.GetProperty("hours").GetDouble());
+            Assert.Equal(1, e1.GetProperty("billable").GetInt32());
+
+            // Typed plain params: parsed to the column's type before binding.
+            Assert.Equal(["e1"], EntryIds(await client.GetFromJsonAsync<JsonElement>("/api/query/timeEntries?hours=1234567.89")));
+            Assert.Equal(["e1", "e3"], EntryIds(await client.GetFromJsonAsync<JsonElement>("/api/query/timeEntries?billable=true")));
+            Assert.Equal(["e2"], EntryIds(await client.GetFromJsonAsync<JsonElement>("/api/query/timeEntries?billable=0")));
+            using (var notANumber = await client.GetAsync("/api/query/timeEntries?hours=lots"))
+                Assert.Equal(HttpStatusCode.BadRequest, notANumber.StatusCode);
+            using (var notABool = await client.GetAsync("/api/query/timeEntries?billable=maybe"))
+                Assert.Equal(HttpStatusCode.BadRequest, notABool.StatusCode);
+
+            // Overlapping requests: each read gets a connection it can use.
+            var responses = await Task.WhenAll(Enumerable.Range(0, 20)
+                .Select(_ => client.GetAsync("/api/query/timeEntries?billable=true")));
+            Assert.All(responses, r => Assert.Equal(HttpStatusCode.OK, r.StatusCode));
+            foreach (var r in responses) r.Dispose();
         }
         finally
         {

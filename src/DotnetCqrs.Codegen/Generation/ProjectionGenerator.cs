@@ -71,14 +71,15 @@ internal static class ProjectionGenerator
         {
             var field = allColumns[i];
             var comma = i < columnCount - 1 ? "," : "";
+            // Type names valid on SQLite and Postgres alike -- see GenerationSupport.ColumnType.
             var sqlType = field.Derivation switch
             {
-                Domain.CountDerivation => "INTEGER",
-                Domain.SumDerivation => "REAL",
+                Domain.CountDerivation => "BIGINT",
+                Domain.SumDerivation => "DOUBLE PRECISION",
                 // a pii column holds the {"$pii":…} envelope's raw JSON whatever the
                 // field's own type -- see EmitSeedBlock.
                 _ when field.Pii => "TEXT",
-                _ => GenerationSupport.SqliteType(field.Type),
+                _ => GenerationSupport.ColumnType(field.Type),
             };
             // A count/sum column is arithmetic (col = col +/- n) from the moment its
             // row exists, and SQL arithmetic against NULL yields NULL forever --
@@ -382,7 +383,9 @@ internal static class ProjectionGenerator
     private static string JsonElementAccessor(string domainType, string variable) => domainType switch
     {
         "number" => $"{variable}.GetDouble()",
-        "bool" => $"{variable}.GetBoolean()",
+        // 0/1 into the INTEGER column (GenerationSupport.ColumnType): SQLite stored a bound
+        // bool as 1/0 anyway, but Postgres rejects a boolean parameter for an integer column.
+        "bool" => $"({variable}.GetBoolean() ? 1L : 0L)",
         "json" => $"{variable}.GetRawText()",
         _ => $"{variable}.GetString()", // text, date
     };
