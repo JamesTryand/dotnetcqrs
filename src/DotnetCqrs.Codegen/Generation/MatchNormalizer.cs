@@ -11,8 +11,8 @@ namespace DotnetCqrs.Codegen.Generation;
 /// term) and the scenario-verify harness, the same way <see cref="DateRangeResolver"/> is.
 ///
 /// <para><b>Pinned rules</b> (user, 2026-09-23; <c>platform/eventmodeling-codegen</c>
-/// findings, "D5 decisions"). The schema's design notes define these loosely, and a 3.1.1
-/// clarification is filed with <c>platform/eventmodeling-schema</c>:</para>
+/// findings, "D5 decisions"). Schema 3.1.1's design notes pin the same rules, with test
+/// vectors generated from this class:</para>
 /// <list type="bullet">
 /// <item><c>none</c>: unchanged.</item>
 /// <item><c>caseFold</c> (the default) and <c>email</c>: Unicode NFKC, then simple
