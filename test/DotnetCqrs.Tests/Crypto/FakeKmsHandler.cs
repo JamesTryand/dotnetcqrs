@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -22,9 +23,36 @@ internal sealed class FakeKmsHandler : HttpMessageHandler
     public int DecryptBatchCallCount { get; private set; }
     public List<int> DecryptBatchItemCounts { get; } = [];
 
+    // Index (HMAC) keys: name -> latest version. Key material is derived from name and
+    // version, so hashes are stable across instances (a restarted host sees the same ones).
+    private readonly Dictionary<string, int> _indexKeys = [];
+    public int HmacCallCount { get; private set; }
+    public List<int?> HmacKeyVersions { get; } = [];
+
+    /// <summary>Ops' <c>vault.sh rotate-index-key</c>.</summary>
+    public void RotateIndexKey(string name) => _indexKeys[name]++;
+
+    public int? IndexKeyVersion(string name) => _indexKeys.TryGetValue(name, out var v) ? v : null;
+
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         var segments = request.RequestUri!.AbsolutePath.Trim('/').Split('/');
+        if (segments[1] == "index-keys")
+        {
+            // ["v1", "index-keys", "{name}", "{op}"?]
+            var name = Uri.UnescapeDataString(segments[2]);
+            var indexBody = request.Content is null ? null : await request.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            return (request.Method.Method, segments.Length > 3 ? segments[3] : "") switch
+            {
+                ("PUT", "") => EnsureIndexKey(name),
+                ("GET", "") => _indexKeys.TryGetValue(name, out var latest)
+                    ? JsonResponse(HttpStatusCode.OK, $$"""{"latestVersion":{{latest}}}""")
+                    : new HttpResponseMessage(HttpStatusCode.NotFound),
+                ("POST", "hmac") => Hmac(name, indexBody!, batch: false),
+                ("POST", "hmac-batch") => Hmac(name, indexBody!, batch: true),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound),
+            };
+        }
         // ["v1", "subjects", "{id}", "{op}"]
         var subjectId = Uri.UnescapeDataString(segments[2]);
         var op = segments[3];
@@ -106,6 +134,29 @@ internal sealed class FakeKmsHandler : HttpMessageHandler
             ForceItemErrors.Contains(ct)
                 ? $$"""{"error":"forced test error"}"""
                 : $$"""{"plaintext":"{{Unseal(subjectId, ct)}}"}""");
+        return JsonResponse(HttpStatusCode.OK, $$"""{"results":[{{string.Join(",", results)}}]}""");
+    }
+
+    private HttpResponseMessage EnsureIndexKey(string name)
+    {
+        _indexKeys.TryAdd(name, 1);
+        return new HttpResponseMessage(HttpStatusCode.NoContent);
+    }
+
+    private HttpResponseMessage Hmac(string name, string body, bool batch)
+    {
+        HmacCallCount++;
+        if (!_indexKeys.TryGetValue(name, out var latest)) return new HttpResponseMessage(HttpStatusCode.NotFound);
+        var root = JsonDocument.Parse(body).RootElement;
+        int? requested = root.TryGetProperty("keyVersion", out var kv) ? kv.GetInt32() : null;
+        HmacKeyVersions.Add(requested);
+        var version = requested is null or 0 ? latest : requested.Value;
+        if (version < 1 || version > latest) return new HttpResponseMessage(HttpStatusCode.BadRequest);
+        var key = SHA256.HashData(Encoding.UTF8.GetBytes($"{name}:{version}"));
+        string Hash(string base64) => $"vault:v{version}:{Convert.ToBase64String(HMACSHA256.HashData(key, Convert.FromBase64String(base64)))}";
+        if (!batch)
+            return JsonResponse(HttpStatusCode.OK, $$"""{"hmac":"{{Hash(root.GetProperty("input").GetString()!)}}"}""");
+        var results = root.GetProperty("inputs").EnumerateArray().Select(e => $$"""{"hmac":"{{Hash(e.GetString()!)}}"}""");
         return JsonResponse(HttpStatusCode.OK, $$"""{"results":[{{string.Join(",", results)}}]}""");
     }
 

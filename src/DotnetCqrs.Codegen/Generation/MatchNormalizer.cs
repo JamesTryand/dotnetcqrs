@@ -24,6 +24,10 @@ namespace DotnetCqrs.Codegen.Generation;
 /// is inferred, so a local and an international form of one number do not match.</item>
 /// </list>
 ///
+/// <para><b>Hashed modes (D6, pinned):</b> a pii <c>exact</c> or <c>prefix</c> index stores the
+/// facade's HMAC of the UTF-8 bytes of the normalized value, with nothing added; <c>prefix</c>
+/// stores one per <see cref="Prefixes"/>, cut in code points.</para>
+///
 /// <para><b>Watch this before hashing (D6) or porting (pocketcqrs).</b> "Lowercase" here
 /// is .NET's simple, per-character mapping, not full Unicode case folding: Go's
 /// <c>cases.Fold</c> maps <c>ß</c> to <c>ss</c>, and this does not. A hashed index only
@@ -41,6 +45,35 @@ public static class MatchNormalizer
         "phone" => Phone(value),
         _ => throw new ArgumentOutOfRangeException(nameof(normalize), normalize, "unknown match normalizer"),
     };
+
+    /// <summary>The length of <paramref name="term"/> in Unicode code points, the unit
+    /// <c>minPrefixLength</c> counts in (pinned, D6): not UTF-16 units, so a character outside
+    /// the BMP counts once, as a Go rune does.</summary>
+    public static int CodePointLength(string term)
+    {
+        var n = 0;
+        foreach (var _ in term.EnumerateRunes()) n++;
+        return n;
+    }
+
+    /// <summary>The prefixes a hashed <c>prefix</c> index stores for one normalized value
+    /// (pinned, D6): every prefix from <paramref name="minLength"/> code points up to the
+    /// whole value, shortest first. Empty when the value is shorter than
+    /// <paramref name="minLength"/>. A query then hashes its whole term, so it matches a stored
+    /// value exactly when the term is one of that value's prefixes. Cuts fall between code
+    /// points, never inside a surrogate pair.</summary>
+    public static IReadOnlyList<string> Prefixes(string value, int minLength)
+    {
+        var prefixes = new List<string>();
+        var count = 0;
+        var end = 0;
+        foreach (var rune in value.EnumerateRunes())
+        {
+            end += rune.Utf16SequenceLength;
+            if (++count >= minLength) prefixes.Add(value[..end]);
+        }
+        return prefixes;
+    }
 
     /// <summary>Escapes a normalized term for a SQL <c>LIKE ... ESCAPE '\'</c> pattern, so
     /// <c>%</c>, <c>_</c> and <c>\</c> in a search term match themselves rather than

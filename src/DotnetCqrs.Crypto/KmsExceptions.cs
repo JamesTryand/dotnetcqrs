@@ -10,6 +10,15 @@ public sealed class KmsKeyNotFoundException(string subjectId)
     public string SubjectId { get; } = subjectId;
 }
 
+/// <summary>An index-key call named an HMAC key that doesn't exist: the caller skipped
+/// <see cref="IKmsClient.EnsureIndexKeyAsync"/>. A programming error, like
+/// <see cref="KmsKeyNotFoundException"/>.</summary>
+public sealed class KmsIndexKeyNotFoundException(string name)
+    : Exception($"No KMS index key named '{name}' exists — call EnsureIndexKeyAsync first.")
+{
+    public string Name { get; } = name;
+}
+
 /// <summary>The facade responded with something this client doesn't know how to
 /// interpret — an unexpected status code, a missing/malformed JSON body, or (for a
 /// batch call) a per-item error surfaced through <see cref="Pii{T}.RevealAsync"/>.</summary>

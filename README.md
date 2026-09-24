@@ -49,7 +49,8 @@ Go/PocketBase to C#/.NET rather than wrapping it.
   business rules left as stubs for you to fill in — or a whole runnable
   host with `--host`, and verify a document's own scenarios against the
   result. Fields the document marks `pii` are wired for encryption and
-  erasure end to end.
+  erasure end to end, including search over them (keyed-hash indexes for
+  exact and prefix matches).
 
 ## Docs
 

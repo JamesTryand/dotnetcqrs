@@ -5,7 +5,7 @@ using DotnetCqrs.Codegen.Mapping;
 namespace DotnetCqrs.Tests.Codegen;
 
 /// <summary>
-/// Milestone D5: schema 3.1.0 <c>match</c> filters. The normalizer's pinned rules (they
+/// Milestones D5/D6: schema 3.1.0 <c>match</c> filters. The normalizer's pinned rules (they
 /// are a contract: a hashed index only works if every implementation agrees byte for byte)
 /// and the mapper's reference checks, which JSON Schema can't express.
 /// </summary>
@@ -91,14 +91,50 @@ public class MatchFilterTests
         Assert.Contains(result.Report.Warnings, w => w.Contains("PLAINTEXT index") && w.Contains("excluded from backups"));
     }
 
-    [Theory]
-    [InlineData("exact")]
-    [InlineData("prefix")]
-    public void Hashed_modes_on_a_pii_field_are_refused_until_the_key_service_has_hmac(string mode)
+    [Fact]
+    public void Exact_on_a_pii_field_maps_to_a_keyed_hash_index()
     {
-        var errors = Errors(Doc($$"""{"param": "q", "field": "email", "kind": "match", "mode": "{{mode}}"}""", emailIsPii: true));
+        var result = Map(Doc("""{"param": "q", "field": "email", "kind": "match", "mode": "exact", "normalize": "email"}""", emailIsPii: true));
 
-        Assert.Contains(errors, e => e.Contains($"{mode} on pii field \"email\"") && e.Contains("HMAC"));
+        var domain = result.Domains.Single();
+        Assert.Equal("exact", Assert.Single(domain.ReadModels.Single().Filters).Mode);
+        Assert.DoesNotContain(result.Report.Warnings, w => w.Contains("PLAINTEXT"));
+        var files = CSharpGenerator.Generate(domain);
+        var index = Assert.Single(files, f => f.Name == "CustomersHashedIndex.cs");
+        Assert.Contains("customers__hash_email_email_exact", index.Source);
+        Assert.DoesNotContain(files, f => f.Name == "CustomersSearchIndex.cs"); // no plaintext index
+    }
+
+    [Fact]
+    public void Prefix_on_a_pii_field_must_declare_minPrefixLength() =>
+        Assert.Contains(Errors(Doc("""{"param": "q", "field": "email", "kind": "match", "mode": "prefix"}""", emailIsPii: true)),
+            e => e.Contains("prefix on pii field \"email\" must declare minPrefixLength"));
+
+    [Fact]
+    public void Prefix_on_a_pii_field_maps_but_warns_that_prefix_hashes_can_be_enumerated()
+    {
+        var result = Map(Doc("""{"param": "q", "field": "email", "kind": "match", "mode": "prefix", "minPrefixLength": 3}""", emailIsPii: true));
+
+        Assert.Contains(CSharpGenerator.Generate(result.Domains.Single()), f => f.Name == "CustomersHashedIndex.cs");
+        Assert.Contains(result.Report.Warnings, w => w.Contains("confirm a guessed") && w.Contains("hmac"));
+    }
+
+    [Fact]
+    public void Two_pii_prefix_filters_sharing_an_index_must_agree_on_minPrefixLength() =>
+        Assert.Contains(Errors(Doc("""
+            {"param": "q", "field": "email", "kind": "match", "mode": "prefix", "minPrefixLength": 3},
+            {"param": "r", "field": "email", "kind": "match", "mode": "prefix", "minPrefixLength": 4}
+            """, emailIsPii: true)),
+            e => e.Contains("declares a different minPrefixLength"));
+
+    [Fact]
+    public void Prefixes_are_cut_in_code_points_from_the_minimum_to_the_whole_value()
+    {
+        Assert.Equal(["ali", "alic", "alice"], MatchNormalizer.Prefixes("alice", 3));
+        Assert.Empty(MatchNormalizer.Prefixes("al", 3));
+        // U+1F600 is two UTF-16 units but one code point: never split, and counted once.
+        Assert.Equal(["a😀", "a😀b"], MatchNormalizer.Prefixes("a😀b", 2));
+        Assert.Equal(3, MatchNormalizer.CodePointLength("a😀b"));
     }
 
     [Fact]

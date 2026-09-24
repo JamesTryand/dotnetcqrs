@@ -34,6 +34,13 @@ namespace DotnetCqrs.Codegen.Generation;
 /// built-in data-subject aggregate, so erasure is <c>POST
 /// /api/cqrs/dataSubject/{id}/EraseSubject</c>, plus <c>SubjectKeyDestroyer</c> and the
 /// per-process <c>PiiCacheEvictor</c>.</para>
+///
+/// <para><b>Hashed search (D6):</b> when a read model has pii <c>exact</c>/<c>prefix</c> match
+/// filters, the host ensures the application's HMAC index key at startup (named by
+/// <c>KMS_INDEX_KEY</c>, default the project name), reads its latest version, registers one
+/// <c>HashedIndexKey</c> in DI for the routes, and registers each <c>{Collection}HashedIndex</c>
+/// through <c>RegisterHashedSearchIndexAsync</c>, which rebuilds after a key rotation.
+/// Startup therefore needs the facade reachable.</para>
 /// </summary>
 public static class HostProjectGenerator
 {
@@ -54,7 +61,7 @@ public static class HostProjectGenerator
         files.Add(CommandAuthorizationGenerator.Generate(mapped.Domains));
 
         files.Add(GenerateCsproj(projectName, dotnetCqrsProjectPath));
-        files.Add(GenerateProgram(mapped, dotnetCqrsProjectPath, aggregateOverrides));
+        files.Add(GenerateProgram(mapped, projectName, dotnetCqrsProjectPath, aggregateOverrides));
         return files;
     }
 
@@ -96,7 +103,7 @@ public static class HostProjectGenerator
     }
 
     private static GeneratedFile GenerateProgram(
-        MappingResult mapped, string dotnetCqrsProjectPath, IReadOnlyDictionary<string, string> aggregateOverrides)
+        MappingResult mapped, string projectName, string dotnetCqrsProjectPath, IReadOnlyDictionary<string, string> aggregateOverrides)
     {
         // A domain whose events carry field.pii gets a generated PiiProtector; only those
         // aggregates register one. Any PII at all switches on the key-service wiring.
@@ -240,7 +247,10 @@ public static class HostProjectGenerator
         var searchIndexed = mapped.Domains
             .SelectMany(d => d.ReadModels.Where(rm => GenerationSupport.IndexedMatchFilters(rm).Any()).Select(rm => (Domain: d, ReadModel: rm)))
             .ToList();
-        if (searchIndexed.Count > 0)
+        var hashIndexed = mapped.Domains
+            .SelectMany(d => d.ReadModels.Where(rm => GenerationSupport.HashedMatchFilters(rm).Any()))
+            .ToList();
+        if (searchIndexed.Count > 0 || hashIndexed.Count > 0)
         {
             // pii contains filters keep a normalized PLAINTEXT index. It lives in its own file
             // so it can be left out of backups whole (rebuilt from the log), with its
@@ -259,6 +269,31 @@ public static class HostProjectGenerator
                 b.AppendLine($"var {varName} = new {typeName}(searchStore, kms, piiCache);");
                 b.AppendLine($"await {varName}.InitAsync();");
                 b.AppendLine($"engine.Register({varName}, searchStore);");
+            }
+        }
+        if (hashIndexed.Count > 0)
+        {
+            // pii exact/prefix filters keep keyed hashes (D6), in the same search.db. The
+            // application has one HMAC index key at the facade, named by KMS_INDEX_KEY or, by
+            // default, this project's name. Its version is read once, here: if ops has rotated
+            // it, RegisterHashedSearchIndexAsync rebuilds each index at the new version while
+            // searches stay on the old one, then switches over.
+            b.AppendLine("var indexKeyName = Environment.GetEnvironmentVariable(\"KMS_INDEX_KEY\") is { Length: > 0 } configuredIndexKey");
+            b.AppendLine($"    ? configuredIndexKey : \"{projectName}\";");
+            b.AppendLine("if (!System.Text.RegularExpressions.Regex.IsMatch(indexKeyName, \"^[A-Za-z0-9][A-Za-z0-9._-]*$\"))");
+            b.AppendLine("{");
+            b.AppendLine("    Console.Error.WriteLine($\"KMS_INDEX_KEY '{indexKeyName}' is not a valid index key name (letters, digits, '.', '_', '-').\");");
+            b.AppendLine("    return 1;");
+            b.AppendLine("}");
+            b.AppendLine("await kms.EnsureIndexKeyAsync(indexKeyName);");
+            b.AppendLine("var indexKeyVersion = await kms.GetIndexKeyVersionAsync(indexKeyName);");
+            b.AppendLine("var hashedIndexKey = new HashedIndexKey(indexKeyName);");
+            b.AppendLine("builder.Services.AddSingleton(hashedIndexKey);");
+            foreach (var readModel in hashIndexed)
+            {
+                var typeName = GenerationSupport.ExportName(readModel.Collection) + "HashedIndex";
+                b.AppendLine($"await engine.RegisterHashedSearchIndexAsync(searchStore, hashedIndexKey, indexKeyVersion,");
+                b.AppendLine($"    version => new {typeName}(searchStore, kms, indexKeyName, version, piiCache), Console.WriteLine);");
             }
         }
         if (hasPii)

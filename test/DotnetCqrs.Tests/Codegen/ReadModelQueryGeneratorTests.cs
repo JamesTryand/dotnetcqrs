@@ -636,8 +636,9 @@ public class ReadModelQueryGeneratorTests : IDisposable
         }
     }
 
-    // Milestone D5: schema 3.1.0 match filters. A plain `name` searched three ways (shadow
-    // columns) and a pii `email` searched by contains (the separate search store).
+    // Milestones D5/D6: schema 3.1.0 match filters. A plain `name` searched three ways (shadow
+    // columns) and a pii `email` searched by contains (the plaintext index) and by exact and
+    // prefix (the keyed-hash index), all in the separate search store.
     private const string MatchJson = """
         {
           "eventModelingSchemaVersion": "3.1.0", "id": "match-route-test", "name": "Match Route Test",
@@ -664,7 +665,9 @@ public class ReadModelQueryGeneratorTests : IDisposable
                 {"param": "nameSearch", "field": "name", "kind": "match", "mode": "contains", "normalize": "personName"},
                 {"param": "namePrefix", "field": "name", "kind": "match", "mode": "prefix", "minPrefixLength": 2},
                 {"param": "nameExact", "field": "name", "kind": "match", "mode": "exact"},
-                {"param": "emailSearch", "field": "email", "kind": "match", "mode": "contains", "normalize": "email"}
+                {"param": "emailSearch", "field": "email", "kind": "match", "mode": "contains", "normalize": "email"},
+                {"param": "emailExact", "field": "email", "kind": "match", "mode": "exact", "normalize": "email"},
+                {"param": "emailPrefix", "field": "email", "kind": "match", "mode": "prefix", "normalize": "email", "minPrefixLength": 3}
               ]
             }
           },
@@ -697,6 +700,15 @@ public class ReadModelQueryGeneratorTests : IDisposable
         await SqliteSearchIndexStore.AttachAsync(store.Connection, searchPath);
         var searchIndex = new CustomersSearchIndex(searchStore, kms);
         await searchIndex.InitAsync();
+        // The hashed index goes through the real registration (it records the key version the
+        // route pins its hmac call to), fed from an event store by the engine.
+        var events = await SqliteEventStore.OpenAsync(":memory:");
+        await kms.EnsureIndexKeyAsync("app");
+        var indexKey = new HashedIndexKey("app");
+        CustomersHashedIndex? hashedIndex = null;
+        var engine = new DotnetCqrs.Consumers.ConsumerEngine(events, events);
+        await engine.RegisterHashedSearchIndexAsync(searchStore, indexKey, await kms.GetIndexKeyVersionAsync("app"),
+            version => hashedIndex = new CustomersHashedIndex(searchStore, kms, "app", version));
 
         long position = 0;
         foreach (var (id, name, email) in new[] { ("c1", "José Núñez", "Alice@Example.com"), ("c2", "Bob 50% Off", "bob@example.com"), ("c3", "Joseph", "carol@example.com") })
@@ -706,11 +718,14 @@ public class ReadModelQueryGeneratorTests : IDisposable
                 JsonSerializer.Serialize(new { customerId = id, name, email = sealedEmail }), "{}", "1970-01-01T00:00:00.000Z");
             await projection.ApplyAsync(ev, CancellationToken.None);
             await searchIndex.ApplyAsync(ev, CancellationToken.None);
+            await events.AppendAsync("customer", id, 0, [new NewEvent("CustomerRegistered", ev.Data)]);
         }
+        await engine.RunOnceAsync();
 
         var builder = WebApplication.CreateBuilder(args);
         builder.Services.AddSingleton<IReadModelStore>(store);
         builder.Services.AddSingleton<IKmsClient>(kms);
+        builder.Services.AddSingleton(indexKey);
         var app = builder.Build();
         app.MapCustomersRoute();
         app.MapPost("/test/erase/{id}", async (string id) =>
@@ -718,6 +733,7 @@ public class ReadModelQueryGeneratorTests : IDisposable
             var erased = new Event(99, "erase", DataSubject.Aggregate, id, 1, DataSubject.SubjectErasedEvent, "{}", "{}", "");
             await new SubjectKeyDestroyer(kms).ApplyAsync(erased, CancellationToken.None);
             await searchIndex.ApplyAsync(erased, CancellationToken.None);
+            await hashedIndex!.ApplyAsync(erased, CancellationToken.None);
         });
         await app.RunAsync();
         """;
@@ -730,6 +746,7 @@ public class ReadModelQueryGeneratorTests : IDisposable
         var readModel = Assert.Single(domain.ReadModels);
         var files = new List<GeneratedFile>(CSharpGenerator.Generate(domain)) { ReadModelQueryGenerator.Generate(domain, readModel) };
         Assert.Contains(files, f => f.Name == "CustomersSearchIndex.cs");
+        Assert.Contains(files, f => f.Name == "CustomersHashedIndex.cs");
         var port = await StartHostAndBuildAsync([.. files], MatchProgramCs, _scratchDir);
 
         var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
@@ -771,10 +788,24 @@ public class ReadModelQueryGeneratorTests : IDisposable
             Assert.Equal("c1", Assert.Single(hit.EnumerateArray()).GetProperty("customer_id").GetString());
             Assert.Equal("Alice@Example.com", hit[0].GetProperty("email").GetString());
 
-            // Erasure deletes the subject's index entries: "no match" is now the right answer.
+            // pii exact/prefix, via the keyed-hash index: the term is normalized, then hashed.
+            Assert.Equal(["c1"], await IdsAsync("emailExact=%20ALICE%40example.COM"));
+            Assert.Empty(await IdsAsync("emailExact=alice"));                     // exact is not prefix
+            Assert.Equal(["c1"], await IdsAsync("emailPrefix=ALI"));
+            Assert.Equal(["c1"], await IdsAsync("emailPrefix=alice%40example.com")); // the whole value is a prefix too
+            Assert.Empty(await IdsAsync("emailPrefix=alix"));
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/query/customers?emailPrefix=al")).StatusCode);
+            var hashed = await client.GetFromJsonAsync<JsonElement>("/api/query/customers?emailPrefix=bob");
+            Assert.Equal("bob@example.com", Assert.Single(hashed.EnumerateArray()).GetProperty("email").GetString());
+
+            // Erasure deletes the subject's index entries, plaintext and hashed alike: "no match"
+            // is now the right answer, and a guessed value can no longer be confirmed.
             (await client.PostAsync("/test/erase/c1", null)).EnsureSuccessStatusCode();
             Assert.Empty(await IdsAsync("emailSearch=alice"));
             Assert.Equal(["c2"], await IdsAsync("emailSearch=bob"));
+            Assert.Empty(await IdsAsync("emailExact=alice%40example.com"));
+            Assert.Empty(await IdsAsync("emailPrefix=ali"));
+            Assert.Equal(["c2"], await IdsAsync("emailPrefix=bob"));
         }
         finally
         {

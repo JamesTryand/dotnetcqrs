@@ -19,6 +19,7 @@ public sealed class KmsClient(HttpClient http) : IKmsClient
     private static string DecryptPath(string subjectId) => $"v1/subjects/{Uri.EscapeDataString(subjectId)}/decrypt";
     private static string EncryptBatchPath(string subjectId) => $"v1/subjects/{Uri.EscapeDataString(subjectId)}/encrypt-batch";
     private static string DecryptBatchPath(string subjectId) => $"v1/subjects/{Uri.EscapeDataString(subjectId)}/decrypt-batch";
+    private static string IndexKeyPath(string name) => $"v1/index-keys/{Uri.EscapeDataString(name)}";
 
     public async Task EnsureKeyAsync(string subjectId, CancellationToken ct = default)
     {
@@ -84,6 +85,47 @@ public sealed class KmsClient(HttpClient http) : IKmsClient
         resp.EnsureSuccessStatusCode();
     }
 
+    public async Task EnsureIndexKeyAsync(string name, CancellationToken ct = default)
+    {
+        using var resp = await http.PutAsync(IndexKeyPath(name), content: null, ct).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+    }
+
+    public async Task<int> GetIndexKeyVersionAsync(string name, CancellationToken ct = default)
+    {
+        using var resp = await http.GetAsync(IndexKeyPath(name), ct).ConfigureAwait(false);
+        if (resp.StatusCode == HttpStatusCode.NotFound) throw new KmsIndexKeyNotFoundException(name);
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadFromJsonAsync<IndexKeyResponse>(cancellationToken: ct).ConfigureAwait(false)
+            ?? throw new KmsProtocolException("index-key response body was empty");
+        return body.LatestVersion;
+    }
+
+    public async Task<string> HmacAsync(string name, byte[] input, int? keyVersion = null, CancellationToken ct = default)
+    {
+        using var resp = await http.PostAsJsonAsync($"{IndexKeyPath(name)}/hmac", new HmacRequest(Convert.ToBase64String(input), keyVersion), ct)
+            .ConfigureAwait(false);
+        if (resp.StatusCode == HttpStatusCode.NotFound) throw new KmsIndexKeyNotFoundException(name);
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadFromJsonAsync<HmacResponse>(cancellationToken: ct).ConfigureAwait(false)
+            ?? throw new KmsProtocolException("hmac response body was empty");
+        return body.Hmac;
+    }
+
+    public async Task<IReadOnlyList<KmsBatchHmacItem>> HmacBatchAsync(string name, IReadOnlyList<byte[]> inputs, int? keyVersion = null, CancellationToken ct = default)
+    {
+        if (inputs.Count is 0 or > MaxBatchItems)
+            throw new ArgumentOutOfRangeException(nameof(inputs), "must contain 1-1000 items, matching the facade's own limit");
+
+        var request = new HmacBatchRequest([.. inputs.Select(Convert.ToBase64String)], keyVersion);
+        using var resp = await http.PostAsJsonAsync($"{IndexKeyPath(name)}/hmac-batch", request, ct).ConfigureAwait(false);
+        if (resp.StatusCode == HttpStatusCode.NotFound) throw new KmsIndexKeyNotFoundException(name);
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadFromJsonAsync<HmacBatchResponse>(cancellationToken: ct).ConfigureAwait(false)
+            ?? throw new KmsProtocolException("hmac-batch response body was empty");
+        return [.. body.Results.Select(r => new KmsBatchHmacItem(r.Hmac, r.Error))];
+    }
+
     // Wire shapes match docs/facade-api-contract.md exactly (journal.bureau.tryand.uk/kms) —
     // kept private/internal to this file since nothing outside the HTTP transport needs them.
     private sealed record EncryptRequest([property: JsonPropertyName("plaintext")] string Plaintext);
@@ -100,4 +142,17 @@ public sealed class KmsClient(HttpClient http) : IKmsClient
         [property: JsonPropertyName("plaintext")] string? Plaintext,
         [property: JsonPropertyName("error")] string? Error);
     private sealed record DecryptBatchResponse([property: JsonPropertyName("results")] IReadOnlyList<DecryptBatchResultItem> Results);
+    private sealed record IndexKeyResponse([property: JsonPropertyName("latestVersion")] int LatestVersion);
+    // keyVersion omitted (not null) means the latest, per the contract.
+    private sealed record HmacRequest(
+        [property: JsonPropertyName("input")] string Input,
+        [property: JsonPropertyName("keyVersion"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? KeyVersion);
+    private sealed record HmacResponse([property: JsonPropertyName("hmac")] string Hmac);
+    private sealed record HmacBatchRequest(
+        [property: JsonPropertyName("inputs")] IReadOnlyList<string> Inputs,
+        [property: JsonPropertyName("keyVersion"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? KeyVersion);
+    private sealed record HmacBatchResultItem(
+        [property: JsonPropertyName("hmac")] string? Hmac,
+        [property: JsonPropertyName("error")] string? Error);
+    private sealed record HmacBatchResponse([property: JsonPropertyName("results")] IReadOnlyList<HmacBatchResultItem> Results);
 }

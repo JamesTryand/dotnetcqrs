@@ -60,6 +60,8 @@ public sealed class SqliteSearchIndexStore : ICheckpointStore, IAsyncDisposable
             -- erasure deletes plaintext from this file.
             PRAGMA secure_delete = ON;
             CREATE TABLE IF NOT EXISTS search_checkpoints (name TEXT PRIMARY KEY, position INTEGER NOT NULL);
+            -- The key version each hashed index searches with (see HashedSearchIndexRegistration).
+            CREATE TABLE IF NOT EXISTS search_index_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL);
             """;
         await command.ExecuteNonQueryAsync(ct);
 
@@ -96,6 +98,37 @@ public sealed class SqliteSearchIndexStore : ICheckpointStore, IAsyncDisposable
             """;
         command.Parameters.AddWithValue("@name", name);
         command.Parameters.AddWithValue("@position", position);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>Forgets a consumer's position, so it next starts from the beginning of the log.</summary>
+    public async Task DeleteCheckpointAsync(string name, CancellationToken ct = default)
+    {
+        await using var command = _connection.CreateCommand();
+        command.CommandText = "DELETE FROM search_checkpoints WHERE name = @name";
+        command.Parameters.AddWithValue("@name", name);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>The key version the hashed index <paramref name="name"/> searches with, or
+    /// null if it has never been built in this file.</summary>
+    public async Task<int?> IndexVersionAsync(string name, CancellationToken ct = default)
+    {
+        await using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT version FROM search_index_versions WHERE name = @name";
+        command.Parameters.AddWithValue("@name", name);
+        return await command.ExecuteScalarAsync(ct) is long version ? (int)version : null;
+    }
+
+    public async Task SetIndexVersionAsync(string name, int version, CancellationToken ct = default)
+    {
+        await using var command = _connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO search_index_versions (name, version) VALUES (@name, @version)
+            ON CONFLICT (name) DO UPDATE SET version = excluded.version
+            """;
+        command.Parameters.AddWithValue("@name", name);
+        command.Parameters.AddWithValue("@version", version);
         await command.ExecuteNonQueryAsync(ct);
     }
 

@@ -287,7 +287,8 @@ A read model declares which fields can be searched, and how, in its
 ```json
 "filters": [
   {"param": "nameSearch", "field": "name", "kind": "match", "mode": "contains", "normalize": "personName"},
-  {"param": "emailSearch", "field": "email", "kind": "match", "mode": "contains", "normalize": "email"}
+  {"param": "emailSearch", "field": "email", "kind": "match", "mode": "contains", "normalize": "email"},
+  {"param": "emailExact", "field": "email", "kind": "match", "mode": "exact", "normalize": "email"}
 ]
 ```
 
@@ -304,15 +305,33 @@ How the generator serves it depends on the field:
 - **An ordinary field** gets a normalized copy (a *shadow column*) kept
   beside it by the projection, searched with plain SQL. It never appears in
   query responses.
-- **A personal field** (`pii`) only supports `contains` for now. Its values
-  are ciphertext, so the generator builds a separate search index of
-  normalized plaintext in its own file, `search.db`. That file is deleted
-  from when a person is erased, must be left out of backups, and is rebuilt
-  from the log whenever it's missing (it keeps its own position inside
-  itself, so it can never be silently half-built). The mapping report flags
-  every such index. `exact` and `prefix` on a personal field are refused at
-  generation time: they will use keyed hashes from the key service, which
-  isn't available yet.
+- **A personal field** (`pii`) holds ciphertext, so it is searched through a
+  separate index in its own file, `search.db`. That file is deleted from
+  when a person is erased, must be left out of backups, and is rebuilt from
+  the log whenever it's missing (it keeps its own position inside itself,
+  so it can never be silently half-built). What the index holds depends on
+  the mode:
+  - `contains` keeps normalized **plaintext**, and the mapping report flags
+    every such index.
+  - `exact` and `prefix` keep **keyed hashes** (HMACs) computed by the key
+    service, never the value itself. A search hashes its term the same way,
+    one call per search. `prefix` stores a hash of every prefix from
+    `minPrefixLength` characters up, so it must declare `minPrefixLength`.
+    The report warns about it: anyone who can call the key service's
+    `hmac` endpoint can confirm a guessed prefix and extend it one character
+    at a time, so a prefix index is only as private as access to that
+    endpoint.
+
+  Hashes survive crypto-shredding, which is why the host deletes a person's
+  hashed rows on erasure as well as their plaintext ones.
+
+The host uses one hashing key per application, named by `KMS_INDEX_KEY`
+(default: the project name) and created at startup. If operations rotates
+that key, the next start notices, rebuilds the hashed indexes with the new
+version in the background while searches keep using the old one, and
+switches over when the rebuild has caught up. A host that isn't restarted
+keeps working on the version it has. If the key service is down, a hashed
+search answers 503.
 
 A search returns the matching rows with their personal values revealed as
 usual. Searches and scenario checks run the same SQL.

@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
 using DotnetCqrs.EventStore;
+using DotnetCqrs.ReadModels;
 using DotnetCqrs.Tests.Crypto;
 
 namespace DotnetCqrs.Tests.Codegen;
@@ -230,7 +231,10 @@ public class HostGenerationTests : IDisposable
                 {"name": "customerId", "type": "string", "idAttribute": true},
                 {"name": "email", "type": "string", "pii": true, "piiSubject": "customerId"}
               ],
-              "filters": [{"param": "emailSearch", "field": "email", "kind": "match", "mode": "contains", "normalize": "email"}]
+              "filters": [
+                {"param": "emailSearch", "field": "email", "kind": "match", "mode": "contains", "normalize": "email"},
+                {"param": "emailExact", "field": "email", "kind": "match", "mode": "exact", "normalize": "email"}
+              ]
             }
           },
           "screens": {"scr1": {"name": "Register Screen"}},
@@ -275,11 +279,13 @@ public class HostGenerationTests : IDisposable
         foreach (var a in new[] { "run", "--project", _scratchDir, "--no-build" }) psi.ArgumentList.Add(a);
         psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
         psi.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
+        psi.Environment["KMS_INDEX_KEY"] = "pii-host-test";
 
-        using var process = Process.Start(psi)!;
+        // Reassigned by the restart below; local functions capture the variables.
+        var process = Process.Start(psi)!;
+        var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
         try
         {
-            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
 
             // Write: the command carries plaintext; the protector encrypts before append.
             HttpResponseMessage? registered = null;
@@ -332,7 +338,56 @@ public class HostGenerationTests : IDisposable
                 if (found == 0) await Task.Delay(500);
             }
             Assert.Equal(1, found);
-            Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(eventsDbPath)!, "search.db")), "search.db should sit beside events.db");
+            var searchDbPath = Path.Combine(Path.GetDirectoryName(eventsDbPath)!, "search.db");
+            Assert.True(File.Exists(searchDbPath), "search.db should sit beside events.db");
+
+            // Milestone D6: the pii exact filter is a keyed-hash index in the same search.db, under
+            // the index key the host ensured at startup.
+            Assert.Equal(1, facade.Handler.IndexKeyVersion("pii-host-test"));
+            async Task<int> ExactHitsAsync(string term) =>
+                (await client.GetFromJsonAsync<JsonElement>($"/api/query/customers?emailExact={Uri.EscapeDataString(term)}")).GetArrayLength();
+            async Task<int> PollExactAsync(string term, int want)
+            {
+                var hits = -1;
+                for (var attempt = 0; attempt < 40 && hits != want; attempt++)
+                {
+                    hits = await ExactHitsAsync(term);
+                    if (hits != want) await Task.Delay(500);
+                }
+                return hits;
+            }
+            Assert.Equal(1, await PollExactAsync(" ALICE@example.com", 1));
+            Assert.Equal(0, await ExactHitsAsync("alice"));
+
+            // Rotation: ops rotates the index key, and the host is restarted on the same data.
+            // Startup sees version 2, rebuilds while searches stay on version 1, then switches.
+            process.Kill(entireProcessTree: true);
+            process.WaitForExit(5000);
+            process.Dispose();
+            facade.Handler.RotateIndexKey("pii-host-test");
+            port = FreeTcpPort();
+            psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+            process = Process.Start(psi)!;
+            client.Dispose();
+            client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            for (var attempt = 0; attempt < 60; attempt++)
+            {
+                await Task.Delay(500);
+                try { (await client.GetAsync("/api/query/customers")).EnsureSuccessStatusCode(); break; }
+                catch (HttpRequestException) { /* not listening yet -- retry */ }
+            }
+            Assert.False(process.HasExited, "restarted host exited early");
+            int? indexVersion = null;
+            for (var attempt = 0; attempt < 40 && indexVersion != 2; attempt++)
+            {
+                await using (var search = await SqliteSearchIndexStore.OpenAsync(searchDbPath))
+                    indexVersion = await search.IndexVersionAsync("customers:hashed");
+                if (indexVersion != 2) await Task.Delay(500);
+            }
+            Assert.Equal(2, indexVersion);
+            Assert.Equal(1, await ExactHitsAsync("alice@example.com"));
+            Assert.Equal(2, facade.Handler.HmacKeyVersions[^1]); // the search now hashes at version 2
+            Assert.DoesNotContain(null, facade.Handler.HmacKeyVersions); // every call pinned a version
 
             // Erase through the gateway: the built-in data-subject aggregate is registered.
             using var erased = await client.PostAsJsonAsync("/api/cqrs/dataSubject/c1/EraseSubject", new { });
@@ -351,6 +406,7 @@ public class HostGenerationTests : IDisposable
                 if (remaining > 0) await Task.Delay(500);
             }
             Assert.Equal(0, remaining);
+            Assert.Equal(0, await PollExactAsync("alice@example.com", 0)); // hashed rows deleted too
 
             // A returning person is a new subject: the guard refuses the old id.
             using var again = await client.PostAsJsonAsync("/api/cqrs/customer/c1b/RegisterCustomer",
@@ -359,11 +415,13 @@ public class HostGenerationTests : IDisposable
         }
         finally
         {
+            client.Dispose();
             if (!process.HasExited)
             {
                 process.Kill(entireProcessTree: true);
                 process.WaitForExit(5000);
             }
+            process.Dispose();
         }
     }
 }

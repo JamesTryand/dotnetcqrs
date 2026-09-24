@@ -21,6 +21,9 @@ using DotnetCqrs.EventStore;
 using DotnetCqrs.Projections;
 using DotnetCqrs.ReadModels;
 
+// The InMemoryKmsClient index key a scenario's hashed search indexes and queries share.
+const string HarnessIndexKey = "harness";
+
 var input = JsonSerializer.Deserialize<HarnessInput>(await File.ReadAllTextAsync(args[0]))!;
 var results = new List<ScenarioResultDto>();
 
@@ -99,11 +102,26 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
         DotnetCqrs.Consumers.IConsumer? searchIndex = null;
         DotnetCqrs.ReadModels.SqliteSearchIndexStore? searchStore = null;
         string? searchPath = null;
-        if (scenario.SearchIndexTypeName is not null)
+        // A read model with pii exact/prefix filters also has a keyed-hash index in the same
+        // store, hashed through the InMemoryKmsClient's own index key ("harness", version 1),
+        // and the query hashes its term with the same key (SelectRowsAsync).
+        DotnetCqrs.ReadModels.IHashedSearchIndex? hashedIndex = null;
+        if (scenario.SearchIndexTypeName is not null || scenario.HashedIndexTypeName is not null)
         {
             searchPath = Path.Combine(Path.GetTempPath(), $"dotnetcqrs-verify-search-{Guid.NewGuid():N}.db");
             searchStore = await DotnetCqrs.ReadModels.SqliteSearchIndexStore.OpenAsync(searchPath);
             await DotnetCqrs.ReadModels.SqliteSearchIndexStore.AttachAsync(readModel.Connection, searchPath);
+        }
+        if (scenario.HashedIndexTypeName is not null)
+        {
+            await kms.EnsureIndexKeyAsync(HarnessIndexKey);
+            var hashedType = Type.GetType(scenario.HashedIndexTypeName)
+                ?? throw new InvalidOperationException($"hashed index type not found: {scenario.HashedIndexTypeName}");
+            hashedIndex = (DotnetCqrs.ReadModels.IHashedSearchIndex)Activator.CreateInstance(hashedType, searchStore, kms, HarnessIndexKey, 1, null)!;
+            await hashedIndex.InitAsync();
+        }
+        if (scenario.SearchIndexTypeName is not null)
+        {
             var indexType = Type.GetType(scenario.SearchIndexTypeName)
                 ?? throw new InvalidOperationException($"search index type not found: {scenario.SearchIndexTypeName}");
             searchIndex = (DotnetCqrs.Consumers.IConsumer)Activator.CreateInstance(indexType, searchStore, kms, null)!;
@@ -134,6 +152,7 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
             var mainEv = new Event(position, $"scenario-{position}", scenario.Aggregate, g.MainKey, position, g.Type, data, "{}", "1970-01-01T00:00:00.000Z");
             await projection.ApplyAsync(mainEv, CancellationToken.None);
             if (searchIndex is not null) await searchIndex.ApplyAsync(mainEv, CancellationToken.None);
+            if (hashedIndex is not null) await hashedIndex.ApplyAsync(mainEv, CancellationToken.None);
             foreach (var (viaTypeName, viaProjection) in viaProjections)
             {
                 var viaKey = g.ViaKeys.GetValueOrDefault(viaTypeName, g.MainKey);
@@ -142,7 +161,7 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
             }
         }
 
-        var rows = await SelectRowsAsync(readModel.Connection, scenario.TableName, scenario.QueryParams, scenario.AsOf, scenario.Scopes, scenario.Filters);
+        var rows = await SelectRowsAsync(readModel.Connection, scenario.TableName, scenario.QueryParams, scenario.AsOf, scenario.Scopes, scenario.Filters, kms);
         await DotnetCqrs.Crypto.PiiColumnRevealer.RevealAsync(rows, scenario.PiiColumns ?? [], kms);
         if (searchStore is not null)
         {
@@ -250,7 +269,8 @@ static async Task CallInitAsync(object projection)
 }
 
 static async Task<List<Dictionary<string, object?>>> SelectRowsAsync(
-    DbConnection db, string table, string? queryParamsJson, string? asOf, List<ViewScopeInput> scopes, List<ViewFilterInput> filters)
+    DbConnection db, string table, string? queryParamsJson, string? asOf, List<ViewScopeInput> scopes, List<ViewFilterInput> filters,
+    DotnetCqrs.Crypto.IKmsClient kms)
 {
     // schema 2.6.0: a scenario-supplied asOf pins what "today" means for a dateRange
     // preset below, instead of always reading the live clock -- see ReadModelQuery's
@@ -286,11 +306,13 @@ static async Task<List<Dictionary<string, object?>>> SelectRowsAsync(
             {
                 var term = MatchNormalizer.Normalize(filter.Normalize!, value.ValueKind == JsonValueKind.String ? value.GetString()! : value.GetRawText());
                 if (term.Length == 0) throw new InvalidOperationException($"match param \"{key}\" has an empty search term");
-                if (filter.MinPrefixLength is { } min && term.Length < min)
+                if (filter.MinPrefixLength is { } min && MatchNormalizer.CodePointLength(term) < min)
                     throw new InvalidOperationException($"match param \"{key}\" needs at least {min} characters");
                 var matchParam = $"@p{i++}";
                 clauses.Add(filter.MatchClause!.Replace("{0}", matchParam));
-                parameters[matchParam] = MatchNormalizer.Pattern(filter.Mode!, term);
+                parameters[matchParam] = filter.Hashed
+                    ? await kms.HmacAsync(HarnessIndexKey, System.Text.Encoding.UTF8.GetBytes(term), 1)
+                    : MatchNormalizer.Pattern(filter.Mode!, term);
                 continue;
             }
             if (filter is not null && value.ValueKind == JsonValueKind.Object)
@@ -554,8 +576,9 @@ record CommandScenarioInput(string SliceId, string ScenarioId, string Name, stri
     string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes);
 record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,
     string TableName, List<ViewGivenEventInput> Given, string? QueryParams, string? AsOf, string ExpectedResult,
-    List<ViewScopeInput> Scopes, List<ViewFilterInput> Filters, List<string>? PiiColumns = null, string? SearchIndexTypeName = null);
+    List<ViewScopeInput> Scopes, List<ViewFilterInput> Filters, List<string>? PiiColumns = null, string? SearchIndexTypeName = null,
+    string? HashedIndexTypeName = null);
 record ViewScopeInput(string Param, string ViaProjectionTypeName, string ViaTableName, string MatchParamToColumn, string SelectColumn, string FilterLocalColumn);
 record ViewFilterInput(string Param, string Field, string Kind,
-    string? Mode = null, string? Normalize = null, int? MinPrefixLength = null, string? MatchClause = null);
+    string? Mode = null, string? Normalize = null, int? MinPrefixLength = null, string? MatchClause = null, bool Hashed = false);
 record ScenarioResultDto(string SliceId, string ScenarioId, string Name, string Kind, bool Passed, bool Skipped, string Detail);

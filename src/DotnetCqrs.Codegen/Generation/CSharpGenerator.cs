@@ -23,6 +23,8 @@ public static class CSharpGenerator
             files.Add(ProjectionGenerator.Generate(domain, readModel));
             if (SearchIndexGenerator.Generate(domain, readModel) is { } searchIndex)
                 files.Add(searchIndex);
+            if (HashedIndexGenerator.Generate(domain, readModel) is { } hashedIndex)
+                files.Add(hashedIndex);
         }
         foreach (var reactor in domain.Reactors)
             files.Add(ReactorGenerator.Generate(domain, reactor));

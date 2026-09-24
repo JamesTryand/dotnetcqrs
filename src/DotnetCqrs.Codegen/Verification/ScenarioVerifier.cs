@@ -186,11 +186,14 @@ public static class ScenarioVerifier
         var filters = info.Filters
             .Select(f => f.IsMatch
                 ? new ViewFilterInput(f.Param, ToSnakeCase(f.Field), f.Kind, f.Mode, f.Normalize, f.MinPrefixLength,
-                    GenerationSupport.MatchClause(readModelDomain, f, "{0}"))
+                    GenerationSupport.MatchClause(readModelDomain, f, "{0}"), GenerationSupport.IsHashedMatch(readModelDomain, f))
                 : new ViewFilterInput(f.Param, ToSnakeCase(f.Field), f.Kind))
             .ToList();
         var searchIndexTypeName = GenerationSupport.IndexedMatchFilters(readModelDomain).Any()
             ? $"Generated.{aggregatePascal}.{GenerationSupport.ExportName(info.Collection)}SearchIndex"
+            : null;
+        var hashedIndexTypeName = GenerationSupport.HashedMatchFilters(readModelDomain).Any()
+            ? $"Generated.{aggregatePascal}.{GenerationSupport.ExportName(info.Collection)}HashedIndex"
             : null;
 
         viewScenarios.Add(new ViewScenarioInput(
@@ -198,7 +201,7 @@ public static class ScenarioVerifier
             info.Collection, given,
             scenario.When.QueryParams?.GetRawText(), scenario.When.AsOf,
             scenario.Then.Result.GetRawText(), scopes, filters,
-            index.ReadModelPiiColumns.GetValueOrDefault(readModelId) ?? [], searchIndexTypeName));
+            index.ReadModelPiiColumns.GetValueOrDefault(readModelId) ?? [], searchIndexTypeName, hashedIndexTypeName));
     }
 
     private static readonly IReadOnlyDictionary<string, string> EmptyPiiFields = new Dictionary<string, string>();

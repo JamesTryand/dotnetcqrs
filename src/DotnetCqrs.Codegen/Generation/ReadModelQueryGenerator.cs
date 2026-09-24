@@ -68,7 +68,9 @@ namespace DotnetCqrs.Codegen.Generation;
 /// subject. An erased subject's cell comes back as <c>{"$redacted":true}</c>. A plain
 /// query param naming a pii column is a 400: the column holds non-deterministic
 /// ciphertext, so equality could never match. Searching PII is the job of
-/// <c>match</c> filters (D5/D6), not plain params.</para>
+/// <c>match</c> filters (D5/D6), not plain params. A pii <c>exact</c>/<c>prefix</c> filter
+/// (D6) also takes <c>HashedIndexKey</c> from DI, hashes the normalized term through the
+/// facade at the index's active key version, and answers 503 if the facade can't.</para>
 /// </summary>
 public static class ReadModelQueryGenerator
 {
@@ -119,6 +121,10 @@ public static class ReadModelQueryGenerator
         // optional ([FromServices] on a nullable parameter), so a host without one
         // still works; it just makes a round trip for every read.
         var piiParams = hasPii ? ", [FromServices] IKmsClient kms, [FromServices] PiiRevealCache? cache" : "";
+        // A hashed match filter (pii exact/prefix, D6) hashes its term with the application's
+        // index key, at the version its index is currently built with.
+        if (readModel.Filters.Any(f => GenerationSupport.IsHashedMatch(readModel, f)))
+            piiParams += ", [FromServices] HashedIndexKey indexKey";
         b.AppendLine($"        return endpoints.MapGet($\"{{prefix}}/{readModel.Collection}\", async (HttpRequest request, IReadModelStore store{piiParams}, CancellationToken ct) =>");
         b.AppendLine("        {");
         if (readModel.RequiredRole is { Count: > 0 } requiredRole)
@@ -148,8 +154,9 @@ public static class ReadModelQueryGenerator
         {
             // Schema 3.1.0 match: the raw param value is the search term, normalized exactly as
             // the stored side was. A non-pii field searches its shadow column; a pii field
-            // (contains only; DocumentMapper refuses the hashed modes until D6) resolves row
-            // keys through its index in the attached "search" store.
+            // resolves row keys through its index in the attached "search" store: the
+            // plaintext index for contains, or the keyed-hash index for exact/prefix (D6),
+            // where the parameter is the HMAC of the whole term (one facade call).
             b.AppendLine($"                    case \"{filter.Param}\":");
             b.AppendLine("                    {");
             b.AppendLine($"                        var term = MatchNormalizer.Normalize(\"{filter.Normalize}\", raw);");
@@ -157,15 +164,34 @@ public static class ReadModelQueryGenerator
             b.AppendLine($"                            return Results.Problem(\"'{filter.Param}' needs a non-empty search term\", statusCode: StatusCodes.Status400BadRequest);");
             if (filter.MinPrefixLength is { } minLength)
             {
-                b.AppendLine($"                        if (term.Length < {minLength})");
+                b.AppendLine($"                        if (MatchNormalizer.CodePointLength(term) < {minLength})");
                 b.AppendLine($"                            return Results.Problem(\"'{filter.Param}' needs at least {minLength} characters\", statusCode: StatusCodes.Status400BadRequest);");
             }
             b.AppendLine("                        var matchParam = $\"@p{i++}\";");
             // The clause text lands inside a generated C# string literal, so its backslash
             // (the LIKE escape character) is doubled here.
             var clause = GenerationSupport.MatchClause(readModel, filter, "{matchParam}").Replace("\\", "\\\\");
-            b.AppendLine($"                        clauses.Add($\"{clause}\");");
-            b.AppendLine($"                        parameters[matchParam] = MatchNormalizer.Pattern(\"{filter.Mode}\", term);");
+            if (GenerationSupport.IsHashedMatch(readModel, filter))
+            {
+                // The key service being down makes this search unavailable (503), not wrong.
+                b.AppendLine("                        string hash;");
+                b.AppendLine("                        try");
+                b.AppendLine("                        {");
+                b.AppendLine("                            hash = await kms.HmacAsync(indexKey.Name, System.Text.Encoding.UTF8.GetBytes(term),");
+                b.AppendLine($"                                indexKey.ActiveVersion(\"{GenerationSupport.HashedIndexName(readModel.Collection)}\"), ct);");
+                b.AppendLine("                        }");
+                b.AppendLine("                        catch (Exception ex) when (ex is HttpRequestException or KmsProtocolException)");
+                b.AppendLine("                        {");
+                b.AppendLine($"                            return Results.Problem(\"'{filter.Param}' search is unavailable: the key service could not hash the term\", statusCode: StatusCodes.Status503ServiceUnavailable);");
+                b.AppendLine("                        }");
+                b.AppendLine($"                        clauses.Add($\"{clause}\");");
+                b.AppendLine("                        parameters[matchParam] = hash;");
+            }
+            else
+            {
+                b.AppendLine($"                        clauses.Add($\"{clause}\");");
+                b.AppendLine($"                        parameters[matchParam] = MatchNormalizer.Pattern(\"{filter.Mode}\", term);");
+            }
             b.AppendLine("                        break;");
             b.AppendLine("                    }");
         }

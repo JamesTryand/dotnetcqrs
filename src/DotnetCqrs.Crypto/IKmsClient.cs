@@ -38,6 +38,14 @@ public sealed record KmsBatchEncryptItem(string? Ciphertext, string? Error)
     public bool Succeeded => Error is null;
 }
 
+/// <summary>One item of a batch HMAC's per-item outcome. Exactly one of
+/// <see cref="Hmac"/>/<see cref="Error"/> is set, mirroring the facade's own per-item
+/// response shape.</summary>
+public sealed record KmsBatchHmacItem(string? Hmac, string? Error)
+{
+    public bool Succeeded => Error is null;
+}
+
 /// <summary>Thin HTTP client over <c>platform/key-management-service</c>'s facade —
 /// see that repo's <c>docs/facade-api-contract.md</c> for the exact contract this
 /// implements against. Deliberately carries no caller→facade auth of its own: the
@@ -73,4 +81,27 @@ public interface IKmsClient
     /// <summary>The erasure operation. Idempotent — destroying an already-destroyed or
     /// never-existing key still succeeds, matching the facade's own contract.</summary>
     Task DestroyKeyAsync(string subjectId, CancellationToken ct = default);
+
+    // Blind-index keys: the facade's own transit-index mount, one HMAC key per application,
+    // never on the erasure path (there is no delete). Hashes of normalized PII feed the
+    // searchable pii match modes (exact/prefix). The caller normalizes; the facade only
+    // hashes bytes.
+
+    /// <summary>Idempotent. Ensures the named HMAC index key exists.</summary>
+    Task EnsureIndexKeyAsync(string name, CancellationToken ct = default);
+
+    /// <summary>The named index key's latest version. An index built with an older version
+    /// must be rebuilt (rotation is ops-only). Throws <see cref="KmsIndexKeyNotFoundException"/>
+    /// if the key doesn't exist.</summary>
+    Task<int> GetIndexKeyVersionAsync(string name, CancellationToken ct = default);
+
+    /// <summary>HMAC of <paramref name="input"/> under the named key, as the whole
+    /// <c>vault:vN:...</c> string (store and compare it whole). <paramref name="keyVersion"/>
+    /// null means the latest; callers of a built index always pin the version it was built
+    /// with. Throws <see cref="KmsIndexKeyNotFoundException"/> if the key doesn't exist.</summary>
+    Task<string> HmacAsync(string name, byte[] input, int? keyVersion = null, CancellationToken ct = default);
+
+    /// <summary>1-1000 inputs hashed in one round trip, all at <paramref name="keyVersion"/>.
+    /// A per-item error doesn't fail the call.</summary>
+    Task<IReadOnlyList<KmsBatchHmacItem>> HmacBatchAsync(string name, IReadOnlyList<byte[]> inputs, int? keyVersion = null, CancellationToken ct = default);
 }

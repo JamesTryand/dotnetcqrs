@@ -103,4 +103,77 @@ public class KmsClientTests
         Assert.Equal("forced test error", result.Items[1].Error);
         Assert.True(result.Items[2].Succeeded);
     }
+
+    [Fact]
+    public async Task Index_key_hmac_is_deterministic_per_version_and_pins_the_requested_version()
+    {
+        var (client, handler) = MakeClient();
+        await client.EnsureIndexKeyAsync("app");
+        await client.EnsureIndexKeyAsync("app"); // idempotent
+        Assert.Equal(1, await client.GetIndexKeyVersionAsync("app"));
+
+        var input = Encoding.UTF8.GetBytes("alice@example.com");
+        var first = await client.HmacAsync("app", input, keyVersion: 1);
+        Assert.StartsWith("vault:v1:", first);
+        Assert.Equal(first, await client.HmacAsync("app", input, keyVersion: 1));
+
+        handler.RotateIndexKey("app");
+        Assert.Equal(2, await client.GetIndexKeyVersionAsync("app"));
+        // Pinned: still the version-1 hash after the rotation.
+        Assert.Equal(first, await client.HmacAsync("app", input, keyVersion: 1));
+        var latest = await client.HmacAsync("app", input);
+        Assert.StartsWith("vault:v2:", latest);
+        Assert.NotEqual(first, latest);
+        // Omitted on the wire when null (= latest), sent when pinned.
+        Assert.Equal([1, 1, 1, null], handler.HmacKeyVersions);
+    }
+
+    [Fact]
+    public async Task Hmac_batch_matches_single_hmac_item_for_item()
+    {
+        var (client, _) = MakeClient();
+        await client.EnsureIndexKeyAsync("app");
+        byte[][] inputs = [Encoding.UTF8.GetBytes("ali"), Encoding.UTF8.GetBytes("alic"), Encoding.UTF8.GetBytes("alice")];
+
+        var batch = await client.HmacBatchAsync("app", inputs, keyVersion: 1);
+
+        Assert.Equal(3, batch.Count);
+        for (var i = 0; i < inputs.Length; i++)
+            Assert.Equal(await client.HmacAsync("app", inputs[i], keyVersion: 1), batch[i].Hmac);
+    }
+
+    [Fact]
+    public async Task Index_key_calls_on_a_missing_key_throw_KmsIndexKeyNotFoundException()
+    {
+        var (client, _) = MakeClient();
+        await Assert.ThrowsAsync<KmsIndexKeyNotFoundException>(() => client.GetIndexKeyVersionAsync("missing"));
+        await Assert.ThrowsAsync<KmsIndexKeyNotFoundException>(() => client.HmacAsync("missing", [1]));
+        await Assert.ThrowsAsync<KmsIndexKeyNotFoundException>(() => client.HmacBatchAsync("missing", [[1]]));
+    }
+
+    [Fact]
+    public async Task Hmac_at_a_version_the_key_does_not_have_is_an_http_error()
+    {
+        var (client, _) = MakeClient();
+        await client.EnsureIndexKeyAsync("app");
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() => client.HmacAsync("app", [1], keyVersion: 5));
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task InMemoryKmsClient_index_keys_behave_like_the_facade()
+    {
+        var kms = new InMemoryKmsClient();
+        await Assert.ThrowsAsync<KmsIndexKeyNotFoundException>(() => kms.HmacAsync("app", [1]));
+        await kms.EnsureIndexKeyAsync("app");
+        var v1 = await kms.HmacAsync("app", [1, 2, 3], keyVersion: 1);
+        Assert.StartsWith("vault:v1:", v1);
+
+        kms.RotateIndexKey("app");
+
+        Assert.Equal(2, await kms.GetIndexKeyVersionAsync("app"));
+        Assert.Equal(v1, (await kms.HmacBatchAsync("app", [[1, 2, 3]], keyVersion: 1)).Single().Hmac);
+        Assert.StartsWith("vault:v2:", await kms.HmacAsync("app", [1, 2, 3]));
+        await Assert.ThrowsAsync<HttpRequestException>(() => kms.HmacAsync("app", [1], keyVersion: 3));
+    }
 }

@@ -736,9 +736,10 @@ public sealed class DocumentMapper
     /// <summary>A schema 3.1.0 <c>match</c> filter. The schema can't resolve that the field
     /// exists or check its type (its own design notes leave those to generators), so they
     /// are checked here. For a pii field the technique follows data minimisation:
-    /// <c>contains</c> needs a readable-at-rest index, so it is allowed but warned about,
-    /// and <c>exact</c>/<c>prefix</c> need keyed hashes from the key service, which has
-    /// no HMAC endpoint yet (D6), so they are refused rather than generated unsearchable.</summary>
+    /// <c>contains</c> needs a readable-at-rest index, so it is allowed but warned about.
+    /// <c>exact</c>/<c>prefix</c> use keyed hashes from the key service (D6); <c>prefix</c>
+    /// must declare <c>minPrefixLength</c> and is warned about, because stored prefix hashes
+    /// let anyone with <c>hmac</c> access enumerate a value.</summary>
     private Domain.ReadModelFilter? MapMatchFilter(string id, Domain.ReadModel readModel, ReadModelFilterDef def)
     {
         var owner = $"read model \"{id}\" match filter on param \"{def.Param}\"";
@@ -776,13 +777,29 @@ public sealed class DocumentMapper
             _report.Error($"{owner} targets \"{field.Name}\", a {field.Type} field; match is supported on text fields only");
             return null;
         }
-        if (field.Pii && def.Mode != "contains")
+        if (field.Pii && def.Mode == "prefix")
         {
-            _report.Error($"{owner}: {def.Mode} on pii field \"{field.Name}\" needs a keyed-hash index, which needs the " +
-                "key-management facade's HMAC endpoint -- not available yet (see platform/eventmodeling-codegen D6)");
-            return null;
+            if (def.MinPrefixLength is null)
+            {
+                // The schema has no default, and a hashed prefix index stores one hash per
+                // prefix length from here up: a short floor makes each value cheap to enumerate.
+                _report.Error($"{owner}: prefix on pii field \"{field.Name}\" must declare minPrefixLength " +
+                    "(the shortest prefix whose keyed hash is stored)");
+                return null;
+            }
+            var sibling = readModel.Filters.FirstOrDefault(f => f.IsMatch && f.Field == field.Name && f.Mode == "prefix"
+                && f.Normalize == normalize && f.MinPrefixLength != def.MinPrefixLength);
+            if (sibling is not null)
+            {
+                _report.Error($"{owner}: another prefix filter (\"{sibling.Param}\") on pii field \"{field.Name}\" with normalize " +
+                    $"\"{normalize}\" declares a different minPrefixLength; they share one hashed index, so they must agree");
+                return null;
+            }
+            _report.Warn($"{owner}: prefix on pii field \"{field.Name}\" stores a keyed hash of every prefix of at least " +
+                $"{def.MinPrefixLength} characters. Anyone who can call the key service's hmac endpoint can confirm a guessed " +
+                "prefix and extend it one character at a time, so this is only as private as access to that endpoint.");
         }
-        if (field.Pii)
+        if (field.Pii && def.Mode == "contains")
             _report.Warn($"{owner}: contains on pii field \"{field.Name}\" keeps a normalized PLAINTEXT index at rest " +
                 "(search.db). It is deleted from on erasure and must be excluded from backups.");
         return new Domain.ReadModelFilter(def.Param, field.Name, "match", [], def.Mode, normalize, def.MinPrefixLength);

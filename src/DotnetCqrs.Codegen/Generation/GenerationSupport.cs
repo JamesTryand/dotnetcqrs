@@ -105,13 +105,32 @@ internal static class GenerationSupport
     public static string MatchIndexTable(string collection, string fieldName, string normalize) =>
         $"{collection}__match_{SnakeCase(fieldName)}_{SnakeCase(normalize)}";
 
+    /// <summary>The keyed-hash index table for a pii <c>exact</c>/<c>prefix</c> filter (D6), in
+    /// the separate search store. One per (field, normalizer, mode); rows of every key version
+    /// share it, tagged with <c>key_version</c>.</summary>
+    public static string HashIndexTable(string collection, string fieldName, string normalize, string mode) =>
+        $"{collection}__hash_{SnakeCase(fieldName)}_{SnakeCase(normalize)}_{mode}";
+
+    /// <summary>The hashed index's name, shared by all key versions (<c>IHashedSearchIndex.IndexName</c>).</summary>
+    public static string HashedIndexName(string collection) => $"{collection}:hashed";
+
+    /// <summary>Whether a <c>match</c> filter searches a keyed-hash index: a pii field in
+    /// mode <c>exact</c> or <c>prefix</c> (D6). Its parameter is the facade's HMAC of the
+    /// normalized term, not a pattern.</summary>
+    public static bool IsHashedMatch(Domain.ReadModel readModel, Domain.ReadModelFilter filter) =>
+        filter.IsMatch && filter.Mode != "contains" && readModel.Fields.Any(f => f.Name == filter.Field && f.Pii);
+
     /// <summary>The WHERE clause for one <c>match</c> filter, with <paramref name="paramToken"/>
-    /// where the parameter goes (its value comes from <c>MatchNormalizer.Pattern</c>). A
-    /// non-pii field compares its shadow column. A pii field (contains only) selects row
-    /// keys from its index in the attached <c>search</c> store. Used by both the generated
-    /// route and the scenario verifier, so the two build the same SQL.</summary>
+    /// where the parameter goes. A non-pii field compares its shadow column. A pii
+    /// <c>contains</c> selects row keys from its plaintext index, and a pii <c>exact</c>/<c>prefix</c>
+    /// from its keyed-hash index, both in the attached <c>search</c> store. The parameter is
+    /// <c>MatchNormalizer.Pattern</c>'s output, except for a hashed filter, where it is the HMAC
+    /// of the normalized term (<see cref="IsHashedMatch"/>). Used by both the generated route and
+    /// the scenario verifier, so the two build the same SQL.</summary>
     public static string MatchClause(Domain.ReadModel readModel, Domain.ReadModelFilter filter, string paramToken)
     {
+        if (IsHashedMatch(readModel, filter))
+            return $"{SnakeCase(readModel.Key)} IN (SELECT row_key FROM search.{HashIndexTable(readModel.Collection, filter.Field, filter.Normalize!, filter.Mode!)} WHERE hash = {paramToken})";
         var comparison = filter.Mode == "exact" ? $"= {paramToken}" : $"LIKE {paramToken} ESCAPE '\\'";
         var pii = readModel.Fields.Any(f => f.Name == filter.Field && f.Pii);
         return pii
@@ -131,8 +150,14 @@ internal static class GenerationSupport
     public static IEnumerable<Domain.ReadModelFilter> IndexedMatchFilters(Domain.ReadModel readModel)
     {
         var pii = readModel.Fields.Where(f => f.Pii).Select(f => f.Name).ToHashSet(StringComparer.Ordinal);
-        return readModel.Filters.Where(f => f.IsMatch && pii.Contains(f.Field)).DistinctBy(f => (f.Field, f.Normalize));
+        return readModel.Filters.Where(f => f.IsMatch && f.Mode == "contains" && pii.Contains(f.Field)).DistinctBy(f => (f.Field, f.Normalize));
     }
+
+    /// <summary>pii <c>exact</c>/<c>prefix</c> filters, one per hashed table (field, normalizer,
+    /// mode). Two prefix filters on one table must agree on <c>minPrefixLength</c>, which
+    /// <c>DocumentMapper</c> checks.</summary>
+    public static IEnumerable<Domain.ReadModelFilter> HashedMatchFilters(Domain.ReadModel readModel) =>
+        readModel.Filters.Where(f => IsHashedMatch(readModel, f)).DistinctBy(f => (f.Field, f.Normalize, f.Mode));
 
     private static string SnakeCase(string name)
     {

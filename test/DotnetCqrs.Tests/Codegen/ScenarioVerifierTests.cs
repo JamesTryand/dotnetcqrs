@@ -350,7 +350,9 @@ public class ScenarioVerifierTests
                   ],
                   "filters": [
                     {"param": "nameSearch", "field": "name", "kind": "match", "mode": "contains", "normalize": "personName"},
-                    {"param": "emailSearch", "field": "email", "kind": "match", "mode": "contains", "normalize": "email"}
+                    {"param": "emailSearch", "field": "email", "kind": "match", "mode": "contains", "normalize": "email"},
+                    {"param": "emailExact", "field": "email", "kind": "match", "mode": "exact", "normalize": "email"},
+                    {"param": "emailPrefix", "field": "email", "kind": "match", "mode": "prefix", "normalize": "email", "minPrefixLength": 2}
                   ]
                 }
               },
@@ -393,6 +395,32 @@ public class ScenarioVerifierTests
                       ],
                       "when": {"readModelId": "customers", "queryParams": {"emailSearch": "alice"}},
                       "then": {"result": {"customers": [{"customerId": "c2"}]}}
+                    },
+                    {
+                      "id": "by-email-exact", "name": "Exact email search goes through the keyed-hash index", "kind": "stateView",
+                      "given": [
+                        {"eventId": "customer-registered", "data": {"customerId": "c1", "name": "José Núñez", "email": "alice@example.com"}},
+                        {"eventId": "customer-registered", "data": {"customerId": "c2", "name": "Bob", "email": "bob@example.com"}}
+                      ],
+                      "when": {"readModelId": "customers", "queryParams": {"emailExact": " ALICE@Example.com"}},
+                      "then": {"result": {"customers": [{"customerId": "c1", "email": "alice@example.com"}]}}
+                    },
+                    {
+                      "id": "by-email-prefix", "name": "Prefix email search goes through the keyed-hash index", "kind": "stateView",
+                      "given": [
+                        {"eventId": "customer-registered", "data": {"customerId": "c1", "name": "José Núñez", "email": "alice@example.com"}},
+                        {"eventId": "customer-registered", "data": {"customerId": "c2", "name": "Bob", "email": "bob@example.com"}}
+                      ],
+                      "when": {"readModelId": "customers", "queryParams": {"emailPrefix": "BO"}},
+                      "then": {"result": {"customers": [{"customerId": "c2", "name": "Bob"}]}}
+                    },
+                    {
+                      "id": "wrong-exact", "name": "Exact is not prefix, so this expectation fails", "kind": "stateView",
+                      "given": [
+                        {"eventId": "customer-registered", "data": {"customerId": "c1", "name": "José Núñez", "email": "alice@example.com"}}
+                      ],
+                      "when": {"readModelId": "customers", "queryParams": {"emailExact": "alice"}},
+                      "then": {"result": {"customers": [{"customerId": "c1"}]}}
                     }
                   ]
                 }
@@ -409,6 +437,12 @@ public class ScenarioVerifierTests
         var byEmail = results.Single(r => r.ScenarioId == "by-email");
         Assert.True(byEmail.Passed, byEmail.Detail);
         Assert.False(results.Single(r => r.ScenarioId == "wrong-hit").Passed);
+        // Milestone D6: pii exact/prefix hash the normalized term with the harness's index key.
+        var byExact = results.Single(r => r.ScenarioId == "by-email-exact");
+        Assert.True(byExact.Passed, byExact.Detail);
+        var byPrefix = results.Single(r => r.ScenarioId == "by-email-prefix");
+        Assert.True(byPrefix.Passed, byPrefix.Detail);
+        Assert.False(results.Single(r => r.ScenarioId == "wrong-exact").Passed);
     }
 
     [Fact(Timeout = VerifyTimeoutMs)]

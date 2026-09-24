@@ -86,7 +86,7 @@ internal static class SearchIndexGenerator
                 b.AppendLine($"        if (data.TryGetValue(\"{field}\", out var {valueVar}))");
                 b.AppendLine("        {");
                 // One reveal per field per event, shared by every normalizer indexing it.
-                b.AppendLine($"            var {plainVar} = await RevealAsync({valueVar}, \"{field}\", ct);");
+                b.AppendLine($"            var {plainVar} = await PiiSearchReveal.RevealAsync({valueVar}, \"{field}\", kms, cache, ct);");
                 foreach (var filter in group)
                 {
                     var table = GenerationSupport.MatchIndexTable(readModel.Collection, filter.Field, filter.Normalize!);
@@ -100,22 +100,6 @@ internal static class SearchIndexGenerator
                 }
                 b.AppendLine("        }");
             }
-            b.AppendLine("    }");
-            b.AppendLine();
-            b.AppendLine("    /// <summary>The field's plaintext and subject, or null when it is absent, null, or its");
-            b.AppendLine("    /// subject is erased (key destroyed): a value that can't be read is not indexed.</summary>");
-            b.AppendLine("    private async Task<(string Plaintext, string Subject)?> RevealAsync(JsonElement value, string field, CancellationToken ct)");
-            b.AppendLine("    {");
-            b.AppendLine("        if (value.ValueKind == JsonValueKind.Null) return null;");
-            b.AppendLine("        var pii = value.Deserialize<Pii<string>>();");
-            b.AppendLine("        if (pii is null) return null;");
-            b.AppendLine("        if (pii.State == PiiState.Fresh)");
-            b.AppendLine("            throw new InvalidOperationException($\"{field} is pii but the stored event holds plaintext, not the envelope\");");
-            b.AppendLine("        var buffer = new PiiRevealBuffer(kms, cache);");
-            b.AppendLine("        var reveal = pii.RevealAsync(buffer, ct);");
-            b.AppendLine("        await buffer.FlushAsync(ct);");
-            b.AppendLine("        var revealed = await reveal;");
-            b.AppendLine("        return revealed.State == PiiState.Known ? (revealed.Value, revealed.SubjectId!) : null;");
             b.AppendLine("    }");
         }
         b.AppendLine();
