@@ -3,6 +3,10 @@
 > **Status: verified 2026-08-28** on one machine against `postgres:17-alpine` — 17
 > in-suite tests under `test/DotnetCqrs.Tests/Postgres/`, `[SkippableFact]`-gated on
 > `DOTNETCQRS_PG`. See "Verification run" at the bottom.
+>
+> **The stores are verified; a generated app is not (2026-09-24).** A codegen-generated
+> host can't be deployed on Postgres yet, and PII search has no Postgres store. See
+> "Not yet supported on Postgres" before choosing this backend.
 
 Milestone 6 extracted `src/DotnetCqrs.Abstractions/` — the provider-neutral contracts
 `IEventStore` / `IReadModelStore` / `IDeadLetterStore` (plus the already-abstract
@@ -31,6 +35,9 @@ The M6 groundwork did most of the work:
   `NpgsqlConnection` is one. Hand-written and generated projection bodies run against
   Postgres byte-identical — the only Postgres-flavoured thing is the read model's own
   DDL (`boolean`, not SQLite's `INTEGER` 0/1), which is projection-owned schema anyway.
+  **Correction (2026-09-24):** that holds for hand-written projections, which own their
+  DDL. *Generated* projections emit SQLite's DDL on every backend, so they are not yet
+  Postgres-safe. See "Not yet supported on Postgres".
 - **`AddParam(name, null)`.** M6 flagged that Npgsql historically rejected an untyped
   `DBNull` parameter ("cannot determine parameter type"). Tested on Npgsql 10.0.3
   (`PostgresAddParamTests`): it is accepted and writes SQL `NULL`. No change to
@@ -133,6 +140,44 @@ verbatim.
   a projection is a single sequential consumer, so a pool would buy nothing and the
   `IReadModelStore.Connection` contract wants one connection to hand out.
 
+## Not yet supported on Postgres
+
+As of 2026-09-24 (dotnetcqrs `f639662`). The first four items were reproduced against a
+real `postgres:17-alpine` by running the SQL the generators emit. Tracked, with fixes and
+the search-store design, in the notebook's `platform/eventmodeling-codegen` `NEEDS.md`
+("Postgres parity").
+
+1. **Generated bool fields fail to project.** `ProjectionGenerator` makes a bool column
+   `INTEGER` and binds a C# `bool` to it: `42804: column ... is of type integer but
+   expression is of type boolean`.
+2. **Generated number fields lose precision.** They become `REAL`, which is 4 bytes on
+   Postgres (8 on SQLite): `1234567.89` reads back as `1234567.875`, and sum roll-ups
+   drift. No error is raised.
+3. **Generated query routes can't filter numeric or bool columns.** Every plain
+   query-string value is bound as text: `42883: operator does not exist: integer = text`.
+   SQLite coerces silently.
+4. **Concurrent requests fail.** The generated host shares one `IReadModelStore.Connection`
+   between every query route and the projections. Npgsql refuses overlapping commands
+   (`A command is already in progress`), so two requests at once fail. SQLite tolerates
+   this on the same single connection.
+5. **No Postgres search index store.** PII `match` filters (`contains`, and hashed
+   `exact`/`prefix`) need `SqliteSearchIndexStore`; the generated index consumers and
+   `HashedSearchIndexRegistration` take that concrete type. Its Postgres replacement has
+   to keep the erasure guarantee the separate `search.db` gives (plaintext never
+   restorable from a backup), so it is a design, not a port: unlogged tables in a
+   `search` schema, a startup purge against the KMS erasure ledger, and `VACUUM FULL` on
+   each erasure.
+6. **No generated Postgres host.** `HostProjectGenerator` always opens SQLite files (see
+   the non-goal below, now being reconsidered).
+7. **PII has never run on Postgres.** Encrypting on write, erasure (`SubjectKeyDestroyer`,
+   `SubjectStatus`) and revealing PII columns only use the provider-neutral interfaces
+   and store PII as text, so they are expected to work. But none of the 17 Postgres
+   tests exercises them.
+
+**What this means for PII:** a Postgres deployment can hold `field.pii` data once items
+1-4 and 6 are fixed and the PII/erasure tests have run on Postgres, provided the model has
+no `match` filters on PII fields. Searching personal data also needs item 5.
+
 ## Non-goals
 
 - **Postgres streaming replication** — that would be an alternative to Milestone 3's
@@ -146,6 +191,9 @@ verbatim.
 - **A generated Postgres host.** `HostProjectGenerator` and every sample `Program.cs` are
   composition roots that legitimately name a concrete provider; they stay on SQLite.
   Generated *projections* are already provider-neutral (M6) and run on either backend.
+  **Reconsidered 2026-09-24:** the goal is now one generated app deployable on SQLite or
+  Postgres, and generated projections turned out not to be Postgres-safe (items 1-3
+  above).
 - **Sharing a database between backends**, or between `dotnetcqrs` and `pocketcqrs` — the
   same non-goal `docs/interop.md` records, for the same reasons.
 
