@@ -77,6 +77,8 @@ internal sealed class FakeKmsHandler : HttpMessageHandler
 
     private HttpResponseMessage Ensure(string subjectId)
     {
+        // The facade's tombstone: a subject in the erasure ledger never gets a key again.
+        if (Erasures.Contains(subjectId)) return new HttpResponseMessage(HttpStatusCode.Conflict);
         _keys.Add(subjectId);
         return new HttpResponseMessage(HttpStatusCode.NoContent);
     }

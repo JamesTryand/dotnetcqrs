@@ -48,6 +48,17 @@ public class KmsClientTests
     }
 
     [Fact]
+    public async Task EnsureKey_after_destroy_throws_SubjectErasedException()
+    {
+        var (client, _) = MakeClient();
+        await client.EnsureKeyAsync("subject-1");
+        await client.DestroyKeyAsync("subject-1");
+
+        var ex = await Assert.ThrowsAsync<SubjectErasedException>(() => client.EnsureKeyAsync("subject-1"));
+        Assert.Equal("subject-1", ex.SubjectId);
+    }
+
+    [Fact]
     public async Task DestroyKey_is_idempotent_for_a_never_existing_subject()
     {
         var (client, _) = MakeClient();

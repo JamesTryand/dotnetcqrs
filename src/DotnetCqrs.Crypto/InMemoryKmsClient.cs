@@ -29,7 +29,12 @@ public sealed class InMemoryKmsClient : IKmsClient
 
     public Task EnsureKeyAsync(string subjectId, CancellationToken ct = default)
     {
-        lock (_lock) _keys.Add(subjectId);
+        lock (_lock)
+        {
+            // The facade's tombstone: an erased subject never gets a key again.
+            if (_erasures.Contains(subjectId)) throw new SubjectErasedException(subjectId);
+            _keys.Add(subjectId);
+        }
         return Task.CompletedTask;
     }
 

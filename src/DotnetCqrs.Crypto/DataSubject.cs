@@ -69,10 +69,10 @@ public interface ISubjectStatus
 /// person's data cannot quietly reappear under their old id.
 ///
 /// <para><b>What this does not close:</b> a write that passes this check can still race an
-/// erasure that lands immediately afterwards, and <c>EnsureKey</c> would then re-create
-/// the destroyed key. Only the facade can close that fully, by refusing to create a key
-/// for a subject it has already destroyed one for — an open ask against
-/// <c>platform/key-management-service</c>.</para></summary>
+/// erasure that lands immediately afterwards. The facade closes that: it refuses to
+/// re-create a key for a subject it has already destroyed one for (<c>409</c>), which
+/// <see cref="KmsClient.EnsureKeyAsync"/> surfaces as the same
+/// <see cref="SubjectErasedException"/> this check throws.</para></summary>
 public sealed class SubjectStatus(IEventStore store) : ISubjectStatus
 {
     public async Task<bool> IsErasedAsync(string subjectId, CancellationToken ct = default)

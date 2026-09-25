@@ -60,7 +60,10 @@ public interface IKmsClient
 {
     /// <summary>Idempotent. Ensures a Transit key exists for <paramref name="subjectId"/>
     /// (and that it's deletion-allowed) — safe, and expected, to call on every event
-    /// carrying a new subject, not just the first.</summary>
+    /// carrying a new subject, not just the first. Throws
+    /// <see cref="SubjectErasedException"/> for a subject whose key was already destroyed:
+    /// the facade keeps a tombstone and won't re-create it (a returning subject needs a new
+    /// id).</summary>
     Task EnsureKeyAsync(string subjectId, CancellationToken ct = default);
 
     /// <summary>Throws <see cref="KmsKeyNotFoundException"/> if no key exists yet for

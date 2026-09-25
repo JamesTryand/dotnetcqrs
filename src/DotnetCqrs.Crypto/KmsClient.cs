@@ -24,6 +24,7 @@ public sealed class KmsClient(HttpClient http) : IKmsClient
     public async Task EnsureKeyAsync(string subjectId, CancellationToken ct = default)
     {
         using var resp = await http.PutAsync(KeyPath(subjectId), content: null, ct).ConfigureAwait(false);
+        if (resp.StatusCode == HttpStatusCode.Conflict) throw new SubjectErasedException(subjectId);
         resp.EnsureSuccessStatusCode();
     }
 
