@@ -91,6 +91,19 @@ public sealed class KmsClient(HttpClient http) : IKmsClient
         resp.EnsureSuccessStatusCode();
     }
 
+    public async Task<KmsErasurePage> ListErasuresAsync(long after, int limit = MaxBatchItems, CancellationToken ct = default)
+    {
+        if (after < 0) throw new ArgumentOutOfRangeException(nameof(after), "must be non-negative");
+        if (limit is < 1 or > MaxBatchItems)
+            throw new ArgumentOutOfRangeException(nameof(limit), "must be 1-1000, matching the facade's own limit");
+
+        using var resp = await http.GetAsync($"v1/erasures?after={after}&limit={limit}", ct).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadFromJsonAsync<ErasuresResponse>(cancellationToken: ct).ConfigureAwait(false)
+            ?? throw new KmsProtocolException("erasures response body was empty");
+        return new KmsErasurePage(body.SubjectIds ?? throw new KmsProtocolException("erasures response has no subjectIds"), body.Next);
+    }
+
     public async Task<int> GetIndexKeyVersionAsync(string name, CancellationToken ct = default)
     {
         using var resp = await http.GetAsync(IndexKeyPath(name), ct).ConfigureAwait(false);
@@ -143,6 +156,9 @@ public sealed class KmsClient(HttpClient http) : IKmsClient
         [property: JsonPropertyName("error")] string? Error);
     private sealed record DecryptBatchResponse([property: JsonPropertyName("results")] IReadOnlyList<DecryptBatchResultItem> Results);
     private sealed record IndexKeyResponse([property: JsonPropertyName("latestVersion")] int LatestVersion);
+    private sealed record ErasuresResponse(
+        [property: JsonPropertyName("subjectIds")] IReadOnlyList<string>? SubjectIds,
+        [property: JsonPropertyName("next")] long Next);
     // keyVersion omitted (not null) means the latest, per the contract.
     private sealed record HmacRequest(
         [property: JsonPropertyName("input")] string Input,

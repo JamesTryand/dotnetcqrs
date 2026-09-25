@@ -16,6 +16,12 @@ namespace DotnetCqrs.Codegen.Generation;
 /// README.md's "Host scaffolding" milestone for the resolved design questions
 /// (two SQLite files, no auth/file-storage, a baked-in <c>--verify</c> mode).
 ///
+/// <para><b>SQLite or Postgres, chosen at startup:</b> with <c>DOTNETCQRS_POSTGRES</c> set to a
+/// connection string, the host keeps its event log (the database's default schema), read models
+/// (schema <c>read_models</c>) and any search index (schema <c>search</c>, unlogged) in that one
+/// database; unset, it uses SQLite files under <c>data/</c> as before. The generated projections,
+/// routes and index consumers are the same code either way.</para>
+///
 /// The generated <c>--verify</c> mode re-runs <see cref="DocumentMapper.Map"/> against
 /// a copy of the source document (written alongside this project by the caller) using
 /// the SAME aggregate overrides supplied at generation time, baked in here as a literal
@@ -75,6 +81,7 @@ public static class HostProjectGenerator
         var hostProjectPath = Path.Combine(srcDir, "DotnetCqrs.Host", "DotnetCqrs.Host.csproj");
         var codegenProjectPath = Path.Combine(srcDir, "DotnetCqrs.Codegen", "DotnetCqrs.Codegen.csproj");
         var cryptoProjectPath = Path.Combine(srcDir, "DotnetCqrs.Crypto", "DotnetCqrs.Crypto.csproj");
+        var postgresProjectPath = Path.Combine(srcDir, "DotnetCqrs.Postgres", "DotnetCqrs.Postgres.csproj");
 
         var source = $"""
             <Project Sdk="Microsoft.NET.Sdk.Web">
@@ -91,6 +98,7 @@ public static class HostProjectGenerator
                 <ProjectReference Include="{hostProjectPath}" />
                 <ProjectReference Include="{codegenProjectPath}" />
                 <ProjectReference Include="{cryptoProjectPath}" />
+                <ProjectReference Include="{postgresProjectPath}" />
               </ItemGroup>
 
               <ItemGroup>
@@ -121,6 +129,7 @@ public static class HostProjectGenerator
         b.AppendLine("using DotnetCqrs.Deciders;");
         b.AppendLine("using DotnetCqrs.EventStore;");
         b.AppendLine("using DotnetCqrs.Host;");
+        b.AppendLine("using DotnetCqrs.Postgres;");
         b.AppendLine("using DotnetCqrs.ReadModels;");
         b.AppendLine("using DotnetCqrs.Reactors;");
         foreach (var ns in mapped.Domains.Select(d => GenerationSupport.ExportName(d.Aggregate)).Distinct())
@@ -147,10 +156,12 @@ public static class HostProjectGenerator
         b.AppendLine("}");
         b.AppendLine();
 
+        b.AppendLine("// DOTNETCQRS_POSTGRES: a Postgres connection string. Set, the event log, read models (schema");
+        b.AppendLine("// read_models) and search indexes (schema search) all live in that database; unset, in SQLite");
+        b.AppendLine("// files under data/. The generated code is the same either way.");
+        b.AppendLine("var postgres = Environment.GetEnvironmentVariable(\"DOTNETCQRS_POSTGRES\") is { Length: > 0 } configuredPostgres ? configuredPostgres : null;");
         b.AppendLine("var dataDir = Path.Combine(AppContext.BaseDirectory, \"data\");");
-        b.AppendLine("Directory.CreateDirectory(dataDir);");
-        b.AppendLine("var eventsPath = Path.Combine(dataDir, \"events.db\");");
-        b.AppendLine("var readModelPath = Path.Combine(dataDir, \"readmodel.db\");");
+        b.AppendLine("if (postgres is null) Directory.CreateDirectory(dataDir);");
         b.AppendLine();
         if (hasPii)
         {
@@ -170,8 +181,12 @@ public static class HostProjectGenerator
         }
         b.AppendLine("var builder = WebApplication.CreateBuilder(args);");
         b.AppendLine();
-        b.AppendLine("var eventStore = await SqliteEventStore.OpenAsync(eventsPath);");
-        b.AppendLine("var readModelDb = await SqliteReadModelStore.OpenAsync(readModelPath);");
+        b.AppendLine("IEventStore eventStore = postgres is not null");
+        b.AppendLine("    ? await PostgresEventStore.OpenAsync(postgres)");
+        b.AppendLine("    : await SqliteEventStore.OpenAsync(Path.Combine(dataDir, \"events.db\"));");
+        b.AppendLine("IReadModelStore readModelDb = postgres is not null");
+        b.AppendLine("    ? await PostgresReadModelStore.OpenInSchemaAsync(postgres, \"read_models\")");
+        b.AppendLine("    : await SqliteReadModelStore.OpenAsync(Path.Combine(dataDir, \"readmodel.db\"));");
         // Registered as a service so minimal API's parameter-source inference recognises
         // an IReadModelStore parameter (every ReadModelQueryGenerator-emitted route takes
         // one) as DI-resolved rather than an inferred request body -- unregistered, that
@@ -257,11 +272,37 @@ public static class HostProjectGenerator
             // consumers' checkpoints inside it, so losing the file means a rebuild rather than
             // a silently partial index. Attached to the read-model connection as "search" so
             // the query routes can select row keys from it.
-            b.AppendLine("// search.db holds PLAINTEXT search indexes over personal data: exclude it from backups.");
-            b.AppendLine("// It is rebuilt from the event log whenever it is missing.");
-            b.AppendLine("var searchPath = Path.Combine(dataDir, \"search.db\");");
-            b.AppendLine("var searchStore = await SqliteSearchIndexStore.OpenAsync(searchPath);");
-            b.AppendLine("await SqliteSearchIndexStore.AttachAsync(readModelDb.Connection, searchPath);");
+            b.AppendLine("// The search store holds PLAINTEXT search indexes over personal data: exclude it from");
+            b.AppendLine("// backups (search.db on SQLite; on Postgres the search schema, whose tables are unlogged, so");
+            b.AppendLine("// only a pg_dump needs --exclude-schema=search). It is rebuilt from the event log whenever");
+            b.AppendLine("// it is missing.");
+            b.AppendLine("ISearchIndexStore searchStore;");
+            b.AppendLine("if (postgres is not null)");
+            b.AppendLine("{");
+            b.AppendLine("    searchStore = await PostgresSearchIndexStore.OpenAsync(postgres);");
+            b.AppendLine("}");
+            b.AppendLine("else");
+            b.AppendLine("{");
+            b.AppendLine("    var searchPath = Path.Combine(dataDir, \"search.db\");");
+            b.AppendLine("    searchStore = await SqliteSearchIndexStore.OpenAsync(searchPath);");
+            b.AppendLine("    await SqliteSearchIndexStore.AttachAsync(readModelDb.Connection, searchPath);");
+            b.AppendLine("}");
+            b.AppendLine();
+            // Fail closed: an index restored from a backup can hold people erased since, and only
+            // the key service's ledger still knows who (SearchIndexErasurePurge's doc comment).
+            b.AppendLine("// Before the index is read or served: drop anyone the key service has erased since this");
+            b.AppendLine("// index last checked, which matters when it was restored from a backup older than an");
+            b.AppendLine("// erasure. Refuses to start if the key service can't say.");
+            b.AppendLine("try");
+            b.AppendLine("{");
+            b.AppendLine("    var purged = await searchStore.PurgeErasedSubjectsAsync(kms);");
+            b.AppendLine("    if (purged > 0) Console.WriteLine($\"search index: removed {purged} row(s) of erased subjects\");");
+            b.AppendLine("}");
+            b.AppendLine("catch (Exception ex) when (ex is HttpRequestException or KmsProtocolException)");
+            b.AppendLine("{");
+            b.AppendLine("    Console.Error.WriteLine($\"Could not read the key service's erasure ledger, so the search index can't be checked for erased people: {ex.Message}\");");
+            b.AppendLine("    return 1;");
+            b.AppendLine("}");
             foreach (var (_, readModel) in searchIndexed)
             {
                 var typeName = GenerationSupport.ExportName(readModel.Collection) + "SearchIndex";

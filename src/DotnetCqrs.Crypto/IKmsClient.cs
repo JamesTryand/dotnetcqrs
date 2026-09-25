@@ -46,6 +46,11 @@ public sealed record KmsBatchHmacItem(string? Hmac, string? Error)
     public bool Succeeded => Error is null;
 }
 
+/// <summary>One page of the facade's erasure ledger: the subjects whose keys were destroyed,
+/// in the order they were, and the cursor to ask from next. A subject can appear more than
+/// once (a retried destroy is recorded again).</summary>
+public sealed record KmsErasurePage(IReadOnlyList<string> SubjectIds, long Next);
+
 /// <summary>Thin HTTP client over <c>platform/key-management-service</c>'s facade —
 /// see that repo's <c>docs/facade-api-contract.md</c> for the exact contract this
 /// implements against. Deliberately carries no caller→facade auth of its own: the
@@ -81,6 +86,14 @@ public interface IKmsClient
     /// <summary>The erasure operation. Idempotent — destroying an already-destroyed or
     /// never-existing key still succeeds, matching the facade's own contract.</summary>
     Task DestroyKeyAsync(string subjectId, CancellationToken ct = default);
+
+    /// <summary>Up to <paramref name="limit"/> (1-1000) erased subjects recorded after cursor
+    /// <paramref name="after"/> (0 = from the start). The facade restarts from 0 if the cursor
+    /// is past the end of its ledger (the ledger was restored from an older copy), so the
+    /// returned <see cref="KmsErasurePage.Next"/> can be lower than <paramref name="after"/>;
+    /// keep asking until a page is empty. Used by a search index to purge erased subjects after
+    /// its own data was restored from a backup (<c>PurgeErasedSubjectsAsync</c>).</summary>
+    Task<KmsErasurePage> ListErasuresAsync(long after, int limit = 1000, CancellationToken ct = default);
 
     // Blind-index keys: the facade's own transit-index mount, one HMAC key per application,
     // never on the erasure path (there is no delete). Hashes of normalized PII feed the

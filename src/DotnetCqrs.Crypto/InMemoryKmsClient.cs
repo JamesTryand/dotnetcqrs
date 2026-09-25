@@ -19,6 +19,7 @@ namespace DotnetCqrs.Crypto;
 public sealed class InMemoryKmsClient : IKmsClient
 {
     private readonly HashSet<string> _keys = [];
+    private readonly List<string> _erasures = [];
     private readonly Dictionary<string, List<byte[]>> _indexKeys = [];
     private readonly Lock _lock = new();
 
@@ -74,8 +75,22 @@ public sealed class InMemoryKmsClient : IKmsClient
 
     public Task DestroyKeyAsync(string subjectId, CancellationToken ct = default)
     {
-        lock (_lock) _keys.Remove(subjectId);
+        lock (_lock)
+        {
+            _keys.Remove(subjectId);
+            _erasures.Add(subjectId);
+        }
         return Task.CompletedTask;
+    }
+
+    public Task<KmsErasurePage> ListErasuresAsync(long after, int limit = 1000, CancellationToken ct = default)
+    {
+        lock (_lock)
+        {
+            var start = after > _erasures.Count ? 0 : (int)after;
+            var page = _erasures.Skip(start).Take(limit).ToList();
+            return Task.FromResult(new KmsErasurePage(page, start + page.Count));
+        }
     }
 
     public Task EnsureIndexKeyAsync(string name, CancellationToken ct = default)

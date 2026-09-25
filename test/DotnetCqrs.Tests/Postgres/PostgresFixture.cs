@@ -21,6 +21,7 @@ public sealed class PostgresFixture : IAsyncLifetime
     private readonly string? _baseConnectionString = Environment.GetEnvironmentVariable("DOTNETCQRS_PG");
     private readonly List<string> _schemas = [];
     private readonly List<string> _roles = [];
+    private readonly List<string> _databases = [];
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private NpgsqlDataSource? _admin;
@@ -59,6 +60,25 @@ public sealed class PostgresFixture : IAsyncLifetime
         finally { _gate.Release(); }
 
         return new NpgsqlConnectionStringBuilder(_baseConnectionString) { SearchPath = schema }.ConnectionString;
+    }
+
+    /// <summary>Creates a fresh database and returns a connection string for it. For a test of
+    /// something that claims fixed schema names (a generated host's <c>read_models</c> and
+    /// <c>search</c>), where a per-test schema can't give isolation.</summary>
+    public async Task<string> NewDatabaseAsync()
+    {
+        var database = "d_" + Guid.NewGuid().ToString("N");
+        await _gate.WaitAsync();
+        try
+        {
+            // CREATE DATABASE can't run in a transaction or share a command with anything else.
+            await using var cmd = _admin!.CreateCommand($"CREATE DATABASE \"{database}\"");
+            await cmd.ExecuteNonQueryAsync();
+            _databases.Add(database);
+        }
+        finally { _gate.Release(); }
+
+        return new NpgsqlConnectionStringBuilder(_baseConnectionString) { Database = database }.ConnectionString;
     }
 
     /// <summary>Creates a throwaway <c>LOGIN</c> role with no privileges beyond
@@ -102,6 +122,9 @@ public sealed class PostgresFixture : IAsyncLifetime
         {
             foreach (var schema in _schemas)
                 await Exec(conn, $"DROP SCHEMA IF EXISTS \"{schema}\" CASCADE");
+            // FORCE: a killed host process may not have closed its pooled connections yet.
+            foreach (var database in _databases)
+                await Exec(conn, $"DROP DATABASE IF EXISTS \"{database}\" WITH (FORCE)");
             foreach (var role in _roles)
             {
                 await Exec(conn, $"DROP OWNED BY \"{role}\"");

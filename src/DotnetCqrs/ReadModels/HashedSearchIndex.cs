@@ -8,7 +8,7 @@ namespace DotnetCqrs.ReadModels;
 /// A consumer that fills keyed-hash search indexes (schema 3.1.0 <c>match</c>, modes
 /// <c>exact</c>/<c>prefix</c>, on a <c>field.pii</c> field) for ONE version of the
 /// application's index key. Generated as <c>{Collection}HashedIndex</c>; it lives in the
-/// <see cref="SqliteSearchIndexStore"/> beside the <c>contains</c> indexes, under the same rules
+/// <see cref="ISearchIndexStore"/> beside the <c>contains</c> indexes, under the same rules
 /// (checkpoint in the same file, rows deleted on erasure, excluded from backups).
 ///
 /// <para>Every row carries the key version it was hashed with. Rows of two versions can sit in
@@ -75,7 +75,7 @@ public static class HashedSearchIndexRegistration
     /// <param name="latestVersion">The key's latest version, from the facade at startup.</param>
     /// <param name="create">Makes the index consumer for a key version.</param>
     public static async Task RegisterHashedSearchIndexAsync(
-        this ConsumerEngine engine, SqliteSearchIndexStore store, HashedIndexKey key, int latestVersion,
+        this ConsumerEngine engine, ISearchIndexStore store, HashedIndexKey key, int latestVersion,
         Func<int, IHashedSearchIndex> create, Action<string>? log = null, CancellationToken ct = default)
     {
         log ??= _ => { };
@@ -129,7 +129,7 @@ public static class HashedSearchIndexRegistration
     }
 
     private sealed class SwitchOver(
-        ConsumerEngine engine, SqliteSearchIndexStore store, HashedIndexKey key,
+        ConsumerEngine engine, ISearchIndexStore store, HashedIndexKey key,
         IHashedSearchIndex live, IHashedSearchIndex rebuild, Action<string> log)
     {
         public long LivePosition { get; set; }

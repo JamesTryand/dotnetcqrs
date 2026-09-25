@@ -45,7 +45,7 @@ internal sealed class StandInKmsFacade : IAsyncDisposable
     private async Task ForwardAsync(HttpContext context)
     {
         using var request = new HttpRequestMessage(new HttpMethod(context.Request.Method),
-            new Uri(new Uri("https://kms.test/"), context.Request.Path.Value!.TrimStart('/')));
+            new Uri(new Uri("https://kms.test/"), context.Request.Path.Value!.TrimStart('/') + context.Request.QueryString.Value));
         using var body = new MemoryStream();
         await context.Request.Body.CopyToAsync(body);
         if (body.Length > 0) request.Content = new ByteArrayContent(body.ToArray());

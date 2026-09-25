@@ -62,6 +62,23 @@ public sealed class PostgresReadModelStore : IReadModelStore
         return new PostgresReadModelStore(connection, NpgsqlDataSource.Create(connectionString), readerRole);
     }
 
+    /// <summary>Opens the store in schema <paramref name="schema"/> of the database named by
+    /// <paramref name="connectionString"/>, creating the schema if necessary. The connection's
+    /// search path is set to it, so the projections' tables land there. A generated host uses
+    /// this to keep read models apart from the event store's tables in a shared database: a
+    /// read model called <c>events</c> would otherwise collide with the log itself.</summary>
+    public static async Task<PostgresReadModelStore> OpenInSchemaAsync(string connectionString, string schema, CancellationToken ct = default)
+    {
+        await using (var setup = new NpgsqlConnection(connectionString))
+        {
+            await setup.OpenAsync(ct);
+            await using var create = setup.CreateCommand();
+            create.CommandText = $"CREATE SCHEMA IF NOT EXISTS {Quote(schema)}";
+            await create.ExecuteNonQueryAsync(ct);
+        }
+        return await OpenAsync(new NpgsqlConnectionStringBuilder(connectionString) { SearchPath = schema }.ConnectionString, ct);
+    }
+
     /// <summary>Revokes write privileges on <paramref name="tables"/> from <c>PUBLIC</c>
     /// (Postgres grants none by default — this makes the policy explicit and covers a
     /// database that has loosened it), and grants <c>SELECT</c> to the reader role if one
@@ -75,12 +92,18 @@ public sealed class PostgresReadModelStore : IReadModelStore
     /// <c>InitAsync</c> created the tables in (whatever the connection string's
     /// <c>Search Path</c> selects, or <c>public</c> by default). A name that does not
     /// resolve there surfaces as a <c>PostgresException</c> (<c>42P01</c>) rather than
-    /// silently guarding nothing.</para></summary>
+    /// silently guarding nothing.</para>
+    ///
+    /// <para>A name resolves the way it would written unquoted in the projection's own SQL
+    /// (<c>to_regclass</c>): <c>orderSummary</c> finds the table <c>CREATE TABLE orderSummary</c>
+    /// made, which Postgres folded to <c>ordersummary</c>. Quoting the name as given would miss
+    /// it.</para></summary>
     public async Task InstallWriteGuardAsync(IReadOnlyList<string> tables, CancellationToken ct = default)
     {
         foreach (var table in tables)
         {
-            var quoted = Quote(table);
+            // Unresolvable: fall back to the quoted name, so the REVOKE raises 42P01.
+            var quoted = await ResolveTableAsync(table, ct) ?? Quote(table);
             await ExecuteAsync($"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON {quoted} FROM PUBLIC", ct);
             if (_readerRole is not null)
                 await ExecuteAsync($"GRANT SELECT ON {quoted} TO {Quote(_readerRole)}", ct);
@@ -94,6 +117,14 @@ public sealed class PostgresReadModelStore : IReadModelStore
     {
         await using var connection = await _reads.OpenConnectionAsync(ct);
         return await read(connection, ct);
+    }
+
+    private async Task<string?> ResolveTableAsync(string table, CancellationToken ct)
+    {
+        await using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT to_regclass(@table)::text";
+        command.AddParam("@table", table);
+        return await command.ExecuteScalarAsync(ct) as string;
     }
 
     private async Task ExecuteAsync(string sql, CancellationToken ct)

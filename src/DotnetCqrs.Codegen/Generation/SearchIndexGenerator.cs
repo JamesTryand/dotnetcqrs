@@ -6,7 +6,8 @@ namespace DotnetCqrs.Codegen.Generation;
 /// Generates the search index for a read model's pii <c>contains</c> filters (schema
 /// 3.1.0 <c>match</c>): a consumer that keeps, per filter, a table of
 /// <c>(row_key, term, subject)</c> in the separate search store
-/// (<c>SqliteSearchIndexStore</c>, <c>search.db</c>). <c>term</c> is the field's value,
+/// (an <c>ISearchIndexStore</c>: <c>search.db</c> on SQLite, the unlogged <c>search</c> schema on
+/// Postgres). <c>term</c> is the field's value,
 /// revealed and normalized, which is the one place plaintext PII is kept at rest.
 ///
 /// <para>Why that is acceptable, and the rules it follows (findings, "D5 decisions"):
@@ -44,17 +45,18 @@ internal static class SearchIndexGenerator
         b.AppendLine("/// in the separate search store, deleted on erasure, excluded from backups, rebuilt from the log.");
         b.AppendLine("/// Register it with the store as its checkpoint store:");
         b.AppendLine("/// <c>engine.Register(index, searchStore)</c>.</summary>");
-        b.AppendLine($"public sealed class {typeName}(SqliteSearchIndexStore index, IKmsClient kms, PiiRevealCache? cache = null) : IConsumer");
+        b.AppendLine($"public sealed class {typeName}(ISearchIndexStore index, IKmsClient kms, PiiRevealCache? cache = null) : IConsumer");
         b.AppendLine("{");
         b.AppendLine($"    public string Name => \"{readModel.Collection}:search\";");
         b.AppendLine();
         b.AppendLine("    public async Task InitAsync(CancellationToken ct = default)");
         b.AppendLine("    {");
         b.AppendLine("        await using var command = index.Connection.CreateCommand();");
-        b.AppendLine("        command.CommandText = \"\"\"");
+        // The store says how to create a table: unlogged on Postgres (ISearchIndexStore.CreateTable).
+        b.AppendLine("        command.CommandText = $\"\"\"");
         foreach (var table in tables)
         {
-            b.AppendLine($"            CREATE TABLE IF NOT EXISTS {table} (row_key TEXT PRIMARY KEY, term TEXT NOT NULL, subject TEXT NOT NULL);");
+            b.AppendLine($"            {{index.CreateTable}} IF NOT EXISTS {table} (row_key TEXT PRIMARY KEY, term TEXT NOT NULL, subject TEXT NOT NULL);");
             b.AppendLine($"            CREATE INDEX IF NOT EXISTS {table}_subject ON {table} (subject);");
         }
         b.AppendLine("            \"\"\";");
@@ -67,6 +69,9 @@ internal static class SearchIndexGenerator
         b.AppendLine("        {");
         foreach (var table in tables)
             b.AppendLine($"            await ExecuteAsync(\"DELETE FROM {table} WHERE subject = @subject\", ct, (\"@subject\", ev.AggregateId));");
+        // Every table, not just those that lost a row: an earlier value of this subject's can
+        // survive on disk as an old row version from an update (ISearchIndexStore.ScrubAsync).
+        b.AppendLine($"            await index.ScrubAsync({GenerationSupport.QuotedArray(tables)}, ct);");
         b.AppendLine("            return;");
         b.AppendLine("        }");
         if (readModel.SeedOn.Count == 0)

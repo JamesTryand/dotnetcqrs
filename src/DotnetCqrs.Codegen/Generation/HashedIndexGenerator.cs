@@ -50,7 +50,7 @@ internal static class HashedIndexGenerator
         b.AppendLine("/// index key version, in the separate search store: deleted on erasure, excluded from backups,");
         b.AppendLine("/// rebuilt from the log. Register it with <c>engine.RegisterHashedSearchIndexAsync</c>, which");
         b.AppendLine("/// handles key rotation.</summary>");
-        b.AppendLine($"public sealed class {typeName}(SqliteSearchIndexStore index, IKmsClient kms, string keyName, int keyVersion, PiiRevealCache? cache = null) : IHashedSearchIndex");
+        b.AppendLine($"public sealed class {typeName}(ISearchIndexStore index, IKmsClient kms, string keyName, int keyVersion, PiiRevealCache? cache = null) : IHashedSearchIndex");
         b.AppendLine("{");
         b.AppendLine($"    private static readonly string[] Tables = {GenerationSupport.QuotedArray(tables)};");
         b.AppendLine();
@@ -61,10 +61,11 @@ internal static class HashedIndexGenerator
         b.AppendLine("    public async Task InitAsync(CancellationToken ct = default)");
         b.AppendLine("    {");
         b.AppendLine("        await using var command = index.Connection.CreateCommand();");
-        b.AppendLine("        command.CommandText = \"\"\"");
+        // The store says how to create a table: unlogged on Postgres (ISearchIndexStore.CreateTable).
+        b.AppendLine("        command.CommandText = $\"\"\"");
         foreach (var table in tables)
         {
-            b.AppendLine($"            CREATE TABLE IF NOT EXISTS {table} (row_key TEXT NOT NULL, key_version INTEGER NOT NULL, hash TEXT NOT NULL, subject TEXT NOT NULL);");
+            b.AppendLine($"            {{index.CreateTable}} IF NOT EXISTS {table} (row_key TEXT NOT NULL, key_version INTEGER NOT NULL, hash TEXT NOT NULL, subject TEXT NOT NULL);");
             b.AppendLine($"            CREATE INDEX IF NOT EXISTS {table}_hash ON {table} (hash);");
             b.AppendLine($"            CREATE INDEX IF NOT EXISTS {table}_row ON {table} (row_key, key_version);");
             b.AppendLine($"            CREATE INDEX IF NOT EXISTS {table}_subject ON {table} (subject);");
@@ -86,6 +87,7 @@ internal static class HashedIndexGenerator
         b.AppendLine("            // Every version: a hash left behind would confirm a guessed value.");
         b.AppendLine("            foreach (var table in Tables)");
         b.AppendLine("                await ExecuteAsync($\"DELETE FROM {table} WHERE subject = @subject\", ct, (\"@subject\", ev.AggregateId));");
+        b.AppendLine("            await index.ScrubAsync(Tables, ct);");
         b.AppendLine("            return;");
         b.AppendLine("        }");
         if (readModel.SeedOn.Count == 0)

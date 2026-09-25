@@ -4,8 +4,11 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
 using DotnetCqrs.EventStore;
+using DotnetCqrs.Postgres;
 using DotnetCqrs.ReadModels;
 using DotnetCqrs.Tests.Crypto;
+using DotnetCqrs.Tests.Postgres;
+using Npgsql;
 
 namespace DotnetCqrs.Tests.Codegen;
 
@@ -16,13 +19,19 @@ namespace DotnetCqrs.Tests.Codegen;
 /// own `verify` command), and a real HTTP request through the generated
 /// `MapCqrsGateway()` actually dispatches a command end to end -- not just that the
 /// process starts without throwing.
+///
+/// <para>Each test runs twice: on the SQLite files the host uses by default, and with
+/// <c>DOTNETCQRS_POSTGRES</c> pointing it at a fresh Postgres database (skipped unless
+/// <c>DOTNETCQRS_PG</c> is set). The generated code is identical; only the stores differ.</para>
 /// </summary>
-public class HostGenerationTests : IDisposable
+public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>
 {
     private readonly string _scratchDir;
+    private readonly PostgresFixture _pg;
 
-    public HostGenerationTests()
+    public HostGenerationTests(PostgresFixture pg)
     {
+        _pg = pg;
         _scratchDir = Path.Combine(Path.GetTempPath(), $"dotnetcqrs-codegen-host-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_scratchDir);
     }
@@ -80,6 +89,44 @@ public class HostGenerationTests : IDisposable
         return (process.ExitCode, stdout + stderr);
     }
 
+    /// <summary>The host's event store: its <c>events.db</c>, opened as a second WAL reader, or
+    /// the Postgres database it was pointed at.</summary>
+    private async Task<IEventStore> OpenEventStoreAsync(string? postgres) => postgres is not null
+        ? await PostgresEventStore.OpenAsync(postgres)
+        : await SqliteEventStore.OpenAsync(Directory.GetFiles(_scratchDir, "events.db", SearchOption.AllDirectories).Single());
+
+    /// <summary>The host's search index store: <c>search.db</c> beside <c>events.db</c>, or the
+    /// <c>search</c> schema of its Postgres database.</summary>
+    private async Task<ISearchIndexStore> OpenSearchStoreAsync(string? postgres) => postgres is not null
+        ? await PostgresSearchIndexStore.OpenAsync(postgres)
+        : await SqliteSearchIndexStore.OpenAsync(Path.Combine(
+            Path.GetDirectoryName(Directory.GetFiles(_scratchDir, "events.db", SearchOption.AllDirectories).Single())!, "search.db"));
+
+    private static async Task<object?> PgScalarAsync(string connectionString, string sql)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, connection);
+        return await command.ExecuteScalarAsync();
+    }
+
+    /// <summary>Starts a generated host with its output drained into <paramref name="log"/>: an
+    /// unread redirected pipe can fill and block the host, and on failure the log says why.</summary>
+    private static Process StartHost(ProcessStartInfo psi, System.Text.StringBuilder log)
+    {
+        var process = Process.Start(psi)!;
+        process.OutputDataReceived += (_, e) => { if (e.Data is not null) lock (log) log.AppendLine(e.Data); };
+        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) lock (log) log.AppendLine(e.Data); };
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        return process;
+    }
+
+    private static string Tail(System.Text.StringBuilder log)
+    {
+        lock (log) return log.Length <= 6000 ? log.ToString() : log.ToString(log.Length - 6000, 6000);
+    }
+
     /// <summary>Binds then immediately releases a loopback port -- the ordinary
     /// (small-race) way to pick a free port for a child process to listen on.</summary>
     private static int FreeTcpPort()
@@ -92,7 +139,17 @@ public class HostGenerationTests : IDisposable
     }
 
     [Fact(Timeout = 300000)]
-    public async Task Generate_host_builds_self_verifies_and_dispatches_a_real_command_over_http()
+    public Task Generate_host_builds_self_verifies_and_dispatches_a_real_command_over_http()
+        => RunOrderFulfillmentHostAsync(postgres: null);
+
+    [SkippableFact(Timeout = 600000)]
+    public async Task Generate_host_builds_self_verifies_and_dispatches_a_real_command_over_http_on_postgres()
+    {
+        Skip.IfNot(_pg.Available, _pg.SkipReason);
+        await RunOrderFulfillmentHostAsync(await _pg.NewDatabaseAsync());
+    }
+
+    private async Task RunOrderFulfillmentHostAsync(string? postgres)
     {
         var (genExit, genOutput) = await RunAsync("dotnet",
         [
@@ -149,8 +206,10 @@ public class HostGenerationTests : IDisposable
         psi.ArgumentList.Add("--no-build");
         psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
         psi.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
+        psi.Environment["DOTNETCQRS_POSTGRES"] = postgres ?? "";
 
-        using var process = Process.Start(psi)!;
+        var hostLog = new System.Text.StringBuilder();
+        using var process = StartHost(psi, hostLog);
         try
         {
             using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
@@ -169,8 +228,8 @@ public class HostGenerationTests : IDisposable
                 }
             }
 
-            Assert.False(process.HasExited, $"generated host process exited early (code {(process.HasExited ? process.ExitCode : (int?)null)})");
-            Assert.NotNull(response);
+            Assert.False(process.HasExited, $"generated host process exited early (code {(process.HasExited ? process.ExitCode : (int?)null)}):\n{Tail(hostLog)}");
+            Assert.True(response is not null, $"generated host never answered:\n{Tail(hostLog)}");
             Assert.Equal(HttpStatusCode.OK, response!.StatusCode);
             var events = await response.Content.ReadFromJsonAsync<JsonElement>();
             Assert.Equal(1, events.GetArrayLength());
@@ -179,15 +238,13 @@ public class HostGenerationTests : IDisposable
             // auto-ship-pending-orders is a same-aggregate reactor (order-placed ->
             // ship-order, both "order"): it must dispatch back into the SAME order's
             // stream, not a derived one nothing created (the Milestone 5 finding this
-            // regression-tests). ConsumerEngine polls every ~1s, so poll the real
-            // events.db -- written by the live host process, opened here as a second
-            // WAL reader -- for OrderShipped to land on stream ("order", "o1").
-            var eventsDbPath = Directory.GetFiles(_scratchDir, "events.db", SearchOption.AllDirectories).Single();
+            // regression-tests). ConsumerEngine polls every ~1s, so poll the host's real
+            // event store for OrderShipped to land on stream ("order", "o1").
             var shipped = false;
             for (var attempt = 0; attempt < 30 && !shipped; attempt++)
             {
                 await Task.Delay(500);
-                await using var store = await SqliteEventStore.OpenAsync(eventsDbPath);
+                await using var store = await OpenEventStoreAsync(postgres);
                 var stream = await store.LoadStreamAsync("order", "o1");
                 shipped = stream.Any(e => e.Type == "OrderShipped");
             }
@@ -251,7 +308,17 @@ public class HostGenerationTests : IDisposable
         """;
 
     [Fact(Timeout = 300000)]
-    public async Task A_generated_pii_host_encrypts_on_write_reveals_on_read_and_redacts_after_erasure()
+    public Task A_generated_pii_host_encrypts_on_write_reveals_on_read_and_redacts_after_erasure()
+        => RunPiiHostAsync(postgres: null);
+
+    [SkippableFact(Timeout = 600000)]
+    public async Task A_generated_pii_host_encrypts_on_write_reveals_on_read_and_redacts_after_erasure_on_postgres()
+    {
+        Skip.IfNot(_pg.Available, _pg.SkipReason);
+        await RunPiiHostAsync(await _pg.NewDatabaseAsync());
+    }
+
+    private async Task RunPiiHostAsync(string? postgres)
     {
         var inputPath = Path.Combine(_scratchDir, "..", $"pii-host-{Guid.NewGuid():N}.json");
         await File.WriteAllTextAsync(inputPath, PiiHostJson);
@@ -280,9 +347,11 @@ public class HostGenerationTests : IDisposable
         psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
         psi.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
         psi.Environment["KMS_INDEX_KEY"] = "pii-host-test";
+        psi.Environment["DOTNETCQRS_POSTGRES"] = postgres ?? "";
 
         // Reassigned by the restart below; local functions capture the variables.
-        var process = Process.Start(psi)!;
+        var hostLog = new System.Text.StringBuilder();
+        var process = StartHost(psi, hostLog);
         var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
         try
         {
@@ -299,12 +368,11 @@ public class HostGenerationTests : IDisposable
                 }
                 catch (HttpRequestException) { /* not listening yet -- retry */ }
             }
-            Assert.False(process.HasExited, $"generated host exited early (code {(process.HasExited ? process.ExitCode : (int?)null)})");
+            Assert.False(process.HasExited, $"generated host exited early (code {(process.HasExited ? process.ExitCode : (int?)null)}):\n{Tail(hostLog)}");
             Assert.NotNull(registered);
             Assert.True(registered!.IsSuccessStatusCode, await registered.Content.ReadAsStringAsync());
 
-            var eventsDbPath = Directory.GetFiles(_scratchDir, "events.db", SearchOption.AllDirectories).Single();
-            await using (var store = await SqliteEventStore.OpenAsync(eventsDbPath))
+            await using (var store = await OpenEventStoreAsync(postgres))
             {
                 var data = (await store.LoadStreamAsync("customer", "c1")).Single().Data;
                 Assert.DoesNotContain("alice@example.com", data);
@@ -327,8 +395,8 @@ public class HostGenerationTests : IDisposable
             var email = await PollEmailAsync(e => e.ValueKind == JsonValueKind.String);
             Assert.Equal("alice@example.com", email.GetString());
 
-            // Search: the pii contains filter is served from search.db, which the generated host
-            // opens, attaches and fills through the consumer engine.
+            // Search: the pii contains filter is served from the search store (search.db, attached;
+            // or the Postgres search schema), which the host fills through the consumer engine.
             async Task<int> SearchHitsAsync(string term) =>
                 (await client.GetFromJsonAsync<JsonElement>($"/api/query/customers?emailSearch={term}")).GetArrayLength();
             var found = 0;
@@ -338,8 +406,20 @@ public class HostGenerationTests : IDisposable
                 if (found == 0) await Task.Delay(500);
             }
             Assert.Equal(1, found);
-            var searchDbPath = Path.Combine(Path.GetDirectoryName(eventsDbPath)!, "search.db");
-            Assert.True(File.Exists(searchDbPath), "search.db should sit beside events.db");
+            if (postgres is null)
+            {
+                var eventsDbPath = Directory.GetFiles(_scratchDir, "events.db", SearchOption.AllDirectories).Single();
+                Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(eventsDbPath)!, "search.db")), "search.db should sit beside events.db");
+            }
+            else
+            {
+                // Every table holding the plaintext index, its hashes or their checkpoints is
+                // unlogged: out of the WAL, physical backups and replicas.
+                Assert.True(Convert.ToInt64(await PgScalarAsync(postgres,
+                    "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'search' AND c.relkind = 'r'")) >= 4);
+                Assert.Equal(0L, Convert.ToInt64(await PgScalarAsync(postgres,
+                    "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'search' AND c.relkind = 'r' AND c.relpersistence <> 'u'")));
+            }
 
             // Milestone D6: the pii exact filter is a keyed-hash index in the same search.db, under
             // the index key the host ensured at startup.
@@ -367,7 +447,7 @@ public class HostGenerationTests : IDisposable
             facade.Handler.RotateIndexKey("pii-host-test");
             port = FreeTcpPort();
             psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
-            process = Process.Start(psi)!;
+            process = StartHost(psi, hostLog);
             client.Dispose();
             client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
             for (var attempt = 0; attempt < 60; attempt++)
@@ -376,11 +456,11 @@ public class HostGenerationTests : IDisposable
                 try { (await client.GetAsync("/api/query/customers")).EnsureSuccessStatusCode(); break; }
                 catch (HttpRequestException) { /* not listening yet -- retry */ }
             }
-            Assert.False(process.HasExited, "restarted host exited early");
+            Assert.False(process.HasExited, $"restarted host exited early:\n{Tail(hostLog)}");
             int? indexVersion = null;
             for (var attempt = 0; attempt < 40 && indexVersion != 2; attempt++)
             {
-                await using (var search = await SqliteSearchIndexStore.OpenAsync(searchDbPath))
+                await using (var search = await OpenSearchStoreAsync(postgres))
                     indexVersion = await search.IndexVersionAsync("customers:hashed");
                 if (indexVersion != 2) await Task.Delay(500);
             }
@@ -388,6 +468,12 @@ public class HostGenerationTests : IDisposable
             Assert.Equal(1, await ExactHitsAsync("alice@example.com"));
             Assert.Equal(2, facade.Handler.HmacKeyVersions[^1]); // the search now hashes at version 2
             Assert.DoesNotContain(null, facade.Handler.HmacKeyVersions); // every call pinned a version
+
+            // On Postgres an erasure rewrites the index tables (VACUUM FULL), so no deleted row
+            // version survives in their files: the rewrite gives the table a new file.
+            const string containsTable = "search.customers__match_email_email";
+            var fileBeforeErasure = postgres is null ? null
+                : await PgScalarAsync(postgres, $"SELECT pg_relation_filenode('{containsTable}')");
 
             // Erase through the gateway: the built-in data-subject aggregate is registered.
             using var erased = await client.PostAsJsonAsync("/api/cqrs/dataSubject/c1/EraseSubject", new { });
@@ -407,11 +493,52 @@ public class HostGenerationTests : IDisposable
             }
             Assert.Equal(0, remaining);
             Assert.Equal(0, await PollExactAsync("alice@example.com", 0)); // hashed rows deleted too
+            if (postgres is not null)
+            {
+                object? fileAfterErasure = fileBeforeErasure;
+                for (var attempt = 0; attempt < 40 && Equals(fileAfterErasure, fileBeforeErasure); attempt++)
+                {
+                    fileAfterErasure = await PgScalarAsync(postgres, $"SELECT pg_relation_filenode('{containsTable}')");
+                    if (Equals(fileAfterErasure, fileBeforeErasure)) await Task.Delay(500);
+                }
+                Assert.NotEqual(fileBeforeErasure, fileAfterErasure);
+            }
 
             // A returning person is a new subject: the guard refuses the old id.
             using var again = await client.PostAsJsonAsync("/api/cqrs/customer/c1b/RegisterCustomer",
                 new { customerId = "c1", email = "alice@example.com" });
             Assert.False(again.IsSuccessStatusCode, "PII for an erased subject id must be refused");
+
+            // Restore drill: the search store comes back from a backup taken before the erasure,
+            // with the erased person's row and the ledger position it had then. The log gives
+            // the index nothing to replay (its consumer is past the SubjectErased event), so only
+            // the startup purge against the key service's erasure ledger can remove the row.
+            process.Kill(entireProcessTree: true);
+            process.WaitForExit(5000);
+            process.Dispose();
+            await using (var search = await OpenSearchStoreAsync(postgres))
+            {
+                await using var restore = search.Connection.CreateCommand();
+                restore.CommandText = "INSERT INTO customers__match_email_email (row_key, term, subject) VALUES ('c1', 'alice@example.com', 'c1')";
+                await restore.ExecuteNonQueryAsync();
+                await search.SaveCheckpointAsync(ISearchIndexStore.ErasureLedgerCheckpoint, 0);
+            }
+            port = FreeTcpPort();
+            psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+            process = StartHost(psi, hostLog);
+            client.Dispose();
+            client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            int? restoredHits = null;
+            for (var attempt = 0; attempt < 60 && restoredHits is null; attempt++)
+            {
+                await Task.Delay(500);
+                try { restoredHits = await SearchHitsAsync("alice"); }
+                catch (HttpRequestException) { /* not listening yet -- retry */ }
+            }
+            Assert.False(process.HasExited, $"host restarted after the restore exited early:\n{Tail(hostLog)}");
+            // The first answer the restarted host gives is already purged: the purge runs before
+            // the routes open.
+            Assert.True(restoredHits == 0, $"expected 0 hits after the restore, got {restoredHits?.ToString() ?? "no answer"}:\n{Tail(hostLog)}");
         }
         finally
         {

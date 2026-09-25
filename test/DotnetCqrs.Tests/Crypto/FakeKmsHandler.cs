@@ -34,9 +34,14 @@ internal sealed class FakeKmsHandler : HttpMessageHandler
 
     public int? IndexKeyVersion(string name) => _indexKeys.TryGetValue(name, out var v) ? v : null;
 
+    /// <summary>The erasure ledger: one entry per destroy call, like the facade's.</summary>
+    public List<string> Erasures { get; } = [];
+
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         var segments = request.RequestUri!.AbsolutePath.Trim('/').Split('/');
+        if (segments[1] == "erasures" && request.Method == HttpMethod.Get)
+            return ListErasures(request.RequestUri);
         if (segments[1] == "index-keys")
         {
             // ["v1", "index-keys", "{name}", "{op}"?]
@@ -76,9 +81,20 @@ internal sealed class FakeKmsHandler : HttpMessageHandler
         return new HttpResponseMessage(HttpStatusCode.NoContent);
     }
 
+    private HttpResponseMessage ListErasures(Uri uri)
+    {
+        var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
+        var after = int.TryParse(query["after"], out var a) ? a : 0;
+        var limit = int.TryParse(query["limit"], out var l) ? l : 1000;
+        if (after > Erasures.Count) after = 0; // the facade's restart rule
+        var page = Erasures.Skip(after).Take(limit).ToList();
+        return JsonResponse(HttpStatusCode.OK, JsonSerializer.Serialize(new { subjectIds = page, next = after + page.Count }));
+    }
+
     private HttpResponseMessage Destroy(string subjectId)
     {
         _keys.Remove(subjectId);
+        Erasures.Add(subjectId);
         return new HttpResponseMessage(HttpStatusCode.NoContent); // idempotent, per contract
     }
 

@@ -4,9 +4,9 @@
 > in-suite tests under `test/DotnetCqrs.Tests/Postgres/`, `[SkippableFact]`-gated on
 > `DOTNETCQRS_PG`. See "Verification run" at the bottom.
 >
-> **The stores are verified; a generated app is not (2026-09-24).** A codegen-generated
-> host can't be deployed on Postgres yet, and PII search has no Postgres store. See
-> "Not yet supported on Postgres" before choosing this backend.
+> **Generated apps too, since 2026-09-25.** A codegen-generated host runs on SQLite or
+> Postgres, chosen at startup by `DOTNETCQRS_POSTGRES`, including PII (encrypt on write,
+> search, erasure). Its end-to-end tests run on both. See "Generated apps on Postgres".
 
 Milestone 6 extracted `src/DotnetCqrs.Abstractions/` — the provider-neutral contracts
 `IEventStore` / `IReadModelStore` / `IDeadLetterStore` (plus the already-abstract
@@ -35,9 +35,9 @@ The M6 groundwork did most of the work:
   `NpgsqlConnection` is one. Hand-written and generated projection bodies run against
   Postgres byte-identical — the only Postgres-flavoured thing is the read model's own
   DDL (`boolean`, not SQLite's `INTEGER` 0/1), which is projection-owned schema anyway.
-  **Correction (2026-09-24):** that holds for hand-written projections, which own their
-  DDL. *Generated* projections emit SQLite's DDL on every backend, so they are not yet
-  Postgres-safe. See "Not yet supported on Postgres".
+  **Correction (2026-09-24):** that held for hand-written projections, which own their
+  DDL, but not for *generated* ones, which emitted SQLite-only column types. Fixed
+  2026-09-25: see "Generated apps on Postgres".
 - **`AddParam(name, null)`.** M6 flagged that Npgsql historically rejected an untyped
   `DBNull` parameter ("cannot determine parameter type"). Tested on Npgsql 10.0.3
   (`PostgresAddParamTests`): it is accepted and writes SQL `NULL`. No change to
@@ -139,44 +139,74 @@ verbatim.
 - **`PostgresReadModelStore` holds one dedicated connection**, like its SQLite sibling —
   a projection is a single sequential consumer, so a pool would buy nothing and the
   `IReadModelStore.Connection` contract wants one connection to hand out.
+- **Reads that overlap go through `IReadModelStore.ReadAsync`** (2026-09-25), which the
+  Postgres store serves from a pool on the same connection string. Query routes and
+  authorization checks run once per request, alongside each other and the projections,
+  and Npgsql refuses a second command on a busy connection (`A command is already in
+  progress`). The default implementation uses `Connection`, which SQLite serializes
+  internally.
 
-## Not yet supported on Postgres
+## Generated apps on Postgres
 
-As of 2026-09-24 (dotnetcqrs `f639662`). The first four items were reproduced against a
-real `postgres:17-alpine` by running the SQL the generators emit. Tracked, with fixes and
-the search-store design, in the notebook's `platform/eventmodeling-codegen` `NEEDS.md`
-("Postgres parity").
+As of 2026-09-25, a host from `generate --host` runs on either database with no change to
+the generated code: set `DOTNETCQRS_POSTGRES` to a connection string and the event log
+(the database's default schema), the read models (schema `read_models`) and any search
+index (schema `search`) all live in that database; leave it unset for the SQLite files
+under `data/`. One application per database, as one set of files per application.
 
-1. **Generated bool fields fail to project.** `ProjectionGenerator` makes a bool column
-   `INTEGER` and binds a C# `bool` to it: `42804: column ... is of type integer but
-   expression is of type boolean`.
-2. **Generated number fields lose precision.** They become `REAL`, which is 4 bytes on
-   Postgres (8 on SQLite): `1234567.89` reads back as `1234567.875`, and sum roll-ups
-   drift. No error is raised.
-3. **Generated query routes can't filter numeric or bool columns.** Every plain
-   query-string value is bound as text: `42883: operator does not exist: integer = text`.
-   SQLite coerces silently.
-4. **Concurrent requests fail.** The generated host shares one `IReadModelStore.Connection`
-   between every query route and the projections. Npgsql refuses overlapping commands
-   (`A command is already in progress`), so two requests at once fail. SQLite tolerates
-   this on the same single connection.
-5. **No Postgres search index store.** PII `match` filters (`contains`, and hashed
-   `exact`/`prefix`) need `SqliteSearchIndexStore`; the generated index consumers and
-   `HashedSearchIndexRegistration` take that concrete type. Its Postgres replacement has
-   to keep the erasure guarantee the separate `search.db` gives (plaintext never
-   restorable from a backup), so it is a design, not a port: unlogged tables in a
-   `search` schema, a startup purge against the KMS erasure ledger, and `VACUUM FULL` on
-   each erasure.
-6. **No generated Postgres host.** `HostProjectGenerator` always opens SQLite files (see
-   the non-goal below, now being reconsidered).
-7. **PII has never run on Postgres.** Encrypting on write, erasure (`SubjectKeyDestroyer`,
-   `SubjectStatus`) and revealing PII columns only use the provider-neutral interfaces
-   and store PII as text, so they are expected to work. But none of the 17 Postgres
-   tests exercises them.
+What it took (found on 2026-09-24 by running the generators' SQL against
+`postgres:17-alpine`; notebook `platform/eventmodeling-codegen`, `NEEDS.md`, "Postgres
+parity"):
 
-**What this means for PII:** a Postgres deployment can hold `field.pii` data once items
-1-4 and 6 are fixed and the PII/erasure tests have run on Postgres, provided the model has
-no `match` filters on PII fields. Searching personal data also needs item 5.
+1. **Column types valid on both.** A bool field is an `INTEGER` 0/1 on both databases and
+   is now written as 0/1 (Postgres refused a boolean parameter for an integer column). A
+   number or sum is `DOUBLE PRECISION` rather than `REAL`, which is only 4 bytes on
+   Postgres (`1234567.89` read back as `1234567.875`); a count is `BIGINT`. Both names keep
+   SQLite's REAL/INTEGER affinities, so SQLite output is unchanged.
+2. **Typed query params.** A generated route parses a plain query-string value for a
+   numeric or bool column before binding it (`QueryParamParser`); Postgres has no implicit
+   `integer = text`. An unparseable value is a `400`. A `scopes` param is still bound as
+   text, which is right for the id columns scopes use in practice.
+3. **Concurrent reads** through `IReadModelStore.ReadAsync` (see "Connection model").
+4. **The write-guard resolves names like unquoted SQL** (`to_regclass`), so a read model
+   called `orderSummary`, which Postgres folds to `ordersummary`, is found. Quoting the
+   name as given crashed a camel-case host at startup.
+5. **A Postgres search index store.** `ISearchIndexStore` (in Abstractions) replaced the
+   concrete `SqliteSearchIndexStore` in the generated index consumers and in
+   `HashedSearchIndexRegistration`. `PostgresSearchIndexStore` keeps the guarantee
+   `search.db` exists for, that plaintext personal data doesn't come back from a backup
+   after the person is erased:
+   - **Unlogged tables** in schema `search`: never in the WAL, so not in physical backups,
+     point-in-time recovery or replicas, and emptied by Postgres after any crash
+     recovery, including restoring a physical backup or a snapshot of a running server.
+   - **`VACUUM FULL` on each erasure** (`ISearchIndexStore.ScrubAsync`). Postgres keeps a
+     deleted or updated row's old version in the table's files until the space is reused;
+     the rewrite leaves only live rows. Erasures are rare, so this runs for every index
+     table on every erasure, holding a brief exclusive lock on each.
+   - **A startup purge against the key service's erasure ledger**
+     (`PurgeErasedSubjectsAsync`, `GET /v1/erasures`), for the cases unlogged tables don't
+     cover: a `pg_dump` without `--exclude-schema=search`, a snapshot taken after a clean
+     shutdown, and a whole-database restore to before an erasure, when the log no longer
+     holds the `SubjectErased` event either. It runs before the routes open, keeps its
+     ledger position in the store, and the host refuses to start if the key service can't
+     answer. It runs on SQLite too, which had the same exposure to a restored `search.db`.
+6. **The generated host** chooses its stores from `DOTNETCQRS_POSTGRES`.
+7. **Tests on both databases.** The generated-host tests (order fulfilment; the PII host
+   with encryption, contains/hashed search, key rotation, erasure and a restore drill)
+   and the query-route test run on SQLite and, when `DOTNETCQRS_PG` is set, on Postgres
+   (a fresh database per host test, since `read_models` and `search` are fixed names).
+   The Postgres runs also assert the `search` tables are unlogged and that an erasure
+   rewrote them. Mutation-checked: dropping the pooled read, the purge or the scrub each
+   fails a test.
+
+**Operating notes.**
+- Leave the `search` schema out of logical backups: `pg_dump --exclude-schema=search`. A
+  backup role with no `SELECT` on `search` turns a forgotten exclusion into a failed
+  dump rather than a silent copy (a superuser bypasses this). The purge is the backstop.
+- Below the database, neither backend zeroes freed disk blocks (SSDs, copy-on-write
+  filesystems; SQLite's `-wal` file keeps older page copies for a while too); disk
+  encryption covers that layer.
+- A host with PII search needs a key-management facade that serves `GET /v1/erasures`.
 
 ## Non-goals
 
@@ -188,12 +218,10 @@ no `match` filters on PII fields. Searching personal data also needs item 5.
   clear future addition.
 - **A migration framework** — the schema is one idempotent `CREATE TABLE IF NOT EXISTS`
   block, same as `SqliteEventStore.Schema`.
-- **A generated Postgres host.** `HostProjectGenerator` and every sample `Program.cs` are
-  composition roots that legitimately name a concrete provider; they stay on SQLite.
-  Generated *projections* are already provider-neutral (M6) and run on either backend.
-  **Reconsidered 2026-09-24:** the goal is now one generated app deployable on SQLite or
-  Postgres, and generated projections turned out not to be Postgres-safe (items 1-3
-  above).
+- ~~A generated Postgres host.~~ **Reversed 2026-09-25:** the goal became one generated
+  app deployable on SQLite or Postgres, and `HostProjectGenerator` now chooses at startup
+  (see "Generated apps on Postgres"). The hand-written samples' `Program.cs` files still
+  name SQLite.
 - **Sharing a database between backends**, or between `dotnetcqrs` and `pocketcqrs` — the
   same non-goal `docs/interop.md` records, for the same reasons.
 

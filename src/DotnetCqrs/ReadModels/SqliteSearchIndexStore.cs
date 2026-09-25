@@ -25,12 +25,12 @@ namespace DotnetCqrs.ReadModels;
 /// <para>Queries reach it by attaching it to the read-model connection under the schema
 /// name <c>search</c> (<see cref="AttachAsync"/>), so a route's WHERE clause can use
 /// <c>key IN (SELECT row_key FROM search.&lt;table&gt; ...)</c>. On Postgres the same SQL
-/// works against a <c>search</c> schema of UNLOGGED tables; that store isn't built yet.</para>
+/// works against <c>PostgresSearchIndexStore</c>'s <c>search</c> schema of unlogged tables.</para>
 /// </summary>
-public sealed class SqliteSearchIndexStore : ICheckpointStore, IAsyncDisposable
+public sealed class SqliteSearchIndexStore : ISearchIndexStore
 {
     /// <summary>The schema name the store is attached under on a read-model connection.</summary>
-    public const string SchemaName = "search";
+    public const string SchemaName = ISearchIndexStore.SchemaName;
 
     private readonly SqliteConnection _connection;
 
@@ -45,6 +45,8 @@ public sealed class SqliteSearchIndexStore : ICheckpointStore, IAsyncDisposable
 
     /// <summary>The file this store lives in.</summary>
     public string Path { get; }
+
+    public string CreateTable => "CREATE TABLE";
 
     public static async Task<SqliteSearchIndexStore> OpenAsync(string path, CancellationToken ct = default)
     {
@@ -130,6 +132,41 @@ public sealed class SqliteSearchIndexStore : ICheckpointStore, IAsyncDisposable
         command.Parameters.AddWithValue("@name", name);
         command.Parameters.AddWithValue("@version", version);
         await command.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>Nothing to do: <c>secure_delete</c> (set in <see cref="OpenAsync"/>) already
+    /// overwrote the deleted rows.</summary>
+    public Task ScrubAsync(IReadOnlyCollection<string> tables, CancellationToken ct = default) => Task.CompletedTask;
+
+    public async Task<int> DeleteSubjectsAsync(IReadOnlyCollection<string> subjects, CancellationToken ct = default)
+    {
+        if (subjects.Count == 0) return 0;
+
+        var tables = new List<string>();
+        await using (var list = _connection.CreateCommand())
+        {
+            list.CommandText = """
+                SELECT m.name FROM sqlite_master m JOIN pragma_table_info(m.name) c
+                WHERE m.type = 'table' AND c.name = 'subject'
+                """;
+            await using var reader = await list.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct)) tables.Add(reader.GetString(0));
+        }
+
+        var deleted = 0;
+        foreach (var table in tables)
+        {
+            // Chunked: SQLite caps the number of bound parameters in one statement.
+            foreach (var chunk in subjects.Chunk(500))
+            {
+                await using var delete = _connection.CreateCommand();
+                var names = chunk.Select((_, i) => $"@s{i}").ToList();
+                delete.CommandText = $"DELETE FROM \"{table.Replace("\"", "\"\"")}\" WHERE subject IN ({string.Join(", ", names)})";
+                for (var i = 0; i < chunk.Length; i++) delete.Parameters.AddWithValue(names[i], chunk[i]);
+                deleted += await delete.ExecuteNonQueryAsync(ct);
+            }
+        }
+        return deleted;
     }
 
     public ValueTask DisposeAsync() => _connection.DisposeAsync();
