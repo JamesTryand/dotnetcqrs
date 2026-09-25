@@ -11,7 +11,7 @@
     <PackageTags>cqrs;event-sourcing;dotnet</PackageTags>
     <!-- Local/manual `dotnet pack` fallback, matching the latest existing git tag.
          CI overrides this with -p:Version=<tag, "v" stripped> at publish time. -->
-    <Version>0.14.0</Version>
+    <Version>0.14.1</Version>
   </PropertyGroup>
 
 </Project>
