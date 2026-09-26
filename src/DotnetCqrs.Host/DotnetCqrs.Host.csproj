@@ -2,6 +2,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DotnetCqrs\DotnetCqrs.csproj" />
+    <!-- For SubjectErasedException, which the gateway maps to 410. Crypto is BCL-only
+         plus Abstractions, so this adds no third-party dependency to a host. -->
+    <ProjectReference Include="..\DotnetCqrs.Crypto\DotnetCqrs.Crypto.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

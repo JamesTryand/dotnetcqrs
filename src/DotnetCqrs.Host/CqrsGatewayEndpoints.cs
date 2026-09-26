@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Json;
+using DotnetCqrs.Crypto;
 using DotnetCqrs.Deciders;
 using DotnetCqrs.EventStore;
 using Microsoft.AspNetCore.Builder;
@@ -206,6 +207,13 @@ public static class CqrsGatewayEndpoints
         catch (ConcurrencyException ex)
         {
             return Results.Problem(ex.Message, statusCode: StatusCodes.Status409Conflict);
+        }
+        catch (SubjectErasedException ex)
+        {
+            // Permanent, unlike the 409 above: retrying with this id can never succeed, a
+            // returning person needs a new one. Not the KMS facade's own 409 -- that's a
+            // service-to-service detail, and here it would read as "reload and retry".
+            return Results.Problem(ex.Message, statusCode: StatusCodes.Status410Gone);
         }
         catch (Exception ex)
         {

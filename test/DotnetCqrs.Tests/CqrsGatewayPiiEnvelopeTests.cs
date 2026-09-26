@@ -53,6 +53,7 @@ public class CqrsGatewayPiiEnvelopeTests : IAsyncDisposable
 
     private readonly SqliteEventStore _store;
     private readonly FakeKmsHandler _kms = new();
+    private readonly KmsClient _kmsClient;
     private readonly DeciderRegistry _registry;
     private readonly WebApplication _app;
     private readonly HttpClient _client;
@@ -61,8 +62,8 @@ public class CqrsGatewayPiiEnvelopeTests : IAsyncDisposable
     {
         _store = SqliteEventStore.OpenAsync(":memory:").GetAwaiter().GetResult();
         _registry = new DeciderRegistry(_store);
-        var kms = new KmsClient(new HttpClient(_kms) { BaseAddress = new Uri("https://kms.test/") });
-        _registry.Register("customer", Customer(), new CustomerPiiProtector(kms));
+        _kmsClient = new KmsClient(new HttpClient(_kms) { BaseAddress = new Uri("https://kms.test/") });
+        _registry.Register("customer", Customer(), new CustomerPiiProtector(_kmsClient));
 
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -151,5 +152,20 @@ public class CqrsGatewayPiiEnvelopeTests : IAsyncDisposable
         var carried = Assert.Single(await _store.LoadStreamAsync("customer", "cust-2")).Data;
         Assert.Equal(stored, carried);
         Assert.Equal(encryptsSoFar, _kms.EncryptCallCount);
+    }
+
+    [Fact]
+    public async Task PII_for_an_erased_subject_is_refused_with_410_not_the_retryable_409()
+    {
+        // The facade's tombstone: once a subject's key is destroyed, EnsureKeyAsync gets a
+        // 409 and throws SubjectErasedException -- which must not reach the client as a 409,
+        // the gateway's "concurrency conflict, reload and retry".
+        await _kmsClient.DestroyKeyAsync("cust-1");
+
+        var response = await Post("cust-1", """{"email":"ada@example.com"}""");
+
+        Assert.Equal(HttpStatusCode.Gone, response.StatusCode);
+        Assert.Contains("new id", await response.Content.ReadAsStringAsync());
+        Assert.Empty(await _store.LoadStreamAsync("customer", "cust-1"));
     }
 }
