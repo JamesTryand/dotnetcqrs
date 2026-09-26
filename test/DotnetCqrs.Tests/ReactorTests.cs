@@ -128,4 +128,70 @@ public class ReactorTests
         Assert.True(await store.CheckpointAsync("reactor:fulfillment") > 0);
         Assert.Single(await store.LoadStreamAsync("task", "fulfill-o1"));
     }
+
+    /// <summary>Stands in for a key service that is down: every protect call fails the way
+    /// <c>KmsClient</c> does, until <see cref="Healthy"/> is set.</summary>
+    private sealed class FlakyProtector(Func<Exception> failure) : IPiiProtector
+    {
+        public bool Healthy { get; set; }
+
+        public Task<object> RevealAsync(object state, CancellationToken ct) => Task.FromResult(state);
+
+        public Task<IReadOnlyList<NewEvent>> ProtectAsync(string aggregateId, IReadOnlyList<NewEvent> events, CancellationToken ct) =>
+            Healthy ? Task.FromResult(events) : throw failure();
+    }
+
+    public static TheoryData<string> InfrastructureFailures => ["http", "kms-protocol", "timeout", "read-only"];
+
+    private static Exception MakeFailure(string kind) => kind switch
+    {
+        "http" => new HttpRequestException("Connection refused (kms:8200)"),
+        "kms-protocol" => new DotnetCqrs.Crypto.KmsProtocolException("encrypt response body was empty"),
+        "timeout" => new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout"),
+        "read-only" => new ReadOnlyStoreException("append"),
+        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+    };
+
+    [Theory]
+    [MemberData(nameof(InfrastructureFailures))]
+    public async Task An_infrastructure_failure_blocks_the_reactor_instead_of_dropping_the_reaction(string kind)
+    {
+        await using var store = await SqliteEventStore.OpenAsync(":memory:");
+        var registry = new DeciderRegistry(store);
+        registry.Register("order", OrderDecider());
+        var protector = new FlakyProtector(() => MakeFailure(kind));
+        registry.Register("task", TaskDecider(), protector);
+        var logs = new List<string>();
+        var engine = new ConsumerEngine(store, store);
+        engine.Register(new ReactorConsumer(new FulfillmentReactor(), registry, logs.Add));
+
+        await registry.HandleAsync("order", "o1", new Command("ConfirmOrder", "{}"));
+        await Assert.ThrowsAsync<AggregateException>(() => engine.RunOnceAsync());
+
+        Assert.Equal(0, await store.CheckpointAsync("reactor:fulfillment")); // not advanced past the cause
+        Assert.DoesNotContain(logs, l => l.Contains("reaction rejected"));
+        Assert.Empty(await store.LoadStreamAsync("task", "fulfill-o1"));
+
+        protector.Healthy = true; // the dependency comes back: the next pass delivers it
+        await engine.RunOnceAsync();
+        Assert.Single(await store.LoadStreamAsync("task", "fulfill-o1"));
+        Assert.True(await store.CheckpointAsync("reactor:fulfillment") > 0);
+    }
+
+    [Fact]
+    public async Task A_domain_rejection_is_still_dropped_and_the_checkpoint_advances()
+    {
+        await using var store = await SqliteEventStore.OpenAsync(":memory:");
+        var (registry, _) = SetUpRegistry(store);
+        var logs = new List<string>();
+        var engine = new ConsumerEngine(store, store);
+        engine.Register(new ReactorConsumer(new FulfillmentReactor(), registry, logs.Add));
+
+        await registry.HandleAsync("task", "fulfill-o1", new Command("CreateTask", "{}")); // target already exists
+        await registry.HandleAsync("order", "o1", new Command("ConfirmOrder", "{}"));
+        await engine.RunOnceAsync(); // must not throw
+
+        Assert.Contains(logs, l => l.Contains("reaction rejected") && l.Contains("task already exists"));
+        Assert.True(await store.CheckpointAsync("reactor:fulfillment") > 0);
+    }
 }

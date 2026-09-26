@@ -21,8 +21,10 @@ public sealed class KmsIndexKeyNotFoundException(string name)
 
 /// <summary>The facade responded with something this client doesn't know how to
 /// interpret — an unexpected status code, a missing/malformed JSON body, or (for a
-/// batch call) a per-item error surfaced through <see cref="Pii{T}.RevealAsync"/>.</summary>
-public sealed class KmsProtocolException : Exception
+/// batch call) a per-item error surfaced through <see cref="Pii{T}.RevealAsync"/>. An
+/// <see cref="DotnetCqrs.Deciders.IInfrastructureFailure"/>: the gateway answers 503 and a
+/// reactor retries, rather than either treating it as the command being refused.</summary>
+public sealed class KmsProtocolException : Exception, DotnetCqrs.Deciders.IInfrastructureFailure
 {
     public KmsProtocolException(string message) : base(message) { }
     public KmsProtocolException(string message, Exception inner) : base(message, inner) { }
