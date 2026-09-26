@@ -6,6 +6,8 @@ using DotnetCqrs.EventStore;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace DotnetCqrs.Host;
 
@@ -215,6 +217,25 @@ public static class CqrsGatewayEndpoints
             // service-to-service detail, and here it would read as "reload and retry".
             return Results.Problem(ex.Message, statusCode: StatusCodes.Status410Gone);
         }
+        catch (Exception ex) when (InfrastructureFailure.IsInfrastructure(ex))
+        {
+            // A dependency failed around Decide (loading, revealing/protecting PII,
+            // appending), so the command was never decided: 503, worth retrying. The
+            // body names the kind of failure only; the exception, which can carry hosts,
+            // connection details or a ciphertext, goes to the server log.
+            LogFailure(httpContext, ex, aggregate, aggregateId, command);
+            return Results.Problem(UnavailableDetail(ex), statusCode: StatusCodes.Status503ServiceUnavailable,
+                title: "dependency unavailable");
+        }
+        catch (Exception ex) when (ex is RevealRequiredException or KmsKeyNotFoundException or KmsIndexKeyNotFoundException)
+        {
+            // Known wiring faults, not refusals: a decision read protected state with no
+            // IPiiProtector registered to reveal it, or a key was used before it was
+            // ensured. Retrying can't help and the caller did nothing wrong.
+            LogFailure(httpContext, ex, aggregate, aggregateId, command);
+            return Results.Problem("the host is misconfigured for this command; see the server log",
+                statusCode: StatusCodes.Status500InternalServerError, title: "internal error");
+        }
         catch (Exception ex)
         {
             // A domain rejection from Decide -- an untyped exception, same as
@@ -222,8 +243,38 @@ public static class CqrsGatewayEndpoints
             // "bad request" from other business-rule failures at this layer, so
             // 400 covers all of them, matching the gateway's own job: refuse the
             // command, don't guess why more precisely than the decider said.
+            // Infrastructure failures and known wiring faults were answered above;
+            // anything else unrecognised still lands here, because Decide rejects by
+            // throwing whatever it likes and nothing marks an exception as its own.
             return Results.Problem(ex.Message, statusCode: StatusCodes.Status400BadRequest);
         }
+    }
+
+    /// <summary>Which dependency failed, in words safe to send to any caller.</summary>
+    private static string UnavailableDetail(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            switch (current)
+            {
+                case ReadOnlyStoreException:
+                    return "this node's event store is read-only and it is not configured to forward writes; send the command to the primary";
+                case System.Data.Common.DbException or IOException or System.Net.Sockets.SocketException:
+                    return "the event store is unavailable; retry later";
+                case KmsProtocolException or HttpRequestException:
+                    return "the key service is unavailable; retry later";
+                case TimeoutException or OperationCanceledException:
+                    return "a dependency timed out or the request was cancelled; retry later";
+            }
+        }
+        return "a dependency is unavailable; retry later";
+    }
+
+    private static void LogFailure(HttpContext httpContext, Exception ex, string aggregate, string aggregateId, string command)
+    {
+        var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger(typeof(CqrsGatewayEndpoints).FullName!);
+        logger?.LogError(ex, "command {Aggregate}/{AggregateId}/{Command} failed before it could be decided",
+            aggregate, aggregateId, command);
     }
 
     private const string PiiEnvelopeKey = "$pii";

@@ -21,7 +21,10 @@ Checked directly, not assumed:
   domain rejection, `409` for a concurrency conflict, `404` for an unknown aggregate.
   (dotnetcqrs also returns `410` for personal data sent for an erased data subject, and
   `400` for a `$pii` envelope in a command payload. `pocketcqrs` has no personal-data
-  support yet; its port should match both.)
+  support yet; its port should match both. dotnetcqrs also keeps infrastructure failures
+  out of `400`: `503` when a dependency the command needs is unavailable -- the event
+  store, the key service, a timeout, or a read-only node with no forwarding -- and `500`
+  for a known host wiring fault; the body names the kind of failure, not the exception.)
 - **The `task` aggregate.** Both ship a `task` decider with `CreateTask` →
   `TaskCreated`, payload `{"title": "..."}`. `samples/MultiNode` (Milestone 3) and
   `ExtCallerRemoteDispatchTests` (Milestone 4) already use exactly this shape on the
