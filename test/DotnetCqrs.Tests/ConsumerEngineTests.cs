@@ -144,4 +144,63 @@ public class ConsumerEngineTests
         Assert.Equal(3, await local.CheckpointAsync("local"));
         Assert.Equal(0, await store.CheckpointAsync("local"));
     }
+
+    [Fact]
+    public async Task A_blocked_consumer_is_logged_once_per_pass_naming_the_consumer_and_the_event_position()
+    {
+        await using var store = await SeededStoreAsync("c1", 3);
+        var log = new ConcurrentQueue<string>();
+        var engine = new ConsumerEngine(store, store, logger: log.Enqueue);
+        engine.Register(new FailingConsumer("failing", failAtPosition: 2));
+
+        var thrown = await Assert.ThrowsAsync<AggregateException>(() => engine.RunOnceAsync());
+
+        var line = Assert.Single(log);
+        Assert.Contains("consumer=failing", line);
+        Assert.Contains("position=2", line);
+        Assert.Contains("boom", line);
+        Assert.Contains("position 2", Assert.Single(thrown.InnerExceptions).Message);
+    }
+
+    private sealed class TimingOutConsumer : IConsumer
+    {
+        public string Name => "timing-out";
+        public Task ApplyAsync(Event ev, CancellationToken ct) =>
+            throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout");
+    }
+
+    [Fact]
+    public async Task A_consumer_raising_its_own_cancellation_is_a_blocked_consumer_not_an_engine_shutdown()
+    {
+        await using var store = await SeededStoreAsync("c1", 1);
+        var log = new ConcurrentQueue<string>();
+        var engine = new ConsumerEngine(store, store, logger: log.Enqueue);
+        engine.Register(new TimingOutConsumer());
+
+        // Before: the TaskCanceledException escaped RunOnceAsync as cancellation, which
+        // StartAsync's loop treats as shutdown -- every consumer silently stopped.
+        await Assert.ThrowsAsync<AggregateException>(() => engine.RunOnceAsync());
+        Assert.Contains("consumer=timing-out", Assert.Single(log));
+        Assert.Equal(0, await store.CheckpointAsync("timing-out"));
+    }
+
+    [Fact]
+    public async Task StartAsync_does_not_log_a_blocked_consumer_twice_per_pass()
+    {
+        await using var store = await SeededStoreAsync("c1", 1);
+        var log = new ConcurrentQueue<string>();
+        var engine = new ConsumerEngine(store, store, tick: TimeSpan.FromSeconds(30), logger: log.Enqueue);
+        engine.Register(new FailingConsumer("failing", failAtPosition: 1));
+
+        using var cts = new CancellationTokenSource();
+        var run = engine.StartAsync(cts.Token);
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (log.IsEmpty && DateTime.UtcNow < deadline)
+            await Task.Delay(20);
+        await Task.Delay(200); // give a duplicate outer log line time to appear
+        cts.Cancel();
+        try { await run; } catch (OperationCanceledException) { }
+
+        Assert.Single(log); // one pass (30s tick, no nudge) -> one line, not a second "run error" copy
+    }
 }

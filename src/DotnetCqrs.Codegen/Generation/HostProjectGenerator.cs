@@ -248,7 +248,11 @@ public static class HostProjectGenerator
         b.AppendLine($"await readModelDb.InstallWriteGuardAsync({tablesExpr});");
         b.AppendLine();
 
-        b.AppendLine("var engine = new ConsumerEngine(eventStore, eventStore);");
+        // A failing consumer blocks at that event and retries every pass, forever; the
+        // engine's default logger discards that, so a stuck projection or reactor would be
+        // invisible. The app's ILogger doesn't exist until builder.Build() below, so stderr.
+        // Each line names the consumer and the event position it is stuck on.
+        b.AppendLine("var engine = new ConsumerEngine(eventStore, eventStore, logger: Console.Error.WriteLine);");
         foreach (var v in projectionVars)
             b.AppendLine($"engine.Register({v});");
         foreach (var domain in mapped.Domains)
@@ -256,7 +260,9 @@ public static class HostProjectGenerator
             foreach (var reactor in domain.Reactors)
             {
                 var typeName = GenerationSupport.ExportName(reactor.Name) + "Reactor";
-                b.AppendLine($"engine.Register(new ReactorConsumer(new {typeName}(), registry));");
+                // Dispatched and dropped reactions go to stdout, so a rejected reaction is
+                // visible rather than silently discarded.
+                b.AppendLine($"engine.Register(new ReactorConsumer(new {typeName}(), registry, Console.WriteLine));");
             }
         }
         var searchIndexed = mapped.Domains

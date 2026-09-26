@@ -89,6 +89,11 @@ public sealed class ConsumerEngine
                 {
                     break;
                 }
+                catch (AggregateException)
+                {
+                    // RunOnceAsync has already logged each failing consumer, with its
+                    // position; logging the aggregate again would double every line.
+                }
                 catch (Exception ex)
                 {
                     _log($"consumer run error: {ex}");
@@ -125,33 +130,53 @@ public sealed class ConsumerEngine
         List<Exception>? errors = null;
         foreach (var (consumer, checkpoints) in snapshot)
         {
-            try
-            {
-                await RunOnceForAsync(consumer, checkpoints, ct);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _log($"consumer apply error: consumer={consumer.Name} error={ex}");
-                (errors ??= []).Add(new InvalidOperationException($"consumer {consumer.Name}: {ex.Message}", ex));
-            }
+            if (await RunOnceForAsync(consumer, checkpoints, ct) is { } blocked)
+                (errors ??= []).Add(blocked);
         }
         if (errors is { Count: > 0 })
             throw new AggregateException(errors);
     }
 
-    private async Task RunOnceForAsync(IConsumer consumer, ICheckpointStore checkpoints, CancellationToken ct)
+    /// <summary>Catches one consumer up. Returns null when it caught up, or the (already
+    /// logged) failure that blocked it; cancellation propagates.</summary>
+    private async Task<Exception?> RunOnceForAsync(IConsumer consumer, ICheckpointStore checkpoints, CancellationToken ct)
     {
-        var pos = await checkpoints.CheckpointAsync(consumer.Name, ct);
-        while (true)
+        long pos = 0;
+        Event? current = null;
+        try
         {
-            var batch = await _source.PollAsync(pos, 100, ct);
-            if (batch.Count == 0) break;
-            foreach (var ev in batch)
+            pos = await checkpoints.CheckpointAsync(consumer.Name, ct);
+            while (true)
             {
-                await consumer.ApplyAsync(ev, ct);
-                await checkpoints.SaveCheckpointAsync(consumer.Name, ev.Position, ct);
-                pos = ev.Position;
+                var batch = await _source.PollAsync(pos, 100, ct);
+                if (batch.Count == 0) break;
+                foreach (var ev in batch)
+                {
+                    current = ev;
+                    await consumer.ApplyAsync(ev, ct);
+                    await checkpoints.SaveCheckpointAsync(consumer.Name, ev.Position, ct);
+                    pos = ev.Position;
+                    current = null;
+                }
             }
+            return null;
+        }
+        catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            // Only our own shutdown propagates as cancellation. An OperationCanceledException
+            // the consumer raised itself (an HttpClient timeout, say) is a failure like any
+            // other: letting it escape would end StartAsync's loop and silently stop every
+            // consumer.
+            //
+            // The consumer is now blocked: its checkpoint stays put and the next pass
+            // retries from the same event, indefinitely. Say which consumer and where,
+            // since that is exactly what an operator needs to unstick it.
+            var at = current is null
+                ? $"position={pos} (reading checkpoint or polling after it)"
+                : $"position={current.Position} event={current.Id} type={current.Type} stream={current.Aggregate}/{current.AggregateId}";
+            _log($"consumer blocked, will retry: consumer={consumer.Name} {at} error={ex}");
+            var where = current is null ? $"after position {pos}" : $"at position {current.Position}";
+            return new InvalidOperationException($"consumer {consumer.Name} blocked {where}: {ex.Message}", ex);
         }
     }
 

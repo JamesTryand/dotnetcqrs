@@ -138,6 +138,26 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>
         return port;
     }
 
+    [Fact]
+    public void The_generated_host_logs_consumer_failures_and_dropped_reactions_instead_of_discarding_them()
+    {
+        // A consumer that fails blocks at that event and retries forever; with the engine's
+        // default no-op logger a stuck projection or reactor is invisible. The generated host
+        // must hand the engine (and every ReactorConsumer) a real sink.
+        var overrides = new Dictionary<string, string> { ["notify-shipping-partner"] = "ShippingNotification" };
+        var doc = DotnetCqrs.Codegen.DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json"));
+        var mapped = DotnetCqrs.Codegen.Mapping.DocumentMapper.Map(doc,
+            new DotnetCqrs.Codegen.Mapping.MappingOptions { AggregateOverrides = overrides });
+        var program = DotnetCqrs.Codegen.Generation.HostProjectGenerator
+            .Generate(doc, mapped, "OrderFulfillment", DotnetCqrsProjectPath(), overrides)
+            .Single(f => f.Name == "Program.cs").Source;
+
+        Assert.Contains("new ConsumerEngine(eventStore, eventStore, logger: Console.Error.WriteLine)", program);
+        Assert.DoesNotContain("new ConsumerEngine(eventStore, eventStore);", program);
+        Assert.Contains("new ReactorConsumer(", program);
+        Assert.DoesNotContain("(), registry));", program); // every ReactorConsumer gets a logger too
+    }
+
     [Fact(Timeout = 300000)]
     public Task Generate_host_builds_self_verifies_and_dispatches_a_real_command_over_http()
         => RunOrderFulfillmentHostAsync(postgres: null);
