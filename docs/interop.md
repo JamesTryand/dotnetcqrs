@@ -19,6 +19,9 @@ Checked directly, not assumed:
   (`CqrsGatewayEndpoints`) both serve `POST /api/cqrs/{aggregate}/{id}/{command}`, body
   = the command payload as JSON, response = `{"events":[...]}` on success, `400` for a
   domain rejection, `409` for a concurrency conflict, `404` for an unknown aggregate.
+  (dotnetcqrs also returns `410` for personal data sent for an erased data subject, and
+  `400` for a `$pii` envelope in a command payload. `pocketcqrs` has no personal-data
+  support yet; its port should match both.)
 - **The `task` aggregate.** Both ship a `task` decider with `CreateTask` →
   `TaskCreated`, payload `{"title": "..."}`. `samples/MultiNode` (Milestone 3) and
   `ExtCallerRemoteDispatchTests` (Milestone 4) already use exactly this shape on the

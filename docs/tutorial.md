@@ -271,7 +271,9 @@ What the generator does with a pii field:
 - **Erasure is terminal.** A person who comes back is a *new* subject with a
   new id and a new key. So subject ids must be opaque and never reused: never
   an email address or anything else derived from personal data. The mapper
-  warns when a `piiSubject` field's name looks like one.
+  warns when a `piiSubject` field's name looks like one. Over HTTP, the
+  refusal above is a `410 Gone` from the gateway, so a client can tell it
+  from a rejected command (`400`) or a retryable conflict (`409`).
 
 `InMemoryKmsClient`, used above, is **not encryption** — its "ciphertext" is
 the plaintext in base64, as the output shows. It exists for tests and for

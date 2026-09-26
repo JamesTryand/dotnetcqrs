@@ -199,7 +199,10 @@ Article 17). CRUD deletes the row. Here the answer is **crypto-shredding**:
   lifecycle, eventually consistent like any other read.
 - It is terminal. A person who comes back is a new subject with a new id and
   a new key, so subject ids are opaque and never reused. An email address
-  can never be a subject id.
+  can never be a subject id. A command that would store personal data for an
+  erased subject is refused with `SubjectErasedException`, which the HTTP
+  gateway returns as `410 Gone`: permanent, unlike its `409` for a
+  concurrency conflict, which invites a retry.
 
 In code, a personal field is a `Pii<T>` (from `DotnetCqrs.Crypto`), and the
 keys live in a separate key-management service (Vault behind a small facade)
