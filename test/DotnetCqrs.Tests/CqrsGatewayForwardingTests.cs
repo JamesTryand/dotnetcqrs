@@ -121,6 +121,51 @@ public sealed class CqrsGatewayForwardingTests : IAsyncDisposable
         Assert.Contains("t1", seen);
     }
 
+    /// <summary>The primary is down: every forwarded request fails the way HttpClient does
+    /// when it can't connect, or times out.</summary>
+    private sealed class UnreachableHandler(Func<Exception> failure) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            throw failure();
+    }
+
+    private async Task<HttpResponseMessage> PostThroughSecondaryWithUnreachablePrimaryAsync(Func<Exception> failure)
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddSingleton(new DeciderRegistry(_masterStore));
+        await using var app = builder.Build();
+        var primary = new HttpClient(new UnreachableHandler(failure)) { BaseAddress = new Uri("http://primary.internal:5000") };
+        app.MapCqrsGateway(forward: CqrsGatewayEndpoints.ForwardTo(primary));
+        await app.StartAsync();
+        using var client = app.GetTestServer().CreateClient();
+        return await client.PostAsync("/api/cqrs/task/t1/CreateTask", content: null);
+    }
+
+    [Fact]
+    public async Task An_unreachable_primary_returns_502_with_a_clear_body_not_an_unhandled_500()
+    {
+        var response = await PostThroughSecondaryWithUnreachablePrimaryAsync(
+            () => new HttpRequestException("No connection could be made (primary.internal:5000)"));
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("primary unreachable", problem.GetProperty("title").GetString());
+        Assert.DoesNotContain("primary.internal", problem.GetRawText());
+        Assert.Empty(await _masterStore.LoadStreamAsync("task", "t1"));
+    }
+
+    [Fact]
+    public async Task A_primary_that_times_out_returns_504()
+    {
+        var response = await PostThroughSecondaryWithUnreachablePrimaryAsync(
+            () => new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout"));
+
+        Assert.Equal(HttpStatusCode.GatewayTimeout, response.StatusCode);
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("primary timed out", problem.GetProperty("title").GetString());
+    }
+
     private sealed class RecordingProjection(List<string> seen) : DotnetCqrs.Projections.IProjection
     {
         public string Name => "recording";

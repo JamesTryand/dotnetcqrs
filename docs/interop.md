@@ -24,7 +24,9 @@ Checked directly, not assumed:
   support yet; its port should match both. dotnetcqrs also keeps infrastructure failures
   out of `400`: `503` when a dependency the command needs is unavailable -- the event
   store, the key service, a timeout, or a read-only node with no forwarding -- and `500`
-  for a known host wiring fault; the body names the kind of failure, not the exception.)
+  for a known host wiring fault; the body names the kind of failure, not the exception. A
+  secondary forwarding writes answers `502` when the primary can't be reached and `504`
+  when it times out.)
 - **The `task` aggregate.** Both ship a `task` decider with `CreateTask` →
   `TaskCreated`, payload `{"title": "..."}`. `samples/MultiNode` (Milestone 3) and
   `ExtCallerRemoteDispatchTests` (Milestone 4) already use exactly this shape on the

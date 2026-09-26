@@ -103,7 +103,15 @@ public static class CqrsGatewayEndpoints
     /// verbatim. No reverse-proxy package for one route shape, matching this project's
     /// own established call on hand-rolled code over a dependency for a small surface
     /// (<c>System.CommandLine</c> aside, which is stdlib-adjacent) — see
-    /// dotnetcqrs-multi-node's Milestone 2 note.</summary>
+    /// dotnetcqrs-multi-node's Milestone 2 note.
+    ///
+    /// <para>When the master can't be reached this node answers for it: <c>502</c> if the
+    /// request couldn't be delivered (connection refused, DNS, TLS), <c>504</c> if it
+    /// timed out, each with a problem body saying so and the exception in the server log.
+    /// The command may or may not have been decided on a timeout, so a retry relies on
+    /// the decider's own idempotency, as any retry does. A failure after the master's
+    /// response has started streaming back can't change the status any more and aborts
+    /// the response instead.</para></summary>
     public static RequestDelegate ForwardTo(HttpClient masterClient) => async httpContext =>
     {
         var request = httpContext.Request;
@@ -116,8 +124,29 @@ public static class CqrsGatewayEndpoints
         if (request.Headers.Authorization.Count > 0)
             forwardRequest.Headers.TryAddWithoutValidation("Authorization", (IEnumerable<string?>)request.Headers.Authorization);
 
-        using var response = await masterClient.SendAsync(
-            forwardRequest, HttpCompletionOption.ResponseHeadersRead, httpContext.RequestAborted);
+        HttpResponseMessage response;
+        try
+        {
+            response = await masterClient.SendAsync(
+                forwardRequest, HttpCompletionOption.ResponseHeadersRead, httpContext.RequestAborted);
+        }
+        catch (HttpRequestException ex)
+        {
+            LogForwardFailure(httpContext, ex);
+            await Results.Problem("this node forwards writes to the primary, and the primary could not be reached; retry later",
+                statusCode: StatusCodes.Status502BadGateway, title: "primary unreachable").ExecuteAsync(httpContext);
+            return;
+        }
+        catch (OperationCanceledException ex) when (!httpContext.RequestAborted.IsCancellationRequested)
+        {
+            // HttpClient.Timeout, not our caller hanging up.
+            LogForwardFailure(httpContext, ex);
+            await Results.Problem("this node forwards writes to the primary, and the primary did not answer in time; " +
+                "the command may or may not have been applied",
+                statusCode: StatusCodes.Status504GatewayTimeout, title: "primary timed out").ExecuteAsync(httpContext);
+            return;
+        }
+        using var _ = response;
 
         httpContext.Response.StatusCode = (int)response.StatusCode;
         httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "application/json";
@@ -268,6 +297,12 @@ public static class CqrsGatewayEndpoints
             }
         }
         return "a dependency is unavailable; retry later";
+    }
+
+    private static void LogForwardFailure(HttpContext httpContext, Exception ex)
+    {
+        var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger(typeof(CqrsGatewayEndpoints).FullName!);
+        logger?.LogError(ex, "forwarding {Path} to the primary failed", httpContext.Request.Path.Value);
     }
 
     private static void LogFailure(HttpContext httpContext, Exception ex, string aggregate, string aggregateId, string command)
