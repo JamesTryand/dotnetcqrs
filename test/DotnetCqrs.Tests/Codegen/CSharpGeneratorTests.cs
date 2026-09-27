@@ -13,6 +13,8 @@ namespace DotnetCqrs.Tests.Codegen;
 /// <c>dotnet build</c>/<c>dotnet run</c> against a scratch project rather than
 /// asserting anything about the generated text itself.
 /// </summary>
+[Collection(CompilesCollection.Name)]
+[Trait("Category", "Slow")]
 public class CSharpGeneratorTests : IDisposable
 {
     private readonly string _scratchDir;

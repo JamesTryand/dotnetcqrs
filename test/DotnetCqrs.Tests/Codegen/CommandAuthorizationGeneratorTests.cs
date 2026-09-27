@@ -19,6 +19,8 @@ namespace DotnetCqrs.Tests.Codegen;
 /// that <c>MapCqrsGateway</c>'s new <c>authorize</c> hook actually calls into code shaped
 /// like this.
 /// </summary>
+[Collection(CompilesCollection.Name)]
+[Trait("Category", "Slow")]
 public class CommandAuthorizationGeneratorTests : IDisposable
 {
     private readonly string _scratchDir;

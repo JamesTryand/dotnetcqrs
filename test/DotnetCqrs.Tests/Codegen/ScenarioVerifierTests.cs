@@ -4,6 +4,8 @@ using DotnetCqrs.Codegen.Verification;
 
 namespace DotnetCqrs.Tests.Codegen;
 
+[Collection(CompilesCollection.Name)]
+[Trait("Category", "Slow")]
 public class ScenarioVerifierTests
 {
     private static string TestDataPath(string fileName) =>

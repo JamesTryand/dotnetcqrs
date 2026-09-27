@@ -9,7 +9,9 @@ namespace DotnetCqrs.Tests.Codegen;
 /// against the real DotnetCqrs library. A CLI's only real deliverable is "the process
 /// exits right and the files it wrote are real code", not "the C# didn't throw".
 /// </summary>
-public class CliTests : IDisposable
+[Collection(CompilesCollection.Name)]
+[Trait("Category", "Slow")]
+public class CliTests : IDisposable, IClassFixture<CliUnderTestFixture>
 {
     private readonly string _scratchDir;
 
@@ -38,7 +40,6 @@ public class CliTests : IDisposable
         return dir?.FullName ?? throw new InvalidOperationException($"could not locate repo root (dotnetcqrs.slnx) from {AppContext.BaseDirectory}");
     }
 
-    private static string CliProjectPath() => Path.Combine(RepoRoot(), "src", "DotnetCqrs.Codegen.Cli", "DotnetCqrs.Codegen.Cli.csproj");
     private static string DotnetCqrsProjectPath() => Path.Combine(RepoRoot(), "src", "DotnetCqrs", "DotnetCqrs.csproj");
 
     private static async Task<(int ExitCode, string Output)> RunCliAsync(params string[] args)
@@ -49,10 +50,7 @@ public class CliTests : IDisposable
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        psi.ArgumentList.Add("run");
-        psi.ArgumentList.Add("--project");
-        psi.ArgumentList.Add(CliProjectPath());
-        psi.ArgumentList.Add("--");
+        psi.ArgumentList.Add(await CliUnderTest.DllAsync());
         foreach (var arg in args)
             psi.ArgumentList.Add(arg);
 

@@ -20,6 +20,8 @@ namespace DotnetCqrs.Tests.Codegen;
 /// generated query route into a real generated-or-hand-written host is Stage 3a's job,
 /// out of scope for this generator's own proof.
 /// </summary>
+[Collection(CompilesCollection.Name)]
+[Trait("Category", "Slow")]
 public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresFixture>
 {
     private readonly string _scratchDir;

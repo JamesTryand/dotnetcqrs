@@ -24,7 +24,9 @@ namespace DotnetCqrs.Tests.Codegen;
 /// <c>DOTNETCQRS_POSTGRES</c> pointing it at a fresh Postgres database (skipped unless
 /// <c>DOTNETCQRS_PG</c> is set). The generated code is identical; only the stores differ.</para>
 /// </summary>
-public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>
+[Collection(CompilesCollection.Name)]
+[Trait("Category", "Slow")]
+public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, IClassFixture<CliUnderTestFixture>
 {
     private readonly string _scratchDir;
     private readonly PostgresFixture _pg;
@@ -74,7 +76,6 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>
         return dir?.FullName ?? throw new InvalidOperationException($"could not locate repo root (dotnetcqrs.slnx) from {AppContext.BaseDirectory}");
     }
 
-    private static string CliProjectPath() => Path.Combine(RepoRoot(), "src", "DotnetCqrs.Codegen.Cli", "DotnetCqrs.Codegen.Cli.csproj");
     private static string DotnetCqrsProjectPath() => Path.Combine(RepoRoot(), "src", "DotnetCqrs", "DotnetCqrs.csproj");
 
     private static async Task<(int ExitCode, string Output)> RunAsync(string fileName, IEnumerable<string> args)
@@ -173,7 +174,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>
     {
         var (genExit, genOutput) = await RunAsync("dotnet",
         [
-            "run", "--project", CliProjectPath(), "--",
+            await CliUnderTest.DllAsync(),
             "generate",
             "--input", TestDataPath("order-fulfillment.json"),
             "--output", _scratchDir,
@@ -346,7 +347,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>
         {
             var (genExit, genOutput) = await RunAsync("dotnet",
             [
-                "run", "--project", CliProjectPath(), "--",
+                await CliUnderTest.DllAsync(),
                 "generate", "--input", inputPath, "--output", _scratchDir, "--host",
                 "--dotnetcqrs-project", DotnetCqrsProjectPath(),
             ]);
