@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using DotnetCqrs.EventStore;
 
@@ -43,7 +44,8 @@ public sealed class DeciderRegistry(IEventStore store)
     /// Loads the stream, folds it into state, decides the command and appends the
     /// resulting events with optimistic concurrency. Throws whatever <see cref="Decider{TState}.Decide"/>
     /// throws to reject the command, or <see cref="ConcurrencyException"/> if the
-    /// stream changed between load and append.
+    /// stream changed between load and append. <see cref="IsRejection"/> tells a
+    /// rejection apart from a failure around the decision.
     /// </summary>
     public Task<IReadOnlyList<Event>> HandleAsync(
         string aggregate, string aggregateId, Command command, CancellationToken ct = default)
@@ -83,7 +85,7 @@ public sealed class DeciderRegistry(IEventStore store)
         IReadOnlyList<NewEvent> newEvents;
         try
         {
-            newEvents = decider.Decide(state, cmd);
+            newEvents = Decide(decider, state, cmd);
         }
         catch (RevealRequiredException) when (decider.Protector is not null)
         {
@@ -92,7 +94,7 @@ public sealed class DeciderRegistry(IEventStore store)
             // free of side effects. A decision that never reads protected state never
             // lands here and pays nothing.
             state = await decider.Protector.RevealAsync(state, ct);
-            newEvents = decider.Decide(state, cmd);
+            newEvents = Decide(decider, state, cmd);
         }
         if (newEvents.Count == 0) return [];
 
@@ -104,6 +106,46 @@ public sealed class DeciderRegistry(IEventStore store)
             .ToList();
 
         return await store.AppendAsync(aggregate, aggregateId, stream.Count, withMeta, ct);
+    }
+
+    /// <summary>True when <paramref name="ex"/> was thrown by a decider's <c>Decide</c> during
+    /// <see cref="HandleWithMetaAsync"/>: the command was refused on its merits. False for
+    /// anything thrown around it -- loading the stream, revealing or protecting PII,
+    /// serialising, appending -- which means the command was never decided. The shell uses
+    /// this to keep "rejected" apart from infrastructure failures and bugs (gateway 400 vs
+    /// 5xx; a reactor drops a rejection but retries anything else).
+    ///
+    /// <para>Rejection is defined by where the exception came from, not its type: Decide
+    /// may reject by throwing whatever it likes, so no type could say this. Consequence: a
+    /// bug inside Decide itself (a null reference, a bad cast) also counts as a rejection.
+    /// <see cref="RevealRequiredException"/> is never one -- it is the registry's reveal
+    /// signal, and escaping means no protector was registered to act on it.</para></summary>
+    public static bool IsRejection(Exception ex) => Rejections.TryGetValue(ex, out _);
+
+    // Keyed by the exception object itself and held weakly: nothing is added to the
+    // exception, nothing leaks, and the mark is invisible to anyone not asking.
+    private static readonly ConditionalWeakTable<Exception, object> Rejections = new();
+
+    /// <summary>Calls Decide unchanged. The filter marks whatever escapes it and returns
+    /// false, so the exception is never caught: it propagates as the same object with its
+    /// original stack trace, and a decision that doesn't throw pays nothing.</summary>
+    private static IReadOnlyList<NewEvent> Decide(ErasedDecider decider, object state, Command cmd)
+    {
+        try
+        {
+            return decider.Decide(state, cmd);
+        }
+        catch (Exception ex) when (MarkRejection(ex))
+        {
+            throw; // unreachable: MarkRejection always returns false
+        }
+    }
+
+    private static bool MarkRejection(Exception ex)
+    {
+        if (ex is not RevealRequiredException)
+            Rejections.AddOrUpdate(ex, Rejections);
+        return false;
     }
 
     private string Materialize(NewEvent ne) =>

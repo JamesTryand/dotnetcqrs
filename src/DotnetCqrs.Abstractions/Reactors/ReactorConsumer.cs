@@ -38,17 +38,6 @@ public sealed class ReactorConsumer(IReactor reactor, DeciderRegistry registry, 
                 // the whole event next pass, same as pocketcqrs's Dispatch.
                 throw;
             }
-            catch (Exception ex) when (InfrastructureFailure.IsInfrastructure(ex))
-            {
-                // A dependency failed (event store, key service, a timeout, shutdown), so
-                // the command was never decided on its merits. Dropping it here would
-                // advance the checkpoint and lose the reaction for good; instead block and
-                // retry the whole event next pass, as a projection does. The engine logs
-                // the consumer, position and error. Reactions already dispatched for this
-                // event are dispatched again on retry, and rely on the target decider's
-                // own idempotency, exactly as the ConcurrencyException path above does.
-                throw;
-            }
             catch (UnknownAggregateException ex)
             {
                 // Permanent wiring fault, not a domain refusal: no redelivery can
@@ -58,12 +47,20 @@ public sealed class ReactorConsumer(IReactor reactor, DeciderRegistry registry, 
                 _log($"reaction dropped: target aggregate not registered: reactor={reactor.Name} " +
                      $"cause={ev.Id} target={reaction.Aggregate}/{reaction.Id} error={ex.Message}");
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeciderRegistry.IsRejection(ex))
             {
                 // Domain rejection, including the idempotency path (e.g. "already
                 // exists" on redelivery): log and continue, never block the log.
-                // Anything InfrastructureFailure recognises was rethrown above; what is
-                // left is whatever Decide threw, which is how a decider says no.
+                //
+                // Anything else propagates: a dependency failure (event store, key
+                // service, a timeout, shutdown) or a bug around the decision means the
+                // command was never decided on its merits. Dropping it would advance the
+                // checkpoint and lose the reaction for good; instead the consumer blocks
+                // and retries the whole event next pass, as a projection does, and the
+                // engine logs the consumer, position and error. Reactions already
+                // dispatched for this event are dispatched again on retry and rely on the
+                // target decider's own idempotency, exactly as the ConcurrencyException
+                // path above does.
                 _log($"reaction rejected: reactor={reactor.Name} cause={ev.Id} " +
                      $"target={reaction.Aggregate}/{reaction.Id} error={ex.Message}");
             }

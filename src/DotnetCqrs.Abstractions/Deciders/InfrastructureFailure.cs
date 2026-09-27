@@ -11,17 +11,14 @@ namespace DotnetCqrs.Deciders;
 public interface IInfrastructureFailure;
 
 /// <summary>
-/// Tells an infrastructure failure apart from a decider's refusal, for the dispatch
-/// shell (the gateway's status codes, a reactor's retry-or-drop), without touching the
-/// decider contract. <c>Decide</c> is pure and synchronous: it does no I/O and takes no
-/// cancellation token, so a database, network, key-service, read-only-store, timeout or
-/// cancellation failure cannot be one of its rejections -- it came from the shell around
-/// it (loading the stream, revealing or protecting PII, appending).
+/// Recognises a failed dependency among the failures around a decision, so the gateway
+/// can answer 503 (retry later) rather than 500 (host fault). Whether an exception is a
+/// rejection at all is <see cref="DeciderRegistry.IsRejection"/>'s question, answered by
+/// where it was thrown; this one only sorts what is left. <c>Decide</c> is pure and
+/// synchronous -- no I/O, no cancellation token -- so none of these types can come from it.
 ///
-/// <para>This is a deny-list, not a positive test for a domain rejection: <c>Decide</c>
-/// rejects by throwing any exception it likes, so anything not recognised here is still
-/// treated as a rejection. The inner-exception chain is searched too, since a store or
-/// client may wrap its driver's error.</para>
+/// <para>The inner-exception chain is searched too, since a store or client may wrap its
+/// driver's error.</para>
 /// </summary>
 public static class InfrastructureFailure
 {

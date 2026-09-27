@@ -141,7 +141,7 @@ public class ReactorTests
             Healthy ? Task.FromResult(events) : throw failure();
     }
 
-    public static TheoryData<string> InfrastructureFailures => ["http", "kms-protocol", "timeout", "read-only"];
+    public static TheoryData<string> InfrastructureFailures => ["http", "kms-protocol", "timeout", "read-only", "shell-bug"];
 
     private static Exception MakeFailure(string kind) => kind switch
     {
@@ -149,6 +149,8 @@ public class ReactorTests
         "kms-protocol" => new DotnetCqrs.Crypto.KmsProtocolException("encrypt response body was empty"),
         "timeout" => new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout"),
         "read-only" => new ReadOnlyStoreException("append"),
+        // Not a dependency type, but not thrown by Decide either: still not a rejection.
+        "shell-bug" => new InvalidOperationException("protector bug"),
         _ => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 

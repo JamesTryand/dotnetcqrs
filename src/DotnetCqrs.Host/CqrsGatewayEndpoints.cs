@@ -246,6 +246,15 @@ public static class CqrsGatewayEndpoints
             // service-to-service detail, and here it would read as "reload and retry".
             return Results.Problem(ex.Message, statusCode: StatusCodes.Status410Gone);
         }
+        catch (Exception ex) when (DeciderRegistry.IsRejection(ex))
+        {
+            // A domain rejection: Decide threw it (DeciderRegistry marks exactly those).
+            // Any type, same as pocketcqrs's Decide returning a plain error, so 400 covers
+            // every business-rule failure -- refuse the command, don't guess why more
+            // precisely than the decider said. The message is the decider's own, meant
+            // for the caller.
+            return Results.Problem(ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
         catch (Exception ex) when (InfrastructureFailure.IsInfrastructure(ex))
         {
             // A dependency failed around Decide (loading, revealing/protecting PII,
@@ -256,26 +265,16 @@ public static class CqrsGatewayEndpoints
             return Results.Problem(UnavailableDetail(ex), statusCode: StatusCodes.Status503ServiceUnavailable,
                 title: "dependency unavailable");
         }
-        catch (Exception ex) when (ex is RevealRequiredException or KmsKeyNotFoundException or KmsIndexKeyNotFoundException)
-        {
-            // Known wiring faults, not refusals: a decision read protected state with no
-            // IPiiProtector registered to reveal it, or a key was used before it was
-            // ensured. Retrying can't help and the caller did nothing wrong.
-            LogFailure(httpContext, ex, aggregate, aggregateId, command);
-            return Results.Problem("the host is misconfigured for this command; see the server log",
-                statusCode: StatusCodes.Status500InternalServerError, title: "internal error");
-        }
         catch (Exception ex)
         {
-            // A domain rejection from Decide -- an untyped exception, same as
-            // pocketcqrs's Decide returning a plain error. No way to distinguish
-            // "bad request" from other business-rule failures at this layer, so
-            // 400 covers all of them, matching the gateway's own job: refuse the
-            // command, don't guess why more precisely than the decider said.
-            // Infrastructure failures and known wiring faults were answered above;
-            // anything else unrecognised still lands here, because Decide rejects by
-            // throwing whatever it likes and nothing marks an exception as its own.
-            return Results.Problem(ex.Message, statusCode: StatusCodes.Status400BadRequest);
+            // Neither a rejection nor a known dependency failure: a fault in the host
+            // around the decision -- e.g. a decision read protected state with no
+            // IPiiProtector registered to reveal it (RevealRequiredException), a KMS key
+            // used before it was ensured, or a plain bug. The caller did nothing wrong and
+            // the command was never decided. The message stays in the server log.
+            LogFailure(httpContext, ex, aggregate, aggregateId, command);
+            return Results.Problem("the command failed inside the host before it could be decided; see the server log",
+                statusCode: StatusCodes.Status500InternalServerError, title: "internal error");
         }
     }
 

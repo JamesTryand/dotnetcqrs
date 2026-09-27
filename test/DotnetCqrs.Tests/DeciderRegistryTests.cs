@@ -134,4 +134,60 @@ public class DeciderRegistryTests
         Assert.Contains("\"actor\":\"meta-set\"", ev.Metadata);   // meta wins on collision
         Assert.Contains("\"causationId\":\"cause-1\"", ev.Metadata);
     }
+
+    private sealed class FailingProtector(Exception failure) : IPiiProtector
+    {
+        public Task<object> RevealAsync(object state, CancellationToken ct) => Task.FromResult(state);
+        public Task<IReadOnlyList<NewEvent>> ProtectAsync(string aggregateId, IReadOnlyList<NewEvent> events, CancellationToken ct) =>
+            throw failure;
+    }
+
+    [Fact]
+    public async Task An_exception_thrown_by_Decide_is_marked_as_a_rejection_and_rethrown_unchanged()
+    {
+        var (store, registry) = await SetUpAsync();
+        await using var _ = store;
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            registry.HandleAsync("counter", "c1", new Command("Decrement", "{}")));
+
+        Assert.Equal("counter cannot go below zero", thrown.Message); // same exception, not wrapped
+        Assert.True(DeciderRegistry.IsRejection(thrown));
+    }
+
+    [Fact]
+    public async Task An_exception_from_the_shell_around_Decide_is_not_a_rejection()
+    {
+        var store = await SqliteEventStore.OpenAsync(":memory:");
+        await using var _ = store;
+        var registry = new DeciderRegistry(store);
+        var failure = new InvalidOperationException("protector bug");
+        registry.Register("counter", CounterDecider(), new FailingProtector(failure));
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            registry.HandleAsync("counter", "c1", new Command("Increment", "{}")));
+
+        Assert.Same(failure, thrown);
+        Assert.False(DeciderRegistry.IsRejection(thrown));
+        Assert.False(DeciderRegistry.IsRejection(new InvalidOperationException("never went near Decide")));
+    }
+
+    [Fact]
+    public async Task RevealRequired_escaping_Decide_without_a_protector_is_a_wiring_fault_not_a_rejection()
+    {
+        var store = await SqliteEventStore.OpenAsync(":memory:");
+        await using var _ = store;
+        var registry = new DeciderRegistry(store);
+        registry.Register("counter", new Decider<int>
+        {
+            InitialState = () => 0,
+            Decide = (_, _) => throw new RevealRequiredException("read a protected value"),
+            Evolve = (state, _) => state,
+        });
+
+        var thrown = await Assert.ThrowsAsync<RevealRequiredException>(() =>
+            registry.HandleAsync("counter", "c1", new Command("Increment", "{}")));
+
+        Assert.False(DeciderRegistry.IsRejection(thrown));
+    }
 }

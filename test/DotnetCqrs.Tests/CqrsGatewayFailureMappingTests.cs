@@ -135,6 +135,20 @@ public class CqrsGatewayFailureMappingTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task An_unclassified_failure_outside_Decide_returns_500_not_400()
+    {
+        // Not a known dependency type and not thrown by Decide: a bug in the shell. Before,
+        // it was indistinguishable from a rejection and answered 400 with its message.
+        _protector.Failure = () => new InvalidOperationException($"protector bug near {Secret}");
+
+        var (status, problem) = await PostAsync("/api/cqrs/task/t1/CreateTask");
+
+        Assert.Equal(HttpStatusCode.InternalServerError, status);
+        Assert.Equal("internal error", problem.GetProperty("title").GetString());
+        Assert.DoesNotContain(Secret, problem.GetRawText());
+    }
+
+    [Fact]
     public async Task A_domain_rejection_still_returns_400_with_the_deciders_message()
     {
         await PostAsync("/api/cqrs/task/t1/CreateTask");
