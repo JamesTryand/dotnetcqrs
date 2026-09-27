@@ -47,6 +47,12 @@ namespace DotnetCqrs.Codegen.Generation;
 /// <c>HashedIndexKey</c> in DI for the routes, and registers each <c>{Collection}HashedIndex</c>
 /// through <c>RegisterHashedSearchIndexAsync</c>, which rebuilds after a key rotation.
 /// Startup therefore needs the facade reachable.</para>
+///
+/// <para><b>Node identity:</b> the host resolves its <c>NodeIdentity</c> (the cross-stack
+/// node-identity contract) before opening anything, logs it once and registers it in DI. The
+/// project name is its <c>instance</c>; its role is always <c>writer</c>. Set
+/// <c>CQRS_STATE_DIR</c> to a node-local directory to keep the id across restarts, or
+/// <c>CQRS_NODE_ID</c> to assign one; an invalid <c>CQRS_NODE_ID</c> exits 1.</para>
 /// </summary>
 public static class HostProjectGenerator
 {
@@ -179,7 +185,25 @@ public static class HostProjectGenerator
             b.AppendLine("}");
             b.AppendLine();
         }
+        // Node identity (the cross-stack node-identity contract), resolved before anything opens
+        // so an invalid CQRS_NODE_ID fails like any other bad setting. The project name is the
+        // instance; this host only ever opens a writable store, so its role is always writer.
+        b.AppendLine("// Node identity: CQRS_NODE_ID if set, else the node-id file in CQRS_STATE_DIR (node-local, never");
+        b.AppendLine("// data/ or anything replicated), else a new id -- ephemeral, with a warning, if there is nowhere");
+        b.AppendLine("// to keep it. An invalid CQRS_NODE_ID refuses to start.");
+        b.AppendLine("NodeIdentity nodeIdentity;");
+        b.AppendLine("try");
+        b.AppendLine("{");
+        b.AppendLine($"    nodeIdentity = NodeIdentity.FromEnvironment(\"{projectName}\", \"writer\", Console.WriteLine, Console.Error.WriteLine);");
+        b.AppendLine("}");
+        b.AppendLine("catch (InvalidNodeIdException ex)");
+        b.AppendLine("{");
+        b.AppendLine("    Console.Error.WriteLine(ex.Message);");
+        b.AppendLine("    return 1;");
+        b.AppendLine("}");
+        b.AppendLine();
         b.AppendLine("var builder = WebApplication.CreateBuilder(args);");
+        b.AppendLine("builder.Services.AddSingleton(nodeIdentity);");
         b.AppendLine();
         b.AppendLine("IEventStore eventStore = postgres is not null");
         b.AppendLine("    ? await PostgresEventStore.OpenAsync(postgres)");

@@ -368,6 +368,24 @@ through the gateway: `POST /api/cqrs/dataSubject/{subjectId}/EraseSubject`.
 Who may call it is your authorization decision, like every other command;
 the generated host is unauthenticated until you add a scheme.
 
+Every host also has a node identity, the same on dotnetcqrs and pocketcqrs: a
+`node_id` that survives restarts and tells several nodes on one machine
+apart. The host logs it once at startup and registers it in DI as
+`NodeIdentity`. To keep it across restarts, give the host a node-local state
+directory, which is never the replicated `data/`:
+
+```sh
+CQRS_STATE_DIR=/var/lib/orderfulfillment/node dotnet run --project OrderFulfillment
+```
+
+The first boot writes a new id to `node-id` in that directory and every later
+boot reads it back. An orchestrator that knows the workload and replica can
+assign one instead with `CQRS_NODE_ID` (1–64 letters, digits, `_` or `-`; the
+host refuses to start on anything else), and the stored file is then left
+alone. With neither set, the id is new on every start and the log says so. A
+deployment whose state directory doesn't survive a restart, such as a
+container with no volume, should set `CQRS_NODE_ID`.
+
 ## Checking a document's own scenarios automatically
 
 You don't have to write demo code like the above by hand to check a

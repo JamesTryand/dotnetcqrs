@@ -158,6 +158,24 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>
         Assert.DoesNotContain("(), registry));", program); // every ReactorConsumer gets a logger too
     }
 
+    [Fact]
+    public void The_generated_host_resolves_its_node_identity_before_opening_anything_and_registers_it()
+    {
+        var overrides = new Dictionary<string, string> { ["notify-shipping-partner"] = "ShippingNotification" };
+        var doc = DotnetCqrs.Codegen.DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json"));
+        var mapped = DotnetCqrs.Codegen.Mapping.DocumentMapper.Map(doc,
+            new DotnetCqrs.Codegen.Mapping.MappingOptions { AggregateOverrides = overrides });
+        var program = DotnetCqrs.Codegen.Generation.HostProjectGenerator
+            .Generate(doc, mapped, "OrderFulfillment", DotnetCqrsProjectPath(), overrides)
+            .Single(f => f.Name == "Program.cs").Source;
+
+        var resolve = program.IndexOf("NodeIdentity.FromEnvironment(\"OrderFulfillment\", \"writer\"", StringComparison.Ordinal);
+        Assert.True(resolve >= 0, program);
+        Assert.True(resolve < program.IndexOf("SqliteEventStore.OpenAsync", StringComparison.Ordinal));
+        Assert.Contains("catch (InvalidNodeIdException ex)", program);
+        Assert.Contains("builder.Services.AddSingleton(nodeIdentity);", program);
+    }
+
     [Fact(Timeout = 300000)]
     public Task Generate_host_builds_self_verifies_and_dispatches_a_real_command_over_http()
         => RunOrderFulfillmentHostAsync(postgres: null);
@@ -214,6 +232,21 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>
         }
         await using var facade = await StandInKmsFacade.StartAsync();
 
+        // Node identity: an invalid CQRS_NODE_ID is bad configuration, so the host refuses to
+        // start rather than run under an id that would break the NATS subject.
+        var badId = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        foreach (var a in new[] { "run", "--project", _scratchDir, "--no-build" }) badId.ArgumentList.Add(a);
+        badId.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
+        badId.Environment["CQRS_NODE_ID"] = "not.a.valid.id";
+        using (var refused = Process.Start(badId)!)
+        {
+            var refusedErr = await refused.StandardError.ReadToEndAsync();
+            Assert.True(refused.WaitForExit(60000), "a host with an invalid CQRS_NODE_ID should exit, not serve");
+            Assert.Equal(1, refused.ExitCode);
+            Assert.Contains("CQRS_NODE_ID", refusedErr);
+        }
+        var stateDir = Path.Combine(_scratchDir, "node-state");
+
         // Real HTTP round trip: run the generated host for real and dispatch a command
         // through its MapCqrsGateway(), the same proof CqrsGatewayEndpointsTests uses
         // for the hand-written host -- not just that the process starts without
@@ -227,6 +260,8 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>
         psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
         psi.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
         psi.Environment["DOTNETCQRS_POSTGRES"] = postgres ?? "";
+        psi.Environment["CQRS_STATE_DIR"] = stateDir;
+        psi.Environment.Remove("CQRS_NODE_ID");
 
         var hostLog = new System.Text.StringBuilder();
         using var process = StartHost(psi, hostLog);
@@ -254,6 +289,11 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>
             var events = await response.Content.ReadFromJsonAsync<JsonElement>();
             Assert.Equal(1, events.GetArrayLength());
             Assert.Equal("OrderPlaced", events[0].GetProperty("type").GetString());
+
+            // First boot with a state directory: a new id, written there, logged once.
+            var nodeId = File.ReadAllText(Path.Combine(stateDir, "node-id")).Trim();
+            Assert.Contains($"node identity: node_id={nodeId} identity=persistent instance=OrderFulfillment", Tail(hostLog));
+            Assert.Contains("stack=dotnetcqrs role=writer started_at=", Tail(hostLog));
 
             // auto-ship-pending-orders is a same-aggregate reactor (order-placed ->
             // ship-order, both "order"): it must dispatch back into the SAME order's
