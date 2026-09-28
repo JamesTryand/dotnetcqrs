@@ -196,7 +196,7 @@ public static class HostProjectGenerator
         b.AppendLine("{");
         b.AppendLine($"    nodeIdentity = NodeIdentity.FromEnvironment(\"{projectName}\", \"writer\", Console.WriteLine, Console.Error.WriteLine);");
         b.AppendLine("}");
-        b.AppendLine("catch (InvalidNodeIdException ex)");
+        b.AppendLine("catch (InvalidIdentitySettingException ex)");
         b.AppendLine("{");
         b.AppendLine("    Console.Error.WriteLine(ex.Message);");
         b.AppendLine("    return 1;");

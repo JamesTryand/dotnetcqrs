@@ -321,4 +321,52 @@ public class NodeIdentityTests : IDisposable
             $"node identity: node_id={Stored} identity=persistent instance=timesheets host=node-3 stack=dotnetcqrs role=writer started_at=2026-09-27T00:40:12.345Z",
             identity.ToString());
     }
+
+    // Contract I6: CQRS_INSTANCE if set, else the workload's own name; same format as a node id.
+    [Theory]
+    [InlineData(null, "OrderFulfillment")]
+    [InlineData("", "OrderFulfillment")]
+    [InlineData("timesheets", "timesheets")]
+    public void Instance_is_the_configured_name_else_the_workloads_own(string? configured, string expected) =>
+        Assert.Equal(expected, NodeIdentity.ResolveInstance(configured, "OrderFulfillment"));
+
+    [Theory]
+    [InlineData("has space")]
+    [InlineData("a.b")]
+    public void An_invalid_instance_fails_the_boot(string configured)
+    {
+        var ex = Assert.Throws<InvalidInstanceException>(() => NodeIdentity.ResolveInstance(configured, "OrderFulfillment"));
+        Assert.IsAssignableFrom<InvalidIdentitySettingException>(ex);
+        Assert.Contains(NodeIdentity.InstanceVariable, ex.Message);
+    }
+
+    [Fact]
+    public void An_invalid_node_id_is_an_identity_setting_error_too() =>
+        Assert.IsAssignableFrom<InvalidIdentitySettingException>(
+            Assert.Throws<InvalidNodeIdException>(() => NodeIdentity.Resolve("not valid", null)));
+
+    // Contract I7: an unreadable or empty hostname is "unknown", with a warning; never a boot failure.
+    [Fact]
+    public void An_unreadable_hostname_is_reported_as_unknown_with_a_warning()
+    {
+        var logged = new List<string>();
+
+        var host = NodeIdentity.HostName(() => throw new System.Net.Sockets.SocketException(), logged.Add);
+
+        Assert.Equal(NodeIdentity.UnknownHost, host);
+        Assert.Single(logged);
+    }
+
+    [Fact]
+    public void An_empty_hostname_is_reported_as_unknown_with_a_warning()
+    {
+        var logged = new List<string>();
+
+        Assert.Equal(NodeIdentity.UnknownHost, NodeIdentity.HostName(() => "", logged.Add));
+        Assert.Single(logged);
+    }
+
+    [Fact]
+    public void A_readable_hostname_is_reported_as_is() =>
+        Assert.Equal("node-3", NodeIdentity.HostName(() => "node-3"));
 }

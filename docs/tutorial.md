@@ -386,6 +386,10 @@ alone. With neither set, the id is new on every start and the log says so. A
 deployment whose state directory doesn't survive a restart, such as a
 container with no volume, should set `CQRS_NODE_ID`.
 
+The log line also names the node: `instance` is the project name unless
+`CQRS_INSTANCE` sets another (same format as the id), and `host` is the
+hostname, or `unknown` if it can't be read.
+
 ## Checking a document's own scenarios automatically
 
 You don't have to write demo code like the above by hand to check a

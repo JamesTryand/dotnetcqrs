@@ -51,6 +51,10 @@ public sealed partial record NodeIdentity(
     public const string StateDirVariable = "CQRS_STATE_DIR";
     public const string NodeIdFileName = "node-id";
     public const string StackName = "dotnetcqrs";
+    public const string InstanceVariable = "CQRS_INSTANCE";
+
+    /// <summary>Reported as <see cref="Host"/> when the hostname cannot be read (contract I7).</summary>
+    public const string UnknownHost = "unknown";
 
     /// <summary><see cref="Identity"/> as the contract reports it: <c>assigned</c>,
     /// <c>persistent</c> or <c>ephemeral</c>.</summary>
@@ -121,14 +125,17 @@ public sealed partial record NodeIdentity(
 
     /// <summary>
     /// Resolves identity from <c>CQRS_NODE_ID</c> and <c>CQRS_STATE_DIR</c> and adds the
-    /// descriptive attributes. Writes any warning or error to <paramref name="logError"/> and
-    /// one summary line to <paramref name="log"/>. <paramref name="startedAt"/> defaults to this
-    /// process's start time.
+    /// descriptive attributes: <c>instance</c> is <c>CQRS_INSTANCE</c> if set, else
+    /// <paramref name="instance"/>. Writes any warning or error to <paramref name="logError"/>
+    /// and one summary line to <paramref name="log"/>. <paramref name="startedAt"/> defaults to
+    /// this process's start time. Throws <see cref="InvalidIdentitySettingException"/> for an
+    /// invalid <c>CQRS_NODE_ID</c> or <c>CQRS_INSTANCE</c>, before anything is written.
     /// </summary>
     public static NodeIdentity FromEnvironment(
         string instance, string role, Action<string>? log = null, Action<string>? logError = null,
         DateTimeOffset? startedAt = null)
     {
+        var workload = ResolveInstance(Environment.GetEnvironmentVariable(InstanceVariable), instance);
         var stateDir = Environment.GetEnvironmentVariable(StateDirVariable);
         var resolution = Resolve(
             Environment.GetEnvironmentVariable(NodeIdVariable),
@@ -137,10 +144,39 @@ public sealed partial record NodeIdentity(
             logError?.Invoke(resolution.Notice);
 
         var identity = new NodeIdentity(
-            resolution.NodeId, resolution.Identity, instance, Dns.GetHostName(), StackName, role,
+            resolution.NodeId, resolution.Identity, workload, HostName(Dns.GetHostName, logError), StackName, role,
             startedAt ?? new DateTimeOffset(Process.GetCurrentProcess().StartTime.ToUniversalTime(), TimeSpan.Zero));
         log?.Invoke(identity.ToString());
         return identity;
+    }
+
+    /// <summary><c>instance</c> (contract I6): <paramref name="configured"/>
+    /// (<c>CQRS_INSTANCE</c>; null or empty is unset) if set, else <paramref name="fallback"/>, the
+    /// workload's own name. A configured one has <c>node_id</c>'s format, or the boot fails.</summary>
+    public static string ResolveInstance(string? configured, string fallback)
+    {
+        if (string.IsNullOrEmpty(configured))
+            return fallback;
+        return IsValidNodeId(configured) ? configured : throw new InvalidInstanceException(configured);
+    }
+
+    /// <summary><c>host</c> (contract I7): the hostname, or <see cref="UnknownHost"/> with a
+    /// warning when it cannot be read. Never a boot failure: host describes the node, it does
+    /// not identify it.</summary>
+    public static string HostName(Func<string> readHostName, Action<string>? logError = null)
+    {
+        try
+        {
+            var host = readHostName();
+            if (!string.IsNullOrEmpty(host))
+                return host;
+            logError?.Invoke($"node identity: the hostname is empty; reporting host={UnknownHost}");
+        }
+        catch (Exception ex) when (ex is System.Net.Sockets.SocketException or InvalidOperationException or IOException)
+        {
+            logError?.Invoke($"node identity: cannot read the hostname ({ex.Message}); reporting host={UnknownHost}");
+        }
+        return UnknownHost;
     }
 
     /// <summary>A new canonical, lowercase, hyphenated UUIDv7, which matches the format.</summary>
@@ -155,9 +191,19 @@ public sealed partial record NodeIdentity(
 /// the operator should know something: a warning, or an error when <see cref="NoticeIsError"/>.</summary>
 public sealed record NodeIdResolution(string NodeId, NodeIdentitySource Identity, string? Notice, bool NoticeIsError);
 
-/// <summary>An invalid <c>CQRS_NODE_ID</c>: the boot fails, like any other invalid configuration.</summary>
-public sealed class InvalidNodeIdException(string value) : Exception(
+/// <summary>An invalid identity setting: the boot fails, like any other invalid configuration.</summary>
+public abstract class InvalidIdentitySettingException(string message) : Exception(message);
+
+/// <summary>An invalid <c>CQRS_NODE_ID</c>.</summary>
+public sealed class InvalidNodeIdException(string value) : InvalidIdentitySettingException(
     $"{NodeIdentity.NodeIdVariable} '{value}' is not a valid node id: use 1-64 letters, digits, '_' or '-'.")
+{
+    public string Value { get; } = value;
+}
+
+/// <summary>An invalid <c>CQRS_INSTANCE</c> (same format as a node id).</summary>
+public sealed class InvalidInstanceException(string value) : InvalidIdentitySettingException(
+    $"{NodeIdentity.InstanceVariable} '{value}' is not a valid instance name: use 1-64 letters, digits, '_' or '-'.")
 {
     public string Value { get; } = value;
 }

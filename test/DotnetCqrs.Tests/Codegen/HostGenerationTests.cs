@@ -172,7 +172,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>
         var resolve = program.IndexOf("NodeIdentity.FromEnvironment(\"OrderFulfillment\", \"writer\"", StringComparison.Ordinal);
         Assert.True(resolve >= 0, program);
         Assert.True(resolve < program.IndexOf("SqliteEventStore.OpenAsync", StringComparison.Ordinal));
-        Assert.Contains("catch (InvalidNodeIdException ex)", program);
+        Assert.Contains("catch (InvalidIdentitySettingException ex)", program);
         Assert.Contains("builder.Services.AddSingleton(nodeIdentity);", program);
     }
 
