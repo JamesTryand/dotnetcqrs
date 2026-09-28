@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 using DotnetCqrs.Codegen.Domain;
@@ -25,18 +24,23 @@ namespace DotnetCqrs.Codegen.Verification;
 /// nothing needs compiling first. C# has no equivalent — generated code must be
 /// compiled before it can run at all. So this compiles a fixed, reusable harness
 /// (<c>HarnessProgram.txt</c>, never generated per document) together with the actual
-/// generated files in one real scratch project (the same "shell out to dotnet build/
-/// run" infrastructure Milestone 3's own tests proved out), feeds it every scenario as
-/// JSON, and parses its JSON result back — one compile for the whole document's
-/// scenarios, not one per scenario.
+/// generated files in memory and runs it in this process (<see cref="InProcessHarness"/>),
+/// against the dotnetcqrs assemblies this tool ships with, feeds it every scenario as JSON,
+/// and parses its JSON result back — one compile for the whole document's scenarios, not
+/// one per scenario, and no scratch project, <c>dotnet build</c> or child process.
 /// </summary>
 public static class ScenarioVerifier
 {
-    /// <param name="dotnetCqrsProjectPath">Path to <c>DotnetCqrs.csproj</c> — the
-    /// scratch harness project references it directly, since dotnetcqrs isn't
-    /// published as a NuGet package (yet).</param>
+    /// <summary>Kept for source compatibility: verification no longer builds a project, so
+    /// <paramref name="dotnetCqrsProjectPath"/> is ignored and the generated code runs against
+    /// the dotnetcqrs this tool ships with.</summary>
+    [Obsolete("dotnetCqrsProjectPath is no longer used; call VerifyAsync(document, mapped, ct).")]
+    public static Task<IReadOnlyList<ScenarioResult>> VerifyAsync(
+        Document document, MappingResult mapped, string dotnetCqrsProjectPath, CancellationToken ct = default) =>
+        VerifyAsync(document, mapped, ct);
+
     public static async Task<IReadOnlyList<ScenarioResult>> VerifyAsync(
-        Document document, MappingResult mapped, string dotnetCqrsProjectPath, CancellationToken ct = default)
+        Document document, MappingResult mapped, CancellationToken ct = default)
     {
         var index = GeneratedIndex.Build(document, mapped.Domains);
 
@@ -63,7 +67,7 @@ public static class ScenarioVerifier
         if (commandScenarios.Count == 0 && viewScenarios.Count == 0)
             return results;
 
-        var harnessResults = await RunHarnessAsync(commandScenarios, viewScenarios, dotnetCqrsProjectPath, mapped.Domains, ct);
+        var harnessResults = await RunHarnessAsync(commandScenarios, viewScenarios, mapped.Domains, ct);
         results.AddRange(harnessResults);
         return results;
     }
@@ -273,75 +277,33 @@ public static class ScenarioVerifier
 
     private static async Task<IReadOnlyList<ScenarioResult>> RunHarnessAsync(
         List<CommandScenarioInput> commandScenarios, List<ViewScenarioInput> viewScenarios,
-        string dotnetCqrsProjectPath, IReadOnlyList<Domain.Domain> domains, CancellationToken ct)
+        IReadOnlyList<Domain.Domain> domains, CancellationToken ct)
     {
-        var scratchDir = Path.Combine(Path.GetTempPath(), $"dotnetcqrs-verify-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(scratchDir);
+        // The harness still reads its input and writes its results as files (args[0], args[1]),
+        // as it did as a standalone program; only these two files touch the disk.
+        var workDir = Path.Combine(Path.GetTempPath(), $"dotnetcqrs-verify-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workDir);
         try
         {
-            // DotnetCqrs.Codegen is a sibling of DotnetCqrs under the same src/
-            // directory in every environment this runs in (see HostProjectGenerator's
-            // identical derivation) -- referenced here so the harness can call
-            // DateRangeResolver.ResolveBounds directly instead of reimplementing the
-            // dateRange preset math, per that type's own doc comment.
-            var srcDir = Path.GetDirectoryName(Path.GetDirectoryName(dotnetCqrsProjectPath))!;
-            var codegenProjectPath = Path.Combine(srcDir, "DotnetCqrs.Codegen", "DotnetCqrs.Codegen.csproj");
-            // DotnetCqrs.Crypto: a generated decider for a domain with field.pii fields
-            // references Pii<T>, and the harness registers its PiiProtector over an
-            // InMemoryKmsClient so scenarios run with no facade behind them.
-            var cryptoProjectPath = Path.Combine(srcDir, "DotnetCqrs.Crypto", "DotnetCqrs.Crypto.csproj");
-            var csproj = $"""
-                <Project Sdk="Microsoft.NET.Sdk">
-                  <PropertyGroup>
-                    <TargetFramework>net10.0</TargetFramework>
-                    <ImplicitUsings>enable</ImplicitUsings>
-                    <Nullable>enable</Nullable>
-                    <OutputType>Exe</OutputType>
-                  </PropertyGroup>
-                  <ItemGroup>
-                    <ProjectReference Include="{dotnetCqrsProjectPath}" />
-                    <ProjectReference Include="{codegenProjectPath}" />
-                    <ProjectReference Include="{cryptoProjectPath}" />
-                  </ItemGroup>
-                </Project>
-                """;
-            await File.WriteAllTextAsync(Path.Combine(scratchDir, "Scratch.csproj"), csproj, ct);
-
-            foreach (var domain in domains)
-                foreach (var file in CSharpGenerator.Generate(domain))
-                    await File.WriteAllTextAsync(Path.Combine(scratchDir, file.Name), file.Source, ct);
-
-            await File.WriteAllTextAsync(Path.Combine(scratchDir, "Program.cs"), ReadEmbeddedHarness(), ct);
-
-            var inputPath = Path.Combine(scratchDir, "input.json");
-            var outputPath = Path.Combine(scratchDir, "output.json");
+            var inputPath = Path.Combine(workDir, "input.json");
+            var outputPath = Path.Combine(workDir, "output.json");
             await File.WriteAllTextAsync(inputPath, JsonSerializer.Serialize(new HarnessInput(commandScenarios, viewScenarios)), ct);
 
-            var psi = new ProcessStartInfo("dotnet", $"run --project \"{scratchDir}\" -- \"{inputPath}\" \"{outputPath}\"")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            };
-            // `dotnet run` otherwise leaves a reusable MSBuild node alive that inherits the
-            // redirected stdout/stderr handles, so ReadToEndAsync below waits on it until the
-            // node idles out (~10 minutes), not until the harness exits.
-            psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
-            using var process = Process.Start(psi)!;
-            var stdout = await process.StandardOutput.ReadToEndAsync(ct);
-            var stderr = await process.StandardError.ReadToEndAsync(ct);
-            await process.WaitForExitAsync(ct);
+            var sources = domains
+                .SelectMany(CSharpGenerator.Generate)
+                .Select(file => (file.Name, file.Source))
+                .Append(("Program.cs", ReadEmbeddedHarness()));
+            await InProcessHarness.RunAsync(sources, [inputPath, outputPath], ct);
 
-            if (process.ExitCode != 0 || !File.Exists(outputPath))
-                throw new InvalidOperationException($"scenario verification harness failed (exit {process.ExitCode}):\n{stdout}\n{stderr}");
-
+            if (!File.Exists(outputPath))
+                throw new InvalidOperationException("scenario verification harness wrote no results");
             var dtos = JsonSerializer.Deserialize<List<HarnessResultDto>>(await File.ReadAllTextAsync(outputPath, ct))!;
             return dtos.Select(r => new ScenarioResult(r.SliceId, r.ScenarioId, r.Name, r.Kind, r.Passed, r.Skipped, r.Detail)).ToList();
         }
         finally
         {
-            if (Directory.Exists(scratchDir))
-                Directory.Delete(scratchDir, recursive: true);
+            if (Directory.Exists(workDir))
+                Directory.Delete(workDir, recursive: true);
         }
     }
 

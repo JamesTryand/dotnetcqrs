@@ -4,27 +4,18 @@ using DotnetCqrs.Codegen.Verification;
 
 namespace DotnetCqrs.Tests.Codegen;
 
+// Compiles generated code in memory (InProcessHarness): seconds each, but Roslyn is the bulk of
+// the everyday set. The tightest loop skips it: --filter "Category!=Slow&Category!=Compiles".
+[Trait("Category", "Compiles")]
 public class ScenarioVerifierTests
 {
     private static string TestDataPath(string fileName) =>
         Path.Combine(AppContext.BaseDirectory, "Codegen", "TestData", fileName);
 
-    /// <summary>Walks up from the test's own output directory to find the repo root
-    /// (marked by dotnetcqrs.slnx) -- same approach as CSharpGeneratorTests.</summary>
-    private static string RepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "dotnetcqrs.slnx")))
-            dir = dir.Parent;
-        return dir?.FullName ?? throw new InvalidOperationException($"could not locate repo root (dotnetcqrs.slnx) from {AppContext.BaseDirectory}");
-    }
-
-    private static string DotnetCqrsProjectPath() => Path.Combine(RepoRoot(), "src", "DotnetCqrs", "DotnetCqrs.csproj");
-
-    // Every test here compiles a scratch harness (dotnet build + run). That takes 25-55s
-    // warm, so the old 60s budget failed two tests under full-suite load on 2026-09-23;
-    // both passed alone in ~30s. Same budget, and the same reason, as CliTests' verify tests.
-    private const int VerifyTimeoutMs = 300000;
+    // Every test here compiles the harness with the generated code in memory and runs it
+    // in-process (InProcessHarness): seconds, where the old scratch `dotnet build` + `run`
+    // took minutes on a small machine. The budget stays generous for a loaded one.
+    private const int VerifyTimeoutMs = 120000;
 
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task Verifies_every_scenario_kind_in_the_order_fulfillment_document()
@@ -35,7 +26,7 @@ public class ScenarioVerifierTests
             AggregateOverrides = new Dictionary<string, string> { ["notify-shipping-partner"] = "ShippingNotification" },
         });
 
-        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped);
 
         // order-fulfillment.json declares exactly one scenario per slice (4 slices):
         // place-order (stateChange), order-status (stateView), auto-ship
@@ -108,7 +99,7 @@ public class ScenarioVerifierTests
             AggregateOverrides = new Dictionary<string, string> { ["place-order"] = "Order" },
         });
 
-        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped);
 
         Assert.Equal(2, results.Count);
         Assert.All(results, r => Assert.True(r.Passed, $"{r.ScenarioId}: {r.Detail}"));
@@ -161,7 +152,7 @@ public class ScenarioVerifierTests
         Assert.Contains(mapped.Report.Warnings, w => w.Contains("empty-rm") && w.Contains("skipped"));
         Assert.Empty(mapped.Domains.Single().ReadModels); // confirms it's genuinely absent, not just under-tested
 
-        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped);
 
         var result = Assert.Single(results);
         Assert.True(result.Skipped);
@@ -230,7 +221,7 @@ public class ScenarioVerifierTests
         var doc = DocumentLoader.Parse(json);
         var mapped = DocumentMapper.Map(doc);
 
-        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped);
 
         var view = results.Single(r => r.ScenarioId == "view-after-enable");
         Assert.True(view.Passed, view.Detail);
@@ -310,7 +301,7 @@ public class ScenarioVerifierTests
         var doc = DocumentLoader.Parse(json);
         var mapped = DocumentMapper.Map(doc);
 
-        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped);
 
         var all = results.Single(r => r.ScenarioId == "all-customers");
         Assert.True(all.Passed, all.Detail);
@@ -430,7 +421,7 @@ public class ScenarioVerifierTests
         var doc = DocumentLoader.Parse(json);
         var mapped = DocumentMapper.Map(doc);
 
-        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped);
 
         var byName = results.Single(r => r.ScenarioId == "by-name");
         Assert.True(byName.Passed, byName.Detail);
@@ -512,7 +503,7 @@ public class ScenarioVerifierTests
         var doc = DocumentLoader.Parse(json);
         var mapped = DocumentMapper.Map(doc);
 
-        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped);
 
         var view = results.Single(r => r.ScenarioId == "view-after-assign");
         Assert.True(view.Passed, view.Detail);
@@ -587,7 +578,7 @@ public class ScenarioVerifierTests
         var doc = DocumentLoader.Parse(json);
         var mapped = DocumentMapper.Map(doc);
 
-        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped);
 
         var view = results.Single(r => r.ScenarioId == "view-after-assign");
         Assert.True(view.Passed, view.Detail);
@@ -679,7 +670,7 @@ public class ScenarioVerifierTests
         var doc = DocumentLoader.Parse(json);
         var mapped = DocumentMapper.Map(doc);
 
-        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped);
 
         var view = results.Single(r => r.ScenarioId == "view-after-log");
         Assert.True(view.Passed, view.Detail);
@@ -755,7 +746,7 @@ public class ScenarioVerifierTests
         var doc = DocumentLoader.Parse(json);
         var mapped = DocumentMapper.Map(doc);
 
-        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped);
 
         var view = results.Single(r => r.ScenarioId == "view-within-custom-range");
         Assert.True(view.Passed, view.Detail);
@@ -833,7 +824,7 @@ public class ScenarioVerifierTests
         var doc = DocumentLoader.Parse(json);
         var mapped = DocumentMapper.Map(doc);
 
-        var results = await ScenarioVerifier.VerifyAsync(doc, mapped, DotnetCqrsProjectPath());
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped);
 
         var view = results.Single(r => r.ScenarioId == "view-within-pinned-last7days-window");
         Assert.True(view.Passed, view.Detail);

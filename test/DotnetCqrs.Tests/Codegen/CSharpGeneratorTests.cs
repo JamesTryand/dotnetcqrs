@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using DotnetCqrs.Codegen;
 using DotnetCqrs.Codegen.Generation;
 using DotnetCqrs.Codegen.Mapping;
@@ -9,77 +8,23 @@ namespace DotnetCqrs.Tests.Codegen;
 /// Proves the generator's output is real, compilable C# against the actual
 /// <c>DotnetCqrs</c> library -- not just "no exception while building the string". A
 /// generator's only real deliverable is text that compiles (and, for the wiring it
-/// claims to get right, runs correctly), so this shells out to a real
-/// <c>dotnet build</c>/<c>dotnet run</c> against a scratch project rather than
-/// asserting anything about the generated text itself.
+/// claims to get right, runs correctly), so this compiles the generated code against the
+/// real library and runs a small program over it (<see cref="InMemoryProgram"/>: in memory
+/// and in-process, where a scratch <c>dotnet build</c>/<c>dotnet run</c> took minutes)
+/// rather than asserting anything about the generated text itself.
 /// </summary>
-public class CSharpGeneratorTests : IDisposable
+// Compiles generated code in memory (InProcessHarness): seconds each, but Roslyn is the bulk of
+// the everyday set. The tightest loop skips it: --filter "Category!=Slow&Category!=Compiles".
+[Trait("Category", "Compiles")]
+public class CSharpGeneratorTests
 {
-    private readonly string _scratchDir;
-
-    public CSharpGeneratorTests()
-    {
-        _scratchDir = Path.Combine(Path.GetTempPath(), $"dotnetcqrs-codegen-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(_scratchDir);
-    }
-
-    public void Dispose()
-    {
-        if (Directory.Exists(_scratchDir))
-            Directory.Delete(_scratchDir, recursive: true);
-    }
-
     private static string TestDataPath(string fileName) =>
         Path.Combine(AppContext.BaseDirectory, "Codegen", "TestData", fileName);
 
-    /// <summary>Walks up from the test's own output directory to find the repo root
-    /// (marked by dotnetcqrs.slnx), rather than a fixed number of parent hops that
-    /// would silently break if the build output path ever changes shape.</summary>
-    private static string RepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "dotnetcqrs.slnx")))
-            dir = dir.Parent;
-        return dir?.FullName ?? throw new InvalidOperationException($"could not locate repo root (dotnetcqrs.slnx) from {AppContext.BaseDirectory}");
-    }
-
-    private async Task<(bool Success, string Output)> BuildAsync(IEnumerable<GeneratedFile> files, string? programCs = null)
-    {
-        var csproj = $"""
-            <Project Sdk="Microsoft.NET.Sdk">
-              <PropertyGroup>
-                <TargetFramework>net10.0</TargetFramework>
-                <ImplicitUsings>enable</ImplicitUsings>
-                <Nullable>enable</Nullable>
-                <OutputType>{(programCs is null ? "Library" : "Exe")}</OutputType>
-              </PropertyGroup>
-              <ItemGroup>
-                <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs", "DotnetCqrs.csproj")}" />
-                <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs.Crypto", "DotnetCqrs.Crypto.csproj")}" />
-              </ItemGroup>
-            </Project>
-            """;
-        await File.WriteAllTextAsync(Path.Combine(_scratchDir, "Scratch.csproj"), csproj);
-
-        foreach (var file in files)
-            await File.WriteAllTextAsync(Path.Combine(_scratchDir, file.Name), file.Source);
-
-        if (programCs is not null)
-            await File.WriteAllTextAsync(Path.Combine(_scratchDir, "Program.cs"), programCs);
-
-        var arguments = programCs is null ? $"build \"{_scratchDir}\" -v quiet" : $"run --project \"{_scratchDir}\"";
-        var psi = new ProcessStartInfo("dotnet", arguments)
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-        };
-        using var process = Process.Start(psi)!;
-        var stdout = await process.StandardOutput.ReadToEndAsync();
-        var stderr = await process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        return (process.ExitCode == 0, stdout + stderr);
-    }
+    /// <summary>Compiles <paramref name="files"/>; with <paramref name="programCs"/>, also runs
+    /// it as the program. Success means it compiled (and the program exited 0).</summary>
+    private static async Task<(bool Success, string Output)> BuildAsync(IEnumerable<GeneratedFile> files, string? programCs = null) =>
+        programCs is null ? InMemoryProgram.Compile(files) : await InMemoryProgram.RunAsync(files, programCs);
 
     [Fact]
     public async Task Generated_code_for_the_full_order_fulfillment_domain_compiles()

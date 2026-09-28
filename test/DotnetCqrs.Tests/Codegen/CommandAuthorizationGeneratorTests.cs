@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using DotnetCqrs.Codegen;
 using DotnetCqrs.Codegen.Generation;
 using DotnetCqrs.Codegen.Mapping;
@@ -7,62 +6,23 @@ namespace DotnetCqrs.Tests.Codegen;
 
 /// <summary>
 /// Proves <see cref="CommandAuthorizationGenerator"/>'s output is REAL, working C# --
-/// not just text that looks right. Same discipline as <c>ReadModelQueryGeneratorTests</c>/
-/// <c>HostGenerationTests</c>: write the generated file into a real scratch project,
-/// <c>dotnet build</c> it, then <c>dotnet run</c> a small hand-written harness that calls
+/// not just text that looks right. The generated file is compiled against the real
+/// library together with a small hand-written program that calls
 /// <c>Generated.CommandAuthorization.AuthorizeAsync</c> directly against a real (in-memory)
-/// SQLite <c>IReadModelStore</c> -- one case per declared kind (requiredRole,
-/// fieldGatedRole, requiredOwnership, scope with a bypass role and without) plus the
-/// "no declared policy" default. A console harness rather than a web host, since this
-/// generator's output has no HTTP surface of its own -- see
-/// <c>CqrsGatewayEndpointsTests</c>/<c>CqrsGatewayAuthTests</c> for the separate proof
+/// SQLite <c>IReadModelStore</c>, and the program is run (<see cref="InMemoryProgram"/>: in
+/// memory and in-process, where a scratch <c>dotnet build</c>/<c>dotnet run</c> took minutes)
+/// -- one case per declared kind (requiredRole, fieldGatedRole, requiredOwnership, scope with
+/// a bypass role and without) plus the "no declared policy" default. A console program
+/// rather than a web host, since this generator's output has no HTTP surface of its own --
+/// see <c>CqrsGatewayEndpointsTests</c>/<c>CqrsGatewayAuthTests</c> for the separate proof
 /// that <c>MapCqrsGateway</c>'s new <c>authorize</c> hook actually calls into code shaped
 /// like this.
 /// </summary>
-public class CommandAuthorizationGeneratorTests : IDisposable
+// Compiles generated code in memory (InProcessHarness): seconds each, but Roslyn is the bulk of
+// the everyday set. The tightest loop skips it: --filter "Category!=Slow&Category!=Compiles".
+[Trait("Category", "Compiles")]
+public class CommandAuthorizationGeneratorTests
 {
-    private readonly string _scratchDir;
-
-    public CommandAuthorizationGeneratorTests()
-    {
-        _scratchDir = Path.Combine(Path.GetTempPath(), $"dotnetcqrs-cmd-auth-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(_scratchDir);
-    }
-
-    public void Dispose()
-    {
-        if (!Directory.Exists(_scratchDir)) return;
-        for (var attempt = 0; ; attempt++)
-        {
-            try
-            {
-                Directory.Delete(_scratchDir, recursive: true);
-                return;
-            }
-            catch (UnauthorizedAccessException) when (attempt < 5) { Thread.Sleep(500); }
-            catch (IOException) when (attempt < 5) { Thread.Sleep(500); }
-        }
-    }
-
-    private static string RepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "dotnetcqrs.slnx")))
-            dir = dir.Parent;
-        return dir?.FullName ?? throw new InvalidOperationException($"could not locate repo root (dotnetcqrs.slnx) from {AppContext.BaseDirectory}");
-    }
-
-    private static async Task<(int ExitCode, string Output)> RunAsync(string fileName, IEnumerable<string> args)
-    {
-        var psi = new ProcessStartInfo(fileName) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        using var process = Process.Start(psi)!;
-        var stdout = await process.StandardOutput.ReadToEndAsync();
-        var stderr = await process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        return (process.ExitCode, stdout + stderr);
-    }
-
     // Same shape as DocumentMapperTests' own CommandAuthorizationDocumentJson fixture:
     // an ownership-only update, a Manager-bypass-else-region-scoped flag, a Manager-only
     // setup command, and an Administrator-field-gated onboarding command.
@@ -194,29 +154,8 @@ public class CommandAuthorizationGeneratorTests : IDisposable
 
         var files = new List<GeneratedFile> { CommandAuthorizationGenerator.Generate(mapped.Domains) };
 
-        var csproj = $"""
-            <Project Sdk="Microsoft.NET.Sdk">
-              <PropertyGroup>
-                <OutputType>Exe</OutputType>
-                <TargetFramework>net10.0</TargetFramework>
-                <ImplicitUsings>enable</ImplicitUsings>
-                <Nullable>enable</Nullable>
-              </PropertyGroup>
-              <ItemGroup>
-                <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs", "DotnetCqrs.csproj")}" />
-              </ItemGroup>
-            </Project>
-            """;
-        await File.WriteAllTextAsync(Path.Combine(_scratchDir, "Scratch.csproj"), csproj);
-        foreach (var file in files)
-            await File.WriteAllTextAsync(Path.Combine(_scratchDir, file.Name), file.Source);
-        await File.WriteAllTextAsync(Path.Combine(_scratchDir, "Program.cs"), ProgramCs);
-
-        var (buildExit, buildOutput) = await RunAsync("dotnet", ["build", _scratchDir, "-v", "quiet"]);
-        Assert.True(buildExit == 0, $"generated CommandAuthorization.cs did not compile:\n{buildOutput}");
-
-        var (runExit, runOutput) = await RunAsync("dotnet", ["run", "--project", _scratchDir, "--no-build"]);
-        Assert.True(runExit == 0, $"harness reported failures:\n{runOutput}");
+        var (success, runOutput) = await InMemoryProgram.RunAsync(files, ProgramCs);
+        Assert.True(success, $"generated CommandAuthorization.cs did not compile, or the program reported failures:{Environment.NewLine}{runOutput}");
         Assert.Contains("ALL PASS", runOutput);
         Assert.DoesNotContain("FAIL ", runOutput);
     }
