@@ -151,7 +151,7 @@ public static class HostProjectGenerator
         b.AppendLine("        },");
         b.AppendLine("    };");
         b.AppendLine("    var verifyMapped = DocumentMapper.Map(verifyDocument, verifyOptions);");
-        b.AppendLine($"    var verifyResults = await ScenarioVerifier.VerifyAsync(verifyDocument, verifyMapped, @\"{dotnetCqrsProjectPath}\");");
+        b.AppendLine("    var verifyResults = await ScenarioVerifier.VerifyAsync(verifyDocument, verifyMapped);");
         b.AppendLine("    return ScenarioReport.Print(verifyResults, Console.Out);");
         b.AppendLine("}");
         b.AppendLine();

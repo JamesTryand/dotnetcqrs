@@ -204,11 +204,11 @@ public class CliTests : IDisposable, IClassFixture<CliUnderTestFixture>
     }
 
     [Fact(Timeout = 60000)]
-    public async Task Verify_requires_input_and_dotnetcqrs_project_flags()
+    public async Task Verify_requires_the_input_flag()
     {
-        var (exitCode, output) = await RunCliAsync("verify", "--input", TestDataPath("order-fulfillment.json"));
+        var (exitCode, output) = await RunCliAsync("verify");
 
         Assert.NotEqual(0, exitCode);
-        Assert.Contains("--dotnetcqrs-project", output);
+        Assert.Contains("--input", output);
     }
 }

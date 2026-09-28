@@ -11,7 +11,7 @@ using DotnetCqrs.Codegen.Verification;
 if (args.Length == 0 || (args[0] != "generate" && args[0] != "verify"))
 {
     Console.Error.WriteLine("usage: dotnetcqrs-codegen generate --input <path> --output <dir> [--host --dotnetcqrs-project <path> [--project-name <name>]] [--aggregate-override <id>=<aggregate>]...");
-    Console.Error.WriteLine("       dotnetcqrs-codegen verify --input <path> --dotnetcqrs-project <path> [--aggregate-override <id>=<aggregate>]...");
+    Console.Error.WriteLine("       dotnetcqrs-codegen verify --input <path> [--aggregate-override <id>=<aggregate>]...");
     return 1;
 }
 
@@ -73,9 +73,11 @@ if (command == "generate" && host && dotnetCqrsProject is null)
     Console.Error.WriteLine("--host requires --dotnetcqrs-project");
     return 1;
 }
-if (command == "verify" && (input is null || dotnetCqrsProject is null))
+// verify runs against the dotnetcqrs this tool ships with; --dotnetcqrs-project is accepted
+// and ignored, so existing scripts keep working.
+if (command == "verify" && input is null)
 {
-    Console.Error.WriteLine("--input and --dotnetcqrs-project are required");
+    Console.Error.WriteLine("--input is required");
     return 1;
 }
 
@@ -120,7 +122,7 @@ try
         return 0;
     }
 
-    var scenarioResults = await ScenarioVerifier.VerifyAsync(document, result, dotnetCqrsProject!);
+    var scenarioResults = await ScenarioVerifier.VerifyAsync(document, result);
     return ScenarioReport.Print(scenarioResults, Console.Out);
 }
 catch (DocumentValidationException ex)

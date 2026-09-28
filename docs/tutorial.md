@@ -374,8 +374,9 @@ You don't have to write demo code like the above by hand to check a
 document's claims — `order-fulfillment.json` declares its own
 given/when/then scenarios, and `ScenarioVerifier.VerifyAsync(doc, result, ...)`
 runs every one of them against the generated code for you (compiling a
-small fixed harness alongside it, same as this tutorial's demo project
-does by hand). From the command line, that's `dotnetcqrs-codegen verify`;
+small fixed harness alongside it in memory and running it in-process,
+against the dotnetcqrs the tool ships with, so no source checkout or
+`dotnet build` is needed). From the command line, that's `dotnetcqrs-codegen verify`;
 a generated host has the same check built in as `dotnet run -- --verify`.
 `test/DotnetCqrs.Tests/Codegen/ScenarioVerifierTests.cs` is a full worked
 call site. It's how the `status`-column gap above was originally found:

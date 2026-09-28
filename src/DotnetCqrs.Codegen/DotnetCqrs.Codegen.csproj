@@ -10,6 +10,20 @@
 
   <ItemGroup>
     <PackageReference Include="JsonSchema.Net" Version="9.4.0" />
+    <!-- Roslyn, for ScenarioVerifier: the harness and the generated code are compiled in
+         memory and run in this process (InProcessHarness), not in a scratch project with
+         `dotnet build`/`dotnet run`. 5.9.0 matches the .NET 10 SDK's own compiler, so the
+         generated code gets the same C# language version it does in a real project. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
+  </ItemGroup>
+
+  <!-- The library the generated code runs on, bundled so `verify` compiles and runs against
+       the version this tool ships with, and needs no dotnetcqrs source checkout. Crypto:
+       generated deciders for field.pii fields use Pii<T>, and the harness wires a
+       PiiProtector over an InMemoryKmsClient. -->
+  <ItemGroup>
+    <ProjectReference Include="..\DotnetCqrs\DotnetCqrs.csproj" />
+    <ProjectReference Include="..\DotnetCqrs.Crypto\DotnetCqrs.Crypto.csproj" />
   </ItemGroup>
 
   <!-- Pinned copy of eventmodelschema's eventmodeling.schema.json (v3.1.1, eventmodelschema@f616eaf,
@@ -20,8 +34,8 @@
     <EmbeddedResource Include="Schema\eventmodeling.schema.json" />
   </ItemGroup>
 
-  <!-- The fixed scenario-verification harness (see its own header comment): copied
-       verbatim into a scratch project by ScenarioVerifier, never compiled as part of
+  <!-- The fixed scenario-verification harness (see its own header comment): compiled in
+       memory with the generated code by ScenarioVerifier, never compiled as part of
        this assembly itself: .txt so the C# compiler here ignores it, and
        EmbeddedResource so it ships inside DotnetCqrs.Codegen.dll rather than needing
        to be found on disk relative to wherever the assembly happens to run from.
