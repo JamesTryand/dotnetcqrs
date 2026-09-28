@@ -4,6 +4,9 @@ using DotnetCqrs.Codegen.Verification;
 
 namespace DotnetCqrs.Tests.Codegen;
 
+// Compiles generated code in memory (InProcessHarness): seconds each, but Roslyn is the bulk of
+// the everyday set. The tightest loop skips it: --filter "Category!=Slow&Category!=Compiles".
+[Trait("Category", "Compiles")]
 public class ScenarioVerifierTests
 {
     private static string TestDataPath(string fileName) =>

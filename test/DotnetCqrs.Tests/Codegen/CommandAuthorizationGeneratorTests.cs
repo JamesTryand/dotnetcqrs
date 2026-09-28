@@ -18,6 +18,9 @@ namespace DotnetCqrs.Tests.Codegen;
 /// that <c>MapCqrsGateway</c>'s new <c>authorize</c> hook actually calls into code shaped
 /// like this.
 /// </summary>
+// Compiles generated code in memory (InProcessHarness): seconds each, but Roslyn is the bulk of
+// the everyday set. The tightest loop skips it: --filter "Category!=Slow&Category!=Compiles".
+[Trait("Category", "Compiles")]
 public class CommandAuthorizationGeneratorTests
 {
     // Same shape as DocumentMapperTests' own CommandAuthorizationDocumentJson fixture:

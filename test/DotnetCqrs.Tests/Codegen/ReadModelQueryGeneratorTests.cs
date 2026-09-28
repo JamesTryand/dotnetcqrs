@@ -1,6 +1,4 @@
-using System.Diagnostics;
 using System.Net.Http.Json;
-using System.Net.Sockets;
 using System.Net;
 using System.Text.Json;
 using DotnetCqrs.Codegen;
@@ -14,72 +12,22 @@ namespace DotnetCqrs.Tests.Codegen;
 /// <summary>
 /// Proves <see cref="ReadModelQueryGenerator"/>'s output is a REAL, working HTTP query
 /// route -- not just text that looks right. Same discipline as
-/// <c>HostGenerationTests</c>' real dotnet-run/HTTP round trip for
-/// <c>MapCqrsGateway()</c>, but against a small standalone scratch web host built here
-/// rather than <c>HostProjectGenerator</c>/<c>order-fulfillment.json</c> — wiring a
-/// generated query route into a real generated-or-hand-written host is Stage 3a's job,
-/// out of scope for this generator's own proof.
+/// <c>HostGenerationTests</c>' real HTTP round trip for <c>MapCqrsGateway()</c>, but against
+/// a small hand-written web host compiled with the generated code and served over real HTTP
+/// in this process (<see cref="InMemoryHost"/>: in memory, where a scratch <c>dotnet
+/// build</c>/<c>dotnet run</c> took minutes) rather than <c>HostProjectGenerator</c>/
+/// <c>order-fulfillment.json</c> -- wiring a generated query route into a real
+/// generated-or-hand-written host is Stage 3a's job, out of scope for this generator's own
+/// proof.
 /// </summary>
-[Collection(CompilesCollection.Name)]
-[Trait("Category", "Slow")]
-public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresFixture>
+// Compiles generated code in memory (InProcessHarness): seconds each, but Roslyn is the bulk of
+// the everyday set. The tightest loop skips it: --filter "Category!=Slow&Category!=Compiles".
+[Trait("Category", "Compiles")]
+public class ReadModelQueryGeneratorTests : IClassFixture<PostgresFixture>
 {
-    private readonly string _scratchDir;
     private readonly PostgresFixture _pg;
 
-    public ReadModelQueryGeneratorTests(PostgresFixture pg)
-    {
-        _pg = pg;
-        _scratchDir = Path.Combine(Path.GetTempPath(), $"dotnetcqrs-query-route-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(_scratchDir);
-    }
-
-    public void Dispose()
-    {
-        if (!Directory.Exists(_scratchDir)) return;
-
-        // Same rationale as HostGenerationTests.Dispose: a live host process was just
-        // killed, and Windows can hold its output DLLs locked briefly afterward.
-        for (var attempt = 0; ; attempt++)
-        {
-            try
-            {
-                Directory.Delete(_scratchDir, recursive: true);
-                return;
-            }
-            catch (UnauthorizedAccessException) when (attempt < 5) { Thread.Sleep(500); }
-            catch (IOException) when (attempt < 5) { Thread.Sleep(500); }
-        }
-    }
-
-    private static string RepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "dotnetcqrs.slnx")))
-            dir = dir.Parent;
-        return dir?.FullName ?? throw new InvalidOperationException($"could not locate repo root (dotnetcqrs.slnx) from {AppContext.BaseDirectory}");
-    }
-
-    private static async Task<(int ExitCode, string Output)> RunAsync(string fileName, IEnumerable<string> args)
-    {
-        var psi = new ProcessStartInfo(fileName) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-
-        using var process = Process.Start(psi)!;
-        var stdout = await process.StandardOutput.ReadToEndAsync();
-        var stderr = await process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        return (process.ExitCode, stdout + stderr);
-    }
-
-    private static int FreeTcpPort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
+    public ReadModelQueryGeneratorTests(PostgresFixture pg) => _pg = pg;
 
     // Same shape as DocumentMapperTests/ScenarioVerifierTests' own dateRange fixture
     // (project/timesheets's real time-entries read model) -- no stateView scenarios
@@ -131,7 +79,8 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
     // Hand-written, not generated -- this test's own scratch web host, seeding rows by
     // calling the generated projection's ApplyAsync directly (the same technique
     // HarnessProgram.txt's own RunViewScenarioAsync uses), then mapping the generated
-    // query route and running for real. TEST_PG names a Postgres schema to use instead of
+    // query route and serving it for real. TEST_PG (an InMemoryHost setting) names a Postgres
+    // schema to use instead of
     // an in-memory SQLite database: the same generated code runs on either.
     private const string ProgramCs = """
         using DotnetCqrs.EventStore;
@@ -139,7 +88,7 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
         using DotnetCqrs.ReadModels;
         using Generated.TimeEntry;
 
-        IReadModelStore store = Environment.GetEnvironmentVariable("TEST_PG") is { Length: > 0 } pg
+        IReadModelStore store = DotnetCqrs.Tests.Codegen.InMemoryHost.Setting("TEST_PG") is { Length: > 0 } pg
             ? await PostgresReadModelStore.OpenAsync(pg)
             : await SqliteReadModelStore.OpenAsync(":memory:");
         var projection = new TimeEntriesProjection(store);
@@ -160,7 +109,7 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
         builder.Services.AddSingleton<IReadModelStore>(store);
         var app = builder.Build();
         app.MapTimeEntriesRoute();
-        await app.RunAsync();
+        await DotnetCqrs.Tests.Codegen.InMemoryHost.ServeAsync(app);
         """;
 
     [Fact(Timeout = 300000)]
@@ -193,41 +142,10 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
             ReadModelQueryGenerator.Generate(domain, readModel),
         };
 
-        var csproj = $"""
-            <Project Sdk="Microsoft.NET.Sdk.Web">
-              <PropertyGroup>
-                <TargetFramework>net10.0</TargetFramework>
-                <ImplicitUsings>enable</ImplicitUsings>
-                <Nullable>enable</Nullable>
-              </PropertyGroup>
-              <ItemGroup>
-                <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs", "DotnetCqrs.csproj")}" />
-                <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs.Postgres", "DotnetCqrs.Postgres.csproj")}" />
-                <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs.Codegen", "DotnetCqrs.Codegen.csproj")}" />
-              </ItemGroup>
-            </Project>
-            """;
-        await File.WriteAllTextAsync(Path.Combine(_scratchDir, "Scratch.csproj"), csproj);
-        foreach (var file in files)
-            await File.WriteAllTextAsync(Path.Combine(_scratchDir, file.Name), file.Source);
-        await File.WriteAllTextAsync(Path.Combine(_scratchDir, "Program.cs"), ProgramCs);
-
-        var (buildExit, buildOutput) = await RunAsync("dotnet", ["build", _scratchDir, "-v", "quiet"]);
-        Assert.True(buildExit == 0, $"generated query route project did not compile:\n{buildOutput}");
-
-        var port = FreeTcpPort();
-        var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-        psi.ArgumentList.Add("run");
-        psi.ArgumentList.Add("--project");
-        psi.ArgumentList.Add(_scratchDir);
-        psi.ArgumentList.Add("--no-build");
-        psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
-        psi.Environment["TEST_PG"] = postgresConnectionString ?? "";
-
-        using var process = Process.Start(psi)!;
-        try
+        await using var host = await InMemoryHost.StartAsync(files, ProgramCs,
+            new Dictionary<string, string> { ["TEST_PG"] = postgresConnectionString ?? "" });
         {
-            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            var client = host.Client;
 
             async Task<JsonElement> PollAsync(string path)
             {
@@ -245,7 +163,6 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
             var dateRangeQuery = "/api/query/timeEntries?dateRange=" +
                 Uri.EscapeDataString("""{"kind":"custom","from":"2026-08-01","to":"2026-08-31"}""");
             var byDateRange = await PollAsync(dateRangeQuery);
-            Assert.False(process.HasExited, "generated host process exited early");
             Assert.Equal(["e1", "e2"], EntryIds(byDateRange));
 
             var byPlainField = await client.GetFromJsonAsync<JsonElement>("/api/query/timeEntries?entryId=e1");
@@ -269,14 +186,6 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
                 .Select(_ => client.GetAsync("/api/query/timeEntries?billable=true")));
             Assert.All(responses, r => Assert.Equal(HttpStatusCode.OK, r.StatusCode));
             foreach (var r in responses) r.Dispose();
-        }
-        finally
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-                process.WaitForExit(5000);
-            }
         }
     }
 
@@ -354,7 +263,7 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
         string ResolveOwnRole(ClaimsPrincipal user) => user.FindFirst("role")?.Value ?? "";
 
         {{MAP_CALL}}
-        await app.RunAsync();
+        await DotnetCqrs.Tests.Codegen.InMemoryHost.ServeAsync(app);
         """;
 
     private static (GeneratedFile[] Files, Domain Domain, ReadModel ReadModel) GenerateRoleGateRoute()
@@ -374,51 +283,15 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
         return (files.ToArray(), domain, readModel);
     }
 
-    private async Task<int> StartHostAndBuildAsync(GeneratedFile[] files, string programCs, string scratchDir)
-    {
-        var csproj = $"""
-            <Project Sdk="Microsoft.NET.Sdk.Web">
-              <PropertyGroup>
-                <TargetFramework>net10.0</TargetFramework>
-                <ImplicitUsings>enable</ImplicitUsings>
-                <Nullable>enable</Nullable>
-              </PropertyGroup>
-              <ItemGroup>
-                <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs", "DotnetCqrs.csproj")}" />
-                <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs.Codegen", "DotnetCqrs.Codegen.csproj")}" />
-                <ProjectReference Include="{Path.Combine(RepoRoot(), "src", "DotnetCqrs.Crypto", "DotnetCqrs.Crypto.csproj")}" />
-              </ItemGroup>
-            </Project>
-            """;
-        await File.WriteAllTextAsync(Path.Combine(scratchDir, "Scratch.csproj"), csproj);
-        foreach (var file in files)
-            await File.WriteAllTextAsync(Path.Combine(scratchDir, file.Name), file.Source);
-        await File.WriteAllTextAsync(Path.Combine(scratchDir, "Program.cs"), programCs);
-
-        var (buildExit, buildOutput) = await RunAsync("dotnet", ["build", scratchDir, "-v", "quiet"]);
-        Assert.True(buildExit == 0, $"generated query route project did not compile:\n{buildOutput}");
-        return FreeTcpPort();
-    }
-
     [Fact(Timeout = 300000)]
     public async Task Generated_query_route_enforces_requiredRole_when_resolveOwnRole_is_wired()
     {
         var (files, _, _) = GenerateRoleGateRoute();
         var programCs = RoleGateProgramCsTemplate.Replace("{{MAP_CALL}}",
             "app.MapWidgetsRoute(resolveOwnRole: ResolveOwnRole);");
-        var port = await StartHostAndBuildAsync(files, programCs, _scratchDir);
-
-        var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-        psi.ArgumentList.Add("run");
-        psi.ArgumentList.Add("--project");
-        psi.ArgumentList.Add(_scratchDir);
-        psi.ArgumentList.Add("--no-build");
-        psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
-
-        using var process = Process.Start(psi)!;
-        try
+        await using var host = await InMemoryHost.StartAsync(files, programCs);
         {
-            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            var client = host.Client;
 
             async Task<HttpResponseMessage> PollAsync(string? role)
             {
@@ -437,7 +310,6 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
             }
 
             using var staffResponse = await PollAsync("staff");
-            Assert.False(process.HasExited, "generated host process exited early");
             Assert.Equal(HttpStatusCode.Forbidden, staffResponse.StatusCode);
 
             using var noRoleResponse = await client.GetAsync("/api/query/widgets");
@@ -448,14 +320,6 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
             var rows = await managerResponse.Content.ReadFromJsonAsync<JsonElement>();
             Assert.Equal(1, rows.GetArrayLength());
             Assert.Equal("w1", rows[0].GetProperty("widget_id").GetString());
-        }
-        finally
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-                process.WaitForExit(5000);
-            }
         }
     }
 
@@ -469,19 +333,9 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
         // stays exactly as open as it was before this capability existed.
         var (files, _, _) = GenerateRoleGateRoute();
         var programCs = RoleGateProgramCsTemplate.Replace("{{MAP_CALL}}", "app.MapWidgetsRoute();");
-        var port = await StartHostAndBuildAsync(files, programCs, _scratchDir);
-
-        var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-        psi.ArgumentList.Add("run");
-        psi.ArgumentList.Add("--project");
-        psi.ArgumentList.Add(_scratchDir);
-        psi.ArgumentList.Add("--no-build");
-        psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
-
-        using var process = Process.Start(psi)!;
-        try
+        await using var host = await InMemoryHost.StartAsync(files, programCs);
         {
-            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            var client = host.Client;
 
             async Task<HttpResponseMessage> PollAsync()
             {
@@ -495,18 +349,9 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
             }
 
             using var response = await PollAsync();
-            Assert.False(process.HasExited, "generated host process exited early");
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             var rows = await response.Content.ReadFromJsonAsync<JsonElement>();
             Assert.Equal(1, rows.GetArrayLength());
-        }
-        finally
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-                process.WaitForExit(5000);
-            }
         }
     }
 
@@ -591,7 +436,7 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
             await new SubjectKeyDestroyer(kms).ApplyAsync(erased, CancellationToken.None);
             await new PiiCacheEvictor(cache).ApplyAsync(erased, CancellationToken.None);
         });
-        await app.RunAsync();
+        await DotnetCqrs.Tests.Codegen.InMemoryHost.ServeAsync(app);
         """;
 
     [Fact(Timeout = 300000)]
@@ -602,19 +447,9 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
         var readModel = Assert.Single(domain.ReadModels);
         Assert.True(readModel.Fields.Single(f => f.Name == "email").Pii);
         var files = new List<GeneratedFile>(CSharpGenerator.Generate(domain)) { ReadModelQueryGenerator.Generate(domain, readModel) };
-        var port = await StartHostAndBuildAsync([.. files], PiiProgramCs, _scratchDir);
-
-        var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-        psi.ArgumentList.Add("run");
-        psi.ArgumentList.Add("--project");
-        psi.ArgumentList.Add(_scratchDir);
-        psi.ArgumentList.Add("--no-build");
-        psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
-
-        using var process = Process.Start(psi)!;
-        try
+        await using var host = await InMemoryHost.StartAsync(files, PiiProgramCs);
         {
-            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            var client = host.Client;
 
             async Task<JsonElement> PollAsync()
             {
@@ -635,7 +470,6 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
 
             // Revealed: one decrypt-batch per subject on the page.
             var first = await PollAsync();
-            Assert.False(process.HasExited, "generated host process exited early");
             Assert.Equal("alice@example.com", Email(first, "c1"));
             Assert.Equal("bob@example.com", Email(first, "c2"));
             Assert.Equal(2, await client.GetFromJsonAsync<int>("/test/calls"));
@@ -669,14 +503,6 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
             Assert.Equal("""{"$redacted":true}""", Email(after, "c1"));
             Assert.Equal("bob@example.com", Email(after, "c2"));
             Assert.Equal(2, await client.GetFromJsonAsync<int>("/test/calls"));
-        }
-        finally
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-                process.WaitForExit(5000);
-            }
         }
     }
 
@@ -738,7 +564,7 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
         var store = await SqliteReadModelStore.OpenAsync(":memory:");
         var projection = new CustomersProjection(store);
         await projection.InitAsync();
-        var searchPath = Path.Combine(AppContext.BaseDirectory, "search.db");
+        var searchPath = Path.Combine(Path.GetTempPath(), $"dotnetcqrs-search-{Guid.NewGuid():N}.db");
         File.Delete(searchPath);
         var searchStore = await SqliteSearchIndexStore.OpenAsync(searchPath);
         await SqliteSearchIndexStore.AttachAsync(store.Connection, searchPath);
@@ -779,7 +605,7 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
             await searchIndex.ApplyAsync(erased, CancellationToken.None);
             await hashedIndex!.ApplyAsync(erased, CancellationToken.None);
         });
-        await app.RunAsync();
+        await DotnetCqrs.Tests.Codegen.InMemoryHost.ServeAsync(app);
         """;
 
     [Fact(Timeout = 300000)]
@@ -791,23 +617,15 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
         var files = new List<GeneratedFile>(CSharpGenerator.Generate(domain)) { ReadModelQueryGenerator.Generate(domain, readModel) };
         Assert.Contains(files, f => f.Name == "CustomersSearchIndex.cs");
         Assert.Contains(files, f => f.Name == "CustomersHashedIndex.cs");
-        var port = await StartHostAndBuildAsync([.. files], MatchProgramCs, _scratchDir);
-
-        var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-        foreach (var a in new[] { "run", "--project", _scratchDir, "--no-build" }) psi.ArgumentList.Add(a);
-        psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
-
-        using var process = Process.Start(psi)!;
-        try
+        await using var host = await InMemoryHost.StartAsync(files, MatchProgramCs);
         {
-            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            var client = host.Client;
             for (var attempt = 0; attempt < 60; attempt++)
             {
                 await Task.Delay(500);
                 try { (await client.GetAsync("/api/query/customers")).EnsureSuccessStatusCode(); break; }
                 catch (HttpRequestException) { /* not listening yet -- retry */ }
             }
-            Assert.False(process.HasExited, "generated host process exited early");
 
             async Task<string[]> IdsAsync(string query)
             {
@@ -850,14 +668,6 @@ public class ReadModelQueryGeneratorTests : IDisposable, IClassFixture<PostgresF
             Assert.Empty(await IdsAsync("emailExact=alice%40example.com"));
             Assert.Empty(await IdsAsync("emailPrefix=ali"));
             Assert.Equal(["c2"], await IdsAsync("emailPrefix=bob"));
-        }
-        finally
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-                process.WaitForExit(5000);
-            }
         }
     }
 }

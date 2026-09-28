@@ -13,6 +13,9 @@ namespace DotnetCqrs.Tests.Codegen;
 /// and in-process, where a scratch <c>dotnet build</c>/<c>dotnet run</c> took minutes)
 /// rather than asserting anything about the generated text itself.
 /// </summary>
+// Compiles generated code in memory (InProcessHarness): seconds each, but Roslyn is the bulk of
+// the everyday set. The tightest loop skips it: --filter "Category!=Slow&Category!=Compiles".
+[Trait("Category", "Compiles")]
 public class CSharpGeneratorTests
 {
     private static string TestDataPath(string fileName) =>

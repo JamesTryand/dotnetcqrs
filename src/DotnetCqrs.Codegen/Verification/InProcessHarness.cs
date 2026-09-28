@@ -32,15 +32,22 @@ internal static class InProcessHarness
         global using System.Threading.Tasks;
         """;
 
-    private static readonly Lazy<IReadOnlyList<MetadataReference>> References = new(LoadReferences);
+    // Simple name -> path; loaded once per process.
+    private static readonly Lazy<IReadOnlyDictionary<string, string>> References = new(LoadReferences);
+
+    // Reading an assembly's metadata is the expensive part of a reference: once per path.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, MetadataReference> ReferenceCache =
+        new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Compiles <paramref name="sources"/> (name, text) as one console program and runs
     /// its entry point with <paramref name="args"/>, returning its exit code when it completes
     /// (0 for a program that returns nothing). Throws with the compiler's errors if it does not
-    /// compile, or with the program's own exception.</summary>
-    public static async Task<int> RunAsync(IEnumerable<(string Name, string Source)> sources, string[] args, CancellationToken ct)
+    /// compile, or with the program's own exception. <paramref name="alsoReference"/> adds
+    /// assemblies beyond dotnetcqrs and the runtime (a test's own helpers, for example).</summary>
+    public static async Task<int> RunAsync(
+        IEnumerable<(string Name, string Source)> sources, string[] args, CancellationToken ct, IEnumerable<Assembly>? alsoReference = null)
     {
-        var compilation = Compile(sources, OutputKind.ConsoleApplication, ct);
+        var compilation = Compile(sources, OutputKind.ConsoleApplication, ct, alsoReference);
         var errors = Errors(compilation);
         using var image = new MemoryStream();
         var emitted = errors.Count == 0 ? compilation.Emit(image, cancellationToken: ct) : null;
@@ -87,10 +94,14 @@ internal static class InProcessHarness
     /// <summary>Compiles <paramref name="sources"/> as a library and returns the compiler's
     /// errors, formatted; empty when it compiles. Nothing is loaded or run.</summary>
     public static IReadOnlyList<string> CompileErrors(IEnumerable<(string Name, string Source)> sources) =>
-        Errors(Compile(sources, OutputKind.DynamicallyLinkedLibrary, CancellationToken.None));
+        Errors(Compile(sources, OutputKind.DynamicallyLinkedLibrary, CancellationToken.None, alsoReference: null));
 
-    private static CSharpCompilation Compile(IEnumerable<(string Name, string Source)> sources, OutputKind kind, CancellationToken ct)
+    private static CSharpCompilation Compile(
+        IEnumerable<(string Name, string Source)> sources, OutputKind kind, CancellationToken ct, IEnumerable<Assembly>? alsoReference)
     {
+        var paths = new Dictionary<string, string>(References.Value, StringComparer.OrdinalIgnoreCase);
+        foreach (var assembly in alsoReference ?? [])
+            paths[assembly.GetName().Name!] = assembly.Location;
         var parseOptions = new CSharpParseOptions(LanguageVersion.Latest);
         var trees = sources
             .Append((Name: "ImplicitUsings.g.cs", Source: ImplicitUsings))
@@ -99,7 +110,7 @@ internal static class InProcessHarness
         return CSharpCompilation.Create(
             $"DotnetCqrsVerify_{Guid.NewGuid():N}",
             trees,
-            References.Value,
+            paths.Values.Select(path => ReferenceCache.GetOrAdd(path, p => MetadataReference.CreateFromFile(p))),
             new CSharpCompilationOptions(kind, nullableContextOptions: NullableContextOptions.Enable));
     }
 
@@ -109,7 +120,7 @@ internal static class InProcessHarness
     /// <summary>The runtime's own assemblies, plus dotnetcqrs and everything it references, by
     /// the paths they were loaded from in this process: the same assemblies the compiled code
     /// then runs against.</summary>
-    private static IReadOnlyList<MetadataReference> LoadReferences()
+    private static IReadOnlyDictionary<string, string> LoadReferences()
     {
         var paths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var platform = AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") as string ?? "";
@@ -144,6 +155,6 @@ internal static class InProcessHarness
             }
         }
 
-        return paths.Values.Select(p => (MetadataReference)MetadataReference.CreateFromFile(p)).ToList();
+        return paths;
     }
 }
