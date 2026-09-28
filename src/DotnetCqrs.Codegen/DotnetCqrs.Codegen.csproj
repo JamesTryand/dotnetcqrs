@@ -17,6 +17,11 @@
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
   </ItemGroup>
 
+  <!-- The generator tests compile and run generated code with InProcessHarness too. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="DotnetCqrs.Tests" />
+  </ItemGroup>
+
   <!-- The library the generated code runs on, bundled so `verify` compiles and runs against
        the version this tool ships with, and needs no dotnetcqrs source checkout. Crypto:
        generated deciders for field.pii fields use Pii<T>, and the harness wires a

@@ -35,26 +35,18 @@ internal static class InProcessHarness
     private static readonly Lazy<IReadOnlyList<MetadataReference>> References = new(LoadReferences);
 
     /// <summary>Compiles <paramref name="sources"/> (name, text) as one console program and runs
-    /// its entry point with <paramref name="args"/>, returning when it completes. Throws with
-    /// the compiler's errors if it does not compile, or with the program's own exception.</summary>
-    public static async Task RunAsync(IEnumerable<(string Name, string Source)> sources, string[] args, CancellationToken ct)
+    /// its entry point with <paramref name="args"/>, returning its exit code when it completes
+    /// (0 for a program that returns nothing). Throws with the compiler's errors if it does not
+    /// compile, or with the program's own exception.</summary>
+    public static async Task<int> RunAsync(IEnumerable<(string Name, string Source)> sources, string[] args, CancellationToken ct)
     {
-        var parseOptions = new CSharpParseOptions(LanguageVersion.Latest);
-        var trees = sources
-            .Append((Name: "ImplicitUsings.g.cs", Source: ImplicitUsings))
-            .Select(s => CSharpSyntaxTree.ParseText(s.Source, parseOptions, path: s.Name, cancellationToken: ct))
-            .ToList();
-        var compilation = CSharpCompilation.Create(
-            $"DotnetCqrsVerify_{Guid.NewGuid():N}",
-            trees,
-            References.Value,
-            new CSharpCompilationOptions(OutputKind.ConsoleApplication, nullableContextOptions: NullableContextOptions.Enable));
-
+        var compilation = Compile(sources, OutputKind.ConsoleApplication, ct);
+        var errors = Errors(compilation);
         using var image = new MemoryStream();
-        var emitted = compilation.Emit(image, cancellationToken: ct);
-        if (!emitted.Success)
-            throw new InvalidOperationException("scenario verification harness did not compile:\n"
-                + string.Join("\n", emitted.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error)));
+        var emitted = errors.Count == 0 ? compilation.Emit(image, cancellationToken: ct) : null;
+        if (emitted is null || !emitted.Success)
+            throw new InvalidOperationException("scenario verification harness did not compile:" + Environment.NewLine
+                + string.Join(Environment.NewLine, emitted is null ? errors : emitted.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).Select(d => d.ToString())));
         image.Position = 0;
 
         var context = new AssemblyLoadContext(compilation.AssemblyName, isCollectible: true);
@@ -64,22 +56,55 @@ internal static class InProcessHarness
                 ?? throw new InvalidOperationException("scenario verification harness has no entry point");
             // Off the caller's thread: the entry point of an async top-level program blocks
             // until the program completes.
-            await Task.Run(async () =>
+            return await Task.Run(async () =>
             {
                 var returned = entryPoint.Invoke(null, entryPoint.GetParameters().Length == 0 ? null : [args]);
-                if (returned is Task task)
-                    await task;
+                return returned switch
+                {
+                    Task<int> exit => await exit,
+                    Task task => await CompletedAsZero(task),
+                    int exit => exit,
+                    _ => 0,
+                };
             }, ct);
         }
         catch (TargetInvocationException ex) when (ex.InnerException is not null)
         {
-            throw new InvalidOperationException($"scenario verification harness failed:\n{ex.InnerException}", ex.InnerException);
+            throw new InvalidOperationException("scenario verification harness failed:" + Environment.NewLine + ex.InnerException, ex.InnerException);
         }
         finally
         {
             context.Unload();
         }
     }
+
+    private static async Task<int> CompletedAsZero(Task task)
+    {
+        await task;
+        return 0;
+    }
+
+    /// <summary>Compiles <paramref name="sources"/> as a library and returns the compiler's
+    /// errors, formatted; empty when it compiles. Nothing is loaded or run.</summary>
+    public static IReadOnlyList<string> CompileErrors(IEnumerable<(string Name, string Source)> sources) =>
+        Errors(Compile(sources, OutputKind.DynamicallyLinkedLibrary, CancellationToken.None));
+
+    private static CSharpCompilation Compile(IEnumerable<(string Name, string Source)> sources, OutputKind kind, CancellationToken ct)
+    {
+        var parseOptions = new CSharpParseOptions(LanguageVersion.Latest);
+        var trees = sources
+            .Append((Name: "ImplicitUsings.g.cs", Source: ImplicitUsings))
+            .Select(s => CSharpSyntaxTree.ParseText(s.Source, parseOptions, path: s.Name, cancellationToken: ct))
+            .ToList();
+        return CSharpCompilation.Create(
+            $"DotnetCqrsVerify_{Guid.NewGuid():N}",
+            trees,
+            References.Value,
+            new CSharpCompilationOptions(kind, nullableContextOptions: NullableContextOptions.Enable));
+    }
+
+    private static IReadOnlyList<string> Errors(CSharpCompilation compilation) =>
+        compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).Select(d => d.ToString()).ToList();
 
     /// <summary>The runtime's own assemblies, plus dotnetcqrs and everything it references, by
     /// the paths they were loaded from in this process: the same assemblies the compiled code
