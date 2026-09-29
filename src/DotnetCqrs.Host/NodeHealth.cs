@@ -23,7 +23,7 @@ public enum NodeLifecycleState
 
 /// <summary>
 /// What a node reports on its ops port, per the cross-stack health/telemetry contract
-/// (<c>platform/cqrs-runtime-contract/contracts/health-telemetry.md</c>, 1.0), identical to
+/// (<c>lab/cqrs-system-contracts/contracts/health-telemetry.md</c>, 1.0), identical to
 /// pocketcqrs's. Created at process start, before anything is configured, so <c>/healthz</c> can
 /// answer while the node boots: <c>host</c>, <c>stack</c> and <c>started_at</c> are known at once;
 /// the identity is <see langword="null"/> until <see cref="SetIdentity"/>. Thread-safe: the ops
@@ -120,6 +120,23 @@ public sealed class NodeHealth
             _catchUpTimer = _time.CreateTimer(_ => Refresh(), null, CatchUpCheckInterval, CatchUpCheckInterval);
         }
         Refresh();
+    }
+
+    /// <summary>Shutdown was requested (machine 1, <c>ShutdownRequested</c>): <c>/readyz</c> closes
+    /// (<c>not_ready</c>, <c>draining</c>) before anything else stops, so the pool stops routing
+    /// here while in-flight work finishes. Idempotent, and it stays draining until the process ends.
+    /// A node still booting has no traffic to drain: it just exits, so this does nothing.</summary>
+    public void BeginDraining(Action<string>? log = null)
+    {
+        lock (_gate)
+        {
+            if (Lifecycle is NodeLifecycleState.Booting or NodeLifecycleState.Draining)
+                return;
+            _lifecycle = (int)NodeLifecycleState.Draining;
+            _catchUpTimer?.Dispose();
+            _catchUpTimer = null;
+        }
+        (log ?? _log)("draining: /readyz is not_ready; finishing in-flight work");
     }
 
     /// <summary>While catching up, moves to serving if every read model is current or, on a

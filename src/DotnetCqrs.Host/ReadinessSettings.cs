@@ -27,6 +27,13 @@ public sealed record ReadinessSettings(TimeSpan LagThreshold, TimeSpan CatchUpDe
     /// <summary>How old a reader's view of the heartbeat may be before it counts as stale.</summary>
     public TimeSpan StaleThreshold { get; init; } = DefaultStaleThreshold;
 
+    public const string DrainDeadlineVariable = "DOTNETCQRS_DRAIN_DEADLINE_SECONDS";
+    public static readonly TimeSpan DefaultDrainDeadline = TimeSpan.FromSeconds(30);
+
+    /// <summary>How long a node may spend draining on shutdown, for in-flight requests and the
+    /// consumers' event in hand together, before it stops them (machine 1's drain deadline).</summary>
+    public TimeSpan DrainDeadline { get; init; } = DefaultDrainDeadline;
+
     public const string DependencyCheckIntervalVariable = "DOTNETCQRS_DEPENDENCY_CHECK_SECONDS";
     public const string DependencyFailuresVariable = "DOTNETCQRS_DEPENDENCY_FAILURES";
     public static readonly TimeSpan DefaultDependencyCheckInterval = TimeSpan.FromSeconds(5);
@@ -43,7 +50,8 @@ public sealed record ReadinessSettings(TimeSpan LagThreshold, TimeSpan CatchUpDe
         Environment.GetEnvironmentVariable(LagThresholdVariable),
         Environment.GetEnvironmentVariable(CatchUpDeadlineVariable),
         Environment.GetEnvironmentVariable(HeartbeatIntervalVariable),
-        Environment.GetEnvironmentVariable(StaleThresholdVariable)) with
+        Environment.GetEnvironmentVariable(StaleThresholdVariable),
+        Environment.GetEnvironmentVariable(DrainDeadlineVariable)) with
     {
         DependencyCheckInterval = Seconds(DependencyCheckIntervalVariable,
             Environment.GetEnvironmentVariable(DependencyCheckIntervalVariable), DefaultDependencyCheckInterval),
@@ -61,12 +69,14 @@ public sealed record ReadinessSettings(TimeSpan LagThreshold, TimeSpan CatchUpDe
     }
 
     public static ReadinessSettings Parse(
-        string? lagThreshold, string? catchUpDeadline, string? heartbeatInterval = null, string? staleThreshold = null) =>
+        string? lagThreshold, string? catchUpDeadline, string? heartbeatInterval = null, string? staleThreshold = null,
+        string? drainDeadline = null) =>
         new(Seconds(LagThresholdVariable, lagThreshold, ConsumerEngine.DefaultLagThreshold),
             Seconds(CatchUpDeadlineVariable, catchUpDeadline, DefaultCatchUpDeadline))
         {
             HeartbeatInterval = Seconds(HeartbeatIntervalVariable, heartbeatInterval, DefaultHeartbeatInterval),
             StaleThreshold = Seconds(StaleThresholdVariable, staleThreshold, DefaultStaleThreshold),
+            DrainDeadline = Seconds(DrainDeadlineVariable, drainDeadline, DefaultDrainDeadline),
         };
 
     private static TimeSpan Seconds(string name, string? configured, TimeSpan fallback)

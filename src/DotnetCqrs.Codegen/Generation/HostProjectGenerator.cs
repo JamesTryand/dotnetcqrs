@@ -466,9 +466,21 @@ public static class HostProjectGenerator
         b.AppendLine("health.SetDependencies(dependencies);");
         b.AppendLine("await dependencies.CheckAllAsync();");
         b.AppendLine();
+        // Health/telemetry section 4.7: on SIGTERM readiness closes first (below), the host then
+        // finishes its in-flight requests, and the consumers finish the event in hand. One drain
+        // deadline covers all of it: Kestrel waits for requests that long, the consumers get what is left.
+        b.AppendLine("// Shutdown (SIGTERM) drains: /readyz closes first, in-flight requests finish (up to");
+        b.AppendLine("// DOTNETCQRS_DRAIN_DEADLINE_SECONDS, default 30), then each consumer finishes the event in hand.");
+        b.AppendLine("builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = readiness.DrainDeadline);");
         b.AppendLine("var app = builder.Build();");
+        b.AppendLine("var drainStartedAt = 0L;");
+        b.AppendLine("app.Lifetime.ApplicationStopping.Register(() =>");
+        b.AppendLine("{");
+        b.AppendLine("    drainStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();");
+        b.AppendLine("    health.BeginDraining(Console.WriteLine);");
+        b.AppendLine("});");
         b.AppendLine("_ = dependencies.RunAsync(readiness.DependencyCheckInterval, app.Lifetime.ApplicationStopping);");
-        b.AppendLine("_ = engine.StartAsync(app.Lifetime.ApplicationStopping);");
+        b.AppendLine("_ = engine.StartAsync(CancellationToken.None);");
         // Health/telemetry section 5: this host is the writer, so it heartbeats for readers.
         b.AppendLine("// The writer heartbeat (a row beside the event log, never an event): readers measure their");
         b.AppendLine("// replication lag from its age.");
@@ -507,6 +519,15 @@ public static class HostProjectGenerator
         }
         b.AppendLine();
         b.AppendLine("await app.RunAsync();");
+        // RunAsync returns once Kestrel has finished its in-flight requests (or the deadline passed).
+        b.AppendLine();
+        b.AppendLine("// The traffic port has drained. Now the consumers stop, within what is left of the drain deadline;");
+        b.AppendLine("// the ops port keeps answering (not_ready, draining) until the process ends.");
+        b.AppendLine("var drainLeft = drainStartedAt == 0 ? readiness.DrainDeadline");
+        b.AppendLine("    : readiness.DrainDeadline - System.Diagnostics.Stopwatch.GetElapsedTime(drainStartedAt);");
+        b.AppendLine("if (!await engine.StopAsync(drainLeft))");
+        b.AppendLine("    Console.Error.WriteLine(\"drain deadline reached: consumers were stopped mid-event and will redo it on restart\");");
+        b.AppendLine("Console.WriteLine(\"drained; exiting\");");
         b.AppendLine("return 0;");
 
         return new GeneratedFile("Program.cs", b.ToString());

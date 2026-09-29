@@ -346,6 +346,106 @@ public class ConsumerEngineTests
         Assert.Empty(engine.Status());
     }
 
+    // --- Draining (StopAsync) ---
+
+    private sealed class WaitsForCancellationConsumer(string name) : IConsumer
+    {
+        public string Name { get; } = name;
+        public TaskCompletionSource InHand { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool Cancelled { get; private set; }
+
+        public async Task ApplyAsync(Event ev, CancellationToken ct)
+        {
+            InHand.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                Cancelled = true;
+                throw;
+            }
+        }
+    }
+
+    [Fact]
+    public async Task StopAsync_lets_the_event_in_hand_finish_checkpoints_it_and_leaves_the_rest()
+    {
+        await using var store = await SeededStoreAsync("c1", 5);
+        var engine = new ConsumerEngine(store, store, tick: TimeSpan.FromSeconds(30));
+        var inHand = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var applied = new ConcurrentQueue<long>();
+        engine.Register(new DelegateConsumer("proj-a", async ev =>
+        {
+            if (ev.Position == 2)
+            {
+                inHand.SetResult();
+                await release.Task;
+            }
+            applied.Enqueue(ev.Position);
+        }));
+        var run = engine.StartAsync(CancellationToken.None);
+        await inHand.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var stop = engine.StopAsync(TimeSpan.FromSeconds(30));
+        await Task.Delay(100);
+        Assert.False(stop.IsCompleted); // still waiting for the event in hand
+
+        release.SetResult();
+
+        Assert.True(await stop.WaitAsync(TimeSpan.FromSeconds(10)));
+        await run.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal([1L, 2L], applied);
+        Assert.Equal(2, await store.CheckpointAsync("proj-a")); // resumes at event 3
+    }
+
+    [Fact]
+    public async Task StopAsync_past_its_deadline_cancels_the_consumer_mid_event_and_returns_false()
+    {
+        await using var store = await SeededStoreAsync("c1", 3);
+        var log = new ConcurrentQueue<string>();
+        var engine = new ConsumerEngine(store, store, tick: TimeSpan.FromSeconds(30), logger: log.Enqueue);
+        var consumer = new WaitsForCancellationConsumer("proj-a");
+        engine.Register(consumer);
+        var run = engine.StartAsync(CancellationToken.None);
+        await consumer.InHand.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var graceful = await engine.StopAsync(TimeSpan.FromMilliseconds(100));
+
+        Assert.False(graceful);
+        Assert.True(consumer.Cancelled);
+        await run.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(0, await store.CheckpointAsync("proj-a")); // the interrupted event is redone
+        Assert.Contains(log, l => l.Contains("drain deadline", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task StopAsync_stops_an_idle_engine_at_once_not_after_the_tick()
+    {
+        await using var store = await SeededStoreAsync("c1", 1);
+        var engine = new ConsumerEngine(store, store, tick: TimeSpan.FromSeconds(30));
+        engine.Register(new RecordingConsumer("proj-a"));
+        var run = engine.StartAsync(CancellationToken.None);
+        await Task.Delay(200); // caught up and waiting on the tick
+
+        var started = DateTime.UtcNow;
+        Assert.True(await engine.StopAsync(TimeSpan.FromSeconds(10)));
+
+        Assert.True(run.IsCompleted);
+        Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task StopAsync_on_an_engine_that_never_started_returns_true()
+    {
+        await using var store = await SeededStoreAsync("c1", 1);
+        var engine = new ConsumerEngine(store, store);
+
+        Assert.True(await engine.StopAsync(TimeSpan.FromSeconds(1)));
+    }
+
     private sealed class DelegateConsumer(string name, Func<Event, Task> apply) : IConsumer
     {
         public string Name { get; } = name;

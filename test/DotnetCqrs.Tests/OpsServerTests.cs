@@ -8,7 +8,7 @@ namespace DotnetCqrs.Tests;
 
 /// <summary>
 /// The ops port and <c>GET /healthz</c> (health/telemetry contract sections 2 and 3,
-/// <c>platform/cqrs-runtime-contract/contracts/health-telemetry.md</c>). A real Kestrel listener on
+/// <c>lab/cqrs-system-contracts/contracts/health-telemetry.md</c>). A real Kestrel listener on
 /// a free port, driven over real HTTP.
 /// </summary>
 public class OpsServerTests

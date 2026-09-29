@@ -108,15 +108,61 @@ public class ReadinessTests
         Assert.Equal(NodeLifecycleState.Serving, node.Health.Lifecycle);
     }
 
+    [Theory]
+    [InlineData("writer")]
+    [InlineData("reader")]
+    public void Draining_is_not_ready_draining(string role)
+    {
+        var node = new Node(role);
+        node.BeginCatchUp();
+        Assert.Equal(NodeLifecycleState.Serving, node.Health.Lifecycle);
+
+        node.Health.BeginDraining(node.Log.Add);
+
+        Assert.Equal(NodeLifecycleState.Draining, node.Health.Lifecycle);
+        Assert.Equal((503, "not_ready", "draining"), node.Readyz());
+        Assert.Contains(node.Log, l => l.StartsWith("draining", StringComparison.Ordinal));
+    }
+
     [Fact]
-    public void Draining_is_not_ready_draining()
+    public void A_node_draining_while_catching_up_never_opens_readiness()
+    {
+        var node = new Node("writer");
+        node.Set("orders", ConsumerState.Behind);
+        node.BeginCatchUp();
+
+        node.Health.BeginDraining();
+        node.Set("orders", ConsumerState.Current);
+        node.Clock.Now += TimeSpan.FromMinutes(5); // past the catch-up deadline too
+
+        Assert.Equal(NodeLifecycleState.Draining, node.Health.Lifecycle);
+        var (code, status, reasons) = node.Readyz();
+        Assert.Equal((503, "not_ready"), (code, status));
+        Assert.StartsWith("draining", reasons, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Draining_is_idempotent_and_stays_draining()
     {
         var node = new Node("writer");
         node.BeginCatchUp();
 
-        node.Health.SetLifecycle(NodeLifecycleState.Draining);
+        node.Health.BeginDraining(node.Log.Add);
+        node.Health.BeginDraining(node.Log.Add);
 
+        Assert.Single(node.Log, l => l.StartsWith("draining", StringComparison.Ordinal));
         Assert.Equal((503, "not_ready", "draining"), node.Readyz());
+    }
+
+    [Fact]
+    public void A_node_still_booting_has_nothing_to_drain()
+    {
+        var node = new Node("writer");
+
+        node.Health.BeginDraining(node.Log.Add);
+
+        Assert.Equal(NodeLifecycleState.Booting, node.Health.Lifecycle);
+        Assert.Empty(node.Log);
     }
 
     // --- Readiness: read_models ---
@@ -276,6 +322,17 @@ public class ReadinessTests
 
         Assert.Equal(TimeSpan.FromMilliseconds(500), settings.LagThreshold);
         Assert.Equal(TimeSpan.FromMinutes(2), settings.CatchUpDeadline);
+    }
+
+    [Fact]
+    public void The_drain_deadline_defaults_to_thirty_seconds_and_is_seconds_with_decimals()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(30), ReadinessSettings.Parse(null, null).DrainDeadline);
+        Assert.Equal(TimeSpan.FromMilliseconds(2500),
+            ReadinessSettings.Parse(null, null, drainDeadline: "2.5").DrainDeadline);
+        var ex = Assert.Throws<InvalidReadinessSettingException>(
+            () => ReadinessSettings.Parse(null, null, drainDeadline: "soon"));
+        Assert.Contains(ReadinessSettings.DrainDeadlineVariable, ex.Message);
     }
 
     [Theory]

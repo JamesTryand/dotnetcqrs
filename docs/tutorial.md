@@ -414,6 +414,13 @@ store, and the key-management facade when the domain has personal data. Each is 
 `event_store_unavailable`; the key service down is `dependency_unavailable`. On this host, the
 writer, both are `degraded` rather than `503`.
 
+On `SIGTERM` or Ctrl+C the host **drains** rather than just stopping: `/readyz` goes `503`
+`draining` first, so whatever routes to this node stops, then in-flight requests finish, then
+each consumer finishes the event it is applying and stops (the next start resumes from the next
+event; it does not catch up first). The ops port keeps answering until the process exits.
+`DOTNETCQRS_DRAIN_DEADLINE_SECONDS` (default `30`) bounds all of it; past that the consumers
+are cancelled mid-event, which the next start redoes, and the log says so.
+
 `GET /metrics` on the same port serves the contract's `cqrs_` series in the Prometheus text
 format, every one present from the first scrape: identity, readiness, commands by outcome
 (`accepted`, `rejected`, `conflict`, `unavailable`, `error`) with a duration histogram, events

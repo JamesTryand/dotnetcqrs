@@ -23,7 +23,7 @@ public enum NodeIdentitySource
 
 /// <summary>
 /// Who this node is, per the cross-stack node-identity contract
-/// (<c>platform/cqrs-runtime-contract/contracts/node-identity.md</c>, 1.0), identical to
+/// (<c>lab/cqrs-system-contracts/contracts/node-identity.md</c>, 1.0), identical to
 /// pocketcqrs's: an opaque <see cref="NodeId"/> that survives restarts and tells apart several
 /// nodes on one machine, plus descriptive attributes that sit beside it and are not part of it.
 ///

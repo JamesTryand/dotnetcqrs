@@ -25,6 +25,13 @@ public sealed class ConsumerEngine
     private readonly Lock _consumersLock = new();
     private readonly List<Registration> _consumers = [];
 
+    // Set by StopAsync (health/telemetry machine 1, Draining): the loop ends, and a pass stops after
+    // the event in hand, rather than running on until it is caught up. _hardStop is what a passed
+    // deadline cancels; it is linked to the token StartAsync was given.
+    private volatile bool _stopRequested;
+    private CancellationTokenSource? _hardStop;
+    private Task? _loop;
+
     // Bounded to 1 and drops on a full channel: the same "non-blocking nudge,
     // coalesce bursts" shape as pocketcqrs's buffered-channel-with-default-case.
     private readonly Channel<byte> _nudge = Channel.CreateBounded<byte>(
@@ -120,14 +127,17 @@ public sealed class ConsumerEngine
     /// <summary>Runs the catch-up loop until <paramref name="ct"/> is cancelled: immediately
     /// on every committed event (in-process nudge) and on a slow tick fallback (covers
     /// restarts and missed nudges). Returns the background task; do not await it to
-    /// completion except as part of shutdown.</summary>
+    /// completion except as part of shutdown; <see cref="StopAsync"/> is the orderly way to end it,
+    /// and cancelling <paramref name="ct"/> the abrupt one.</summary>
     public Task StartAsync(CancellationToken ct)
     {
         _source.Subscribe(_ => _nudge.Writer.TryWrite(0));
+        _hardStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        ct = _hardStop.Token;
 
-        return Task.Run(async () =>
+        return _loop = Task.Run(async () =>
         {
-            while (!ct.IsCancellationRequested)
+            while (!ct.IsCancellationRequested && !_stopRequested)
             {
                 try
                 {
@@ -163,6 +173,48 @@ public sealed class ConsumerEngine
         }, ct);
     }
 
+    /// <summary>Stops the engine in order (health/telemetry machine 1, draining): no new pass begins,
+    /// and each consumer finishes the event it is applying, saves that checkpoint, and stops, so a
+    /// restart resumes from the next event. It does not catch up first: that is what the restart
+    /// is for. Returns true once every consumer has stopped. If <paramref name="deadline"/> passes
+    /// first it cancels them mid-event (each event is applied at least once, so the interrupted
+    /// one is redone on restart) and returns false. Returns true at once if the engine never
+    /// started. After this the engine does not run again.</summary>
+    public async Task<bool> StopAsync(TimeSpan deadline)
+    {
+        _stopRequested = true;
+        _nudge.Writer.TryWrite(0);
+        if (_loop is not { } loop)
+            return true;
+
+        var graceful = true;
+        try
+        {
+            await loop.WaitAsync(deadline > TimeSpan.Zero ? deadline : TimeSpan.Zero);
+        }
+        catch (TimeoutException)
+        {
+            graceful = false;
+            _log($"drain deadline of {deadline.TotalSeconds:0.###}s reached: cancelling consumers mid-event");
+            _hardStop?.Cancel();
+            try
+            {
+                // A consumer that ignores cancellation cannot be stopped from here; do not hang on it.
+                await loop.WaitAsync(TimeSpan.FromSeconds(1));
+            }
+            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+            {
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The token given to StartAsync was cancelled first: already stopped, abruptly.
+        }
+        _hardStop?.Dispose();
+        _hardStop = null;
+        return graceful;
+    }
+
     /// <summary>Applies every pending event to every consumer until caught up. A failing
     /// consumer stops at the failing event and retries next pass; other consumers are
     /// unaffected. The consumer set is snapshotted first, so a Register/Unregister swap
@@ -189,6 +241,8 @@ public sealed class ConsumerEngine
         List<Exception>? errors = null;
         foreach (var (consumer, checkpoints) in snapshot)
         {
+            if (_stopRequested)
+                break;
             if (await RunOnceForAsync(consumer, checkpoints, head, ct) is { } blocked)
                 (errors ??= []).Add(blocked);
         }
@@ -225,6 +279,12 @@ public sealed class ConsumerEngine
                     pos = ev.Position;
                     current = null;
                     blocked = false;
+                    if (_stopRequested)
+                    {
+                        // Draining: the event in hand is applied and checkpointed; leave the rest.
+                        _progress[consumer.Name] = new Progress(pos, head, pendingSince, false);
+                        return null;
+                    }
                 }
             }
             _progress[consumer.Name] = new Progress(pos, head, null, false);
