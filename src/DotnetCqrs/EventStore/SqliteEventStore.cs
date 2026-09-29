@@ -12,7 +12,7 @@ namespace DotnetCqrs.EventStore;
 /// <see cref="ConsumerEngine"/> needs — checkpoints normally live in the same
 /// store being polled.
 /// </summary>
-public sealed class SqliteEventStore : IEventStore, IDeadLetterStore
+public sealed class SqliteEventStore : IEventStore, IDeadLetterStore, IHeartbeatStore
 {
     private const string Schema = """
         CREATE TABLE IF NOT EXISTS events (
@@ -44,6 +44,15 @@ public sealed class SqliteEventStore : IEventStore, IDeadLetterStore
             first_failed TEXT NOT NULL,
             last_failed  TEXT NOT NULL,
             resolved     INTEGER NOT NULL DEFAULT 0
+        );
+
+        -- The writer heartbeat (health/telemetry contract section 5): one row, never an event.
+        CREATE TABLE IF NOT EXISTS writer_heartbeat (
+            id             INTEGER PRIMARY KEY CHECK (id = 1),
+            writer_node_id TEXT NOT NULL,
+            writer_ops_url TEXT NOT NULL,
+            written_at     TEXT NOT NULL,
+            sequence       INTEGER NOT NULL
         );
         """;
 
@@ -359,6 +368,52 @@ public sealed class SqliteEventStore : IEventStore, IDeadLetterStore
         Data: reader.GetString(6),
         Metadata: reader.GetString(7),
         Created: reader.GetString(8));
+
+    /// <inheritdoc/>
+    public async Task WriteHeartbeatAsync(string writerNodeId, string writerOpsUrl, DateTimeOffset writtenAt, CancellationToken ct = default)
+    {
+        if (_readOnly) throw new ReadOnlyStoreException("write heartbeat");
+        // Under the append lock: the one connection must not run this inside an append's transaction.
+        await _appendLock.WaitAsync(ct);
+        try
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO writer_heartbeat (id, writer_node_id, writer_ops_url, written_at, sequence)
+                VALUES (1, $node, $url, $at, 1)
+                ON CONFLICT (id) DO UPDATE SET writer_node_id = excluded.writer_node_id,
+                    writer_ops_url = excluded.writer_ops_url, written_at = excluded.written_at,
+                    sequence = writer_heartbeat.sequence + 1
+                """;
+            command.Parameters.AddWithValue("$node", writerNodeId);
+            command.Parameters.AddWithValue("$url", writerOpsUrl);
+            command.Parameters.AddWithValue("$at", HeartbeatTimestamp.Format(writtenAt));
+            await command.ExecuteNonQueryAsync(ct);
+        }
+        finally
+        {
+            _appendLock.Release();
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<WriterHeartbeat?> ReadHeartbeatAsync(CancellationToken ct = default)
+    {
+        await using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT writer_node_id, writer_ops_url, written_at, sequence FROM writer_heartbeat WHERE id = 1";
+        try
+        {
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            return await reader.ReadAsync(ct)
+                ? new WriterHeartbeat(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3))
+                : null;
+        }
+        catch (SqliteException ex) when (ex.Message.Contains("no such table", StringComparison.Ordinal))
+        {
+            // A copy made before any writer created the table: no heartbeat to see.
+            return null;
+        }
+    }
 
     public ValueTask DisposeAsync() => _connection.DisposeAsync();
 }

@@ -47,6 +47,7 @@ public sealed class NodeHealth
     private volatile NodeIdentity? _identity;
     private volatile int _lifecycle = (int)NodeLifecycleState.Booting;
     private volatile Func<IReadOnlyList<ConsumerStatus>>? _consumers;
+    private volatile Func<ReplicationStatus>? _replication;
     private DateTimeOffset _catchUpDeadline;
     private bool _catchUpDeadlineLogged;
     private Action<string> _log = _ => { };
@@ -88,6 +89,11 @@ public sealed class NodeHealth
     public void SetIdentity(NodeIdentity identity) => _identity = identity;
 
     public void SetLifecycle(NodeLifecycleState state) => _lifecycle = (int)state;
+
+    /// <summary>A reader's replication freshness (machine 4), usually a
+    /// <see cref="ReplicationMonitor"/>'s <see cref="ReplicationMonitor.Current"/>. A reader without
+    /// one reports <c>replication_unknown</c>; a writer ignores it.</summary>
+    public void SetReplication(Func<ReplicationStatus> status) => _replication = status;
 
     /// <summary>Boot completed (machine 1, <c>BootCompleted</c>): the traffic port listens and the
     /// consumers have started, so the node moves to catching up. <paramref name="consumers"/> is
@@ -164,8 +170,8 @@ public sealed class NodeHealth
     /// <summary>The <c>GET /readyz</c> status code and body (contract section 4): 200 when
     /// <c>ready</c> or <c>degraded</c>, 503 when <c>not_ready</c>. The status is the most severe
     /// contribution of the lifecycle and the read models (<c>STATE-MACHINES.md</c>, "Readiness:"
-    /// tables); <c>reasons</c> lists every non-ready one. Dependencies, replication and mode are
-    /// not reported yet (steps 4-5 of the implementation plan).</summary>
+    /// tables); <c>reasons</c> lists every non-ready one. Dependencies and mode are not reported
+    /// yet (step 4 of the implementation plan).</summary>
     public (int StatusCode, IReadOnlyDictionary<string, object?> Body) Readyz()
     {
         Refresh();
@@ -191,6 +197,22 @@ public sealed class NodeHealth
             contributions.Add((severity, worst == ConsumerState.Blocked ? "projection_blocked" : "projection_behind"));
         }
 
+        // replication (readers only): stale because this reader is behind is local, not_ready;
+        // stale because the writer is down is shared, degraded; never having seen a heartbeat
+        // leaves nothing trustworthy to serve, not_ready.
+        var writeLag = 0.0;
+        if (identity?.Role == "reader")
+        {
+            var replication = _replication?.Invoke() ?? new ReplicationStatus(ReplicationState.Unknown, 0);
+            writeLag = replication.WriteLagSeconds;
+            switch (replication.State)
+            {
+                case ReplicationState.Unknown: contributions.Add((Readiness.NotReady, "replication_unknown")); break;
+                case ReplicationState.StaleWriterUp: contributions.Add((Readiness.NotReady, "replication_stale")); break;
+                case ReplicationState.StaleWriterDown: contributions.Add((Readiness.Degraded, "replication_stale")); break;
+            }
+        }
+
         var status = contributions.Count == 0 ? Readiness.Ready : contributions.Max(c => c.Status);
         var body = new Dictionary<string, object?>
         {
@@ -206,8 +228,8 @@ public sealed class NodeHealth
             ["reasons"] = contributions.Select(c => c.Reason).ToList(),
             ["checks"] = new Dictionary<string, object?>
             {
-                // A writer is the replication source, so 0; a reader's heartbeat age is step 5.
-                ["write_lag_seconds"] = 0.0,
+                // A writer is the replication source, so 0; a reader, the heartbeat's age.
+                ["write_lag_seconds"] = Math.Round(writeLag, 3),
                 ["projection_lag_seconds"] = Math.Round(readModels.Select(c => c.LagSeconds ?? 0).DefaultIfEmpty(0).Max(), 3),
                 ["dependencies"] = new Dictionary<string, string>(),
             },

@@ -412,6 +412,13 @@ format, every one present from the first scrape: identity, readiness, commands b
 (`accepted`, `rejected`, `conflict`, `unavailable`, `error`) with a duration histogram, events
 appended, each consumer's lag and state, and the dead-letter depth.
 
+The host is the writer, so it also keeps a **heartbeat**: one row beside the event log
+(`writer_heartbeat`, never an event), upserted every `DOTNETCQRS_HEARTBEAT_INTERVAL_SECONDS`
+(default `1`) with its node id and `CQRS_OPS_URL` (the ops port's address as other nodes reach it,
+default `http://<hostname>:<ops port>`). A read replica measures its lag from that row's age; once
+it is older than `DOTNETCQRS_STALE_THRESHOLD_SECONDS` (default `5`) the replica asks the writer's
+`/healthz` whether the writer is up (`ReplicationMonitor` in `DotnetCqrs.Host`).
+
 ## Checking a document's own scenarios automatically
 
 You don't have to write demo code like the above by hand to check a

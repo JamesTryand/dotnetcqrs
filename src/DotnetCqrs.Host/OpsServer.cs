@@ -29,6 +29,24 @@ public sealed class OpsServer : IAsyncDisposable
     /// which also avoids a Windows firewall prompt per test binary).</summary>
     public const string BindVariable = "CQRS_OPS_BIND";
 
+    /// <summary>The ops port's base URL as readers reach it, which the writer puts in its heartbeat
+    /// row (<c>writer_ops_url</c>) so a stale reader can ask whether the writer is up. Unset means
+    /// <c>http://&lt;host&gt;:&lt;ops port&gt;</c>; set it wherever that hostname is not what readers
+    /// can reach (NAT, container networks).</summary>
+    public const string UrlVariable = "CQRS_OPS_URL";
+
+    /// <summary><c>CQRS_OPS_URL</c> (<paramref name="configured"/>) if set, else
+    /// <c>http://{host}:{port}</c>. Throws <see cref="InvalidOpsUrlException"/> for anything but an
+    /// absolute http or https URL, which fails the boot like any other bad setting.</summary>
+    public static string AdvertisedUrl(string? configured, string host, int port)
+    {
+        if (string.IsNullOrWhiteSpace(configured))
+            return $"http://{host}:{port.ToString(CultureInfo.InvariantCulture)}";
+        return Uri.TryCreate(configured, UriKind.Absolute, out var url) && (url.Scheme == Uri.UriSchemeHttp || url.Scheme == Uri.UriSchemeHttps)
+            ? configured.TrimEnd('/')
+            : throw new InvalidOpsUrlException(configured);
+    }
+
     private readonly WebApplication _app;
 
     private OpsServer(WebApplication app, Uri address)
@@ -89,6 +107,13 @@ public sealed class OpsServer : IAsyncDisposable
         await _app.StopAsync();
         await _app.DisposeAsync();
     }
+}
+
+/// <summary>An invalid <c>CQRS_OPS_URL</c>: the boot fails, like any other invalid setting.</summary>
+public sealed class InvalidOpsUrlException(string value) : Exception(
+    $"{OpsServer.UrlVariable} '{value}' is not a valid URL: use the ops port's base URL as readers reach it, e.g. http://node-3:10056.")
+{
+    public string Value { get; } = value;
 }
 
 /// <summary>An invalid <c>CQRS_OPS_PORT</c>: the boot fails, like any other invalid setting.</summary>

@@ -59,6 +59,12 @@ namespace DotnetCqrs.Codegen.Generation;
 /// is within <c>DOTNETCQRS_LAG_THRESHOLD_SECONDS</c> (default 5) or, since this host is the
 /// writer, <c>DOTNETCQRS_CATCHUP_DEADLINE_SECONDS</c> (default 60) passes. An invalid value
 /// exits 1.</para>
+///
+/// <para><b>Writer heartbeat:</b> the host upserts the contract's heartbeat row beside the event
+/// log every <c>DOTNETCQRS_HEARTBEAT_INTERVAL_SECONDS</c> (default 1), carrying its node id and
+/// <c>CQRS_OPS_URL</c> (default <c>http://&lt;host&gt;:&lt;ops port&gt;</c>), so readers can
+/// measure their replication lag and find this writer's <c>/healthz</c>. An invalid
+/// <c>CQRS_OPS_URL</c> exits 1.</para>
 /// </summary>
 public static class HostProjectGenerator
 {
@@ -238,6 +244,19 @@ public static class HostProjectGenerator
         b.AppendLine("    readiness = ReadinessSettings.FromEnvironment();");
         b.AppendLine("}");
         b.AppendLine("catch (InvalidReadinessSettingException ex)");
+        b.AppendLine("{");
+        b.AppendLine("    Console.Error.WriteLine(ex.Message);");
+        b.AppendLine("    return 1;");
+        b.AppendLine("}");
+        b.AppendLine();
+        b.AppendLine("// CQRS_OPS_URL: this node's ops port as readers reach it, carried in the writer heartbeat so a");
+        b.AppendLine("// stale reader can ask whether this writer is up. Default http://<host>:<ops port>.");
+        b.AppendLine("string opsUrl;");
+        b.AppendLine("try");
+        b.AppendLine("{");
+        b.AppendLine("    opsUrl = OpsServer.AdvertisedUrl(Environment.GetEnvironmentVariable(OpsServer.UrlVariable), health.Host, opsServer.Address.Port);");
+        b.AppendLine("}");
+        b.AppendLine("catch (InvalidOpsUrlException ex)");
         b.AppendLine("{");
         b.AppendLine("    Console.Error.WriteLine(ex.Message);");
         b.AppendLine("    return 1;");
@@ -432,6 +451,12 @@ public static class HostProjectGenerator
 
         b.AppendLine("var app = builder.Build();");
         b.AppendLine("_ = engine.StartAsync(app.Lifetime.ApplicationStopping);");
+        // Health/telemetry section 5: this host is the writer, so it heartbeats for readers.
+        b.AppendLine("// The writer heartbeat (a row beside the event log, never an event): readers measure their");
+        b.AppendLine("// replication lag from its age.");
+        b.AppendLine("if (eventStore is IHeartbeatStore heartbeatStore)");
+        b.AppendLine("    _ = WriterHeartbeatLoop.RunAsync(heartbeatStore, nodeIdentity.NodeId, opsUrl, readiness.HeartbeatInterval,");
+        b.AppendLine("        Console.Error.WriteLine, ct: app.Lifetime.ApplicationStopping);");
         // Machine 1's BootCompleted: the traffic port is listening and the consumers run, so
         // /readyz moves from starting to catching_up, then to ready once the read models are.
         b.AppendLine("// Boot is complete once the traffic port listens: /readyz moves from starting to catching_up,");

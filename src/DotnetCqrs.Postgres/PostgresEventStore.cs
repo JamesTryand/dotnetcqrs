@@ -26,7 +26,7 @@ namespace DotnetCqrs.Postgres;
 /// reads and pooled connections. Milestone 7 deliberately does <b>not</b> deliver
 /// unrestricted concurrent multi-writer append; see <c>docs/postgres-backend.md</c>.</para>
 /// </summary>
-public sealed class PostgresEventStore : IEventStore, IDeadLetterStore
+public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbeatStore
 {
     private const string Schema = """
         CREATE TABLE IF NOT EXISTS events (
@@ -61,6 +61,15 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore
             first_failed text NOT NULL,
             last_failed  text NOT NULL,
             resolved     boolean NOT NULL DEFAULT false
+        );
+
+        -- The writer heartbeat (health/telemetry contract section 5): one row, never an event.
+        CREATE TABLE IF NOT EXISTS writer_heartbeat (
+            id             integer PRIMARY KEY CHECK (id = 1),
+            writer_node_id text NOT NULL,
+            writer_ops_url text NOT NULL,
+            written_at     text NOT NULL,
+            sequence       bigint NOT NULL
         );
         """;
 
@@ -317,6 +326,36 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore
         Data: reader.GetString(6),
         Metadata: reader.GetString(7),
         Created: reader.GetString(8));
+
+    /// <inheritdoc/>
+    public async Task WriteHeartbeatAsync(string writerNodeId, string writerOpsUrl, DateTimeOffset writtenAt, CancellationToken ct = default)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO writer_heartbeat (id, writer_node_id, writer_ops_url, written_at, sequence)
+            VALUES (1, @node, @url, @at, 1)
+            ON CONFLICT (id) DO UPDATE SET writer_node_id = excluded.writer_node_id,
+                writer_ops_url = excluded.writer_ops_url, written_at = excluded.written_at,
+                sequence = writer_heartbeat.sequence + 1
+            """;
+        command.Parameters.AddWithValue("@node", writerNodeId);
+        command.Parameters.AddWithValue("@url", writerOpsUrl);
+        command.Parameters.AddWithValue("@at", HeartbeatTimestamp.Format(writtenAt));
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <inheritdoc/>
+    public async Task<WriterHeartbeat?> ReadHeartbeatAsync(CancellationToken ct = default)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT writer_node_id, writer_ops_url, written_at, sequence FROM writer_heartbeat WHERE id = 1";
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct)
+            ? new WriterHeartbeat(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3))
+            : null;
+    }
 
     public ValueTask DisposeAsync() => _dataSource.DisposeAsync();
 }

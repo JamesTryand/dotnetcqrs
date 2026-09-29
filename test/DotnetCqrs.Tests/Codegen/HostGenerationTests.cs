@@ -346,6 +346,21 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
                 Assert.DoesNotContain("cqrs_events_appended_total 0\n", metrics, StringComparison.Ordinal);
                 Assert.Contains("cqrs_readiness_status{status=\"ready\"} 1\n", metrics, StringComparison.Ordinal);
             }
+
+            // Section 5: the writer heartbeat, beside the event log, with this node's id and ops URL.
+            await using (var heartbeatStore = await OpenEventStoreAsync(postgres))
+            {
+                WriterHeartbeat? heartbeat = null;
+                for (var attempt = 0; attempt < 20 && heartbeat is null; attempt++)
+                {
+                    heartbeat = await ((IHeartbeatStore)heartbeatStore).ReadHeartbeatAsync();
+                    if (heartbeat is null) await Task.Delay(250);
+                }
+                Assert.NotNull(heartbeat);
+                Assert.Equal(nodeId, heartbeat.WriterNodeId);
+                Assert.EndsWith($":{opsPort}", heartbeat.WriterOpsUrl, StringComparison.Ordinal);
+                Assert.True(heartbeat.Sequence >= 1);
+            }
             using (var traffic = await client.GetAsync("/healthz"))
                 Assert.Equal(HttpStatusCode.NotFound, traffic.StatusCode);
 
