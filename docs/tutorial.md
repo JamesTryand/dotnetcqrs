@@ -390,6 +390,13 @@ The log line also names the node: `instance` is the project name unless
 `CQRS_INSTANCE` sets another (same format as the id), and `host` is the
 hostname, or `unknown` if it can't be read.
 
+Every host also binds an **ops port** first, before it reads any other setting, so an
+orchestrator gets an answer while the node boots: `CQRS_OPS_PORT` (default `10056`),
+serving `GET /healthz` with the same identity (its fields are `null` until identity is
+resolved). It is separate from the traffic port and unauthenticated, so keep it off any
+ingress. Several hosts on one machine must each set their own; a host that can't bind it
+refuses to start. `/readyz` and `/metrics` follow on the same port.
+
 ## Checking a document's own scenarios automatically
 
 You don't have to write demo code like the above by hand to check a
