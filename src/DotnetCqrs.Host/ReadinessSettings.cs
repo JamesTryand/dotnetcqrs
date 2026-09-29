@@ -27,13 +27,38 @@ public sealed record ReadinessSettings(TimeSpan LagThreshold, TimeSpan CatchUpDe
     /// <summary>How old a reader's view of the heartbeat may be before it counts as stale.</summary>
     public TimeSpan StaleThreshold { get; init; } = DefaultStaleThreshold;
 
+    public const string DependencyCheckIntervalVariable = "DOTNETCQRS_DEPENDENCY_CHECK_SECONDS";
+    public const string DependencyFailuresVariable = "DOTNETCQRS_DEPENDENCY_FAILURES";
+    public static readonly TimeSpan DefaultDependencyCheckInterval = TimeSpan.FromSeconds(5);
+
+    /// <summary>How often each required dependency is checked (machine 3).</summary>
+    public TimeSpan DependencyCheckInterval { get; init; } = DefaultDependencyCheckInterval;
+
+    /// <summary>Consecutive failed checks before a dependency counts as down (machine 3's N).</summary>
+    public int DependencyFailures { get; init; } = DependencyMonitor.DefaultFailuresToDown;
+
     /// <summary>Reads both from the environment. Throws <see cref="InvalidReadinessSettingException"/>
     /// for anything but a non-negative number, which fails the boot like any other bad setting.</summary>
     public static ReadinessSettings FromEnvironment() => Parse(
         Environment.GetEnvironmentVariable(LagThresholdVariable),
         Environment.GetEnvironmentVariable(CatchUpDeadlineVariable),
         Environment.GetEnvironmentVariable(HeartbeatIntervalVariable),
-        Environment.GetEnvironmentVariable(StaleThresholdVariable));
+        Environment.GetEnvironmentVariable(StaleThresholdVariable)) with
+    {
+        DependencyCheckInterval = Seconds(DependencyCheckIntervalVariable,
+            Environment.GetEnvironmentVariable(DependencyCheckIntervalVariable), DefaultDependencyCheckInterval),
+        DependencyFailures = Count(DependencyFailuresVariable,
+            Environment.GetEnvironmentVariable(DependencyFailuresVariable), DependencyMonitor.DefaultFailuresToDown),
+    };
+
+    private static int Count(string name, string? configured, int fallback)
+    {
+        if (string.IsNullOrWhiteSpace(configured))
+            return fallback;
+        return int.TryParse(configured, NumberStyles.None, CultureInfo.InvariantCulture, out var count) && count >= 1
+            ? count
+            : throw new InvalidReadinessSettingException(name, configured);
+    }
 
     public static ReadinessSettings Parse(
         string? lagThreshold, string? catchUpDeadline, string? heartbeatInterval = null, string? staleThreshold = null) =>

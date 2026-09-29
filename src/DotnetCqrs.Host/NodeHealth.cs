@@ -48,6 +48,7 @@ public sealed class NodeHealth
     private volatile int _lifecycle = (int)NodeLifecycleState.Booting;
     private volatile Func<IReadOnlyList<ConsumerStatus>>? _consumers;
     private volatile Func<ReplicationStatus>? _replication;
+    private volatile DependencyMonitor? _dependencies;
     private DateTimeOffset _catchUpDeadline;
     private bool _catchUpDeadlineLogged;
     private Action<string> _log = _ => { };
@@ -94,6 +95,10 @@ public sealed class NodeHealth
     /// <see cref="ReplicationMonitor"/>'s <see cref="ReplicationMonitor.Current"/>. A reader without
     /// one reports <c>replication_unknown</c>; a writer ignores it.</summary>
     public void SetReplication(Func<ReplicationStatus> status) => _replication = status;
+
+    /// <summary>The node's required dependencies (machine 3). Without one, <c>dependencies</c> is
+    /// empty and none contributes.</summary>
+    public void SetDependencies(DependencyMonitor dependencies) => _dependencies = dependencies;
 
     /// <summary>Boot completed (machine 1, <c>BootCompleted</c>): the traffic port listens and the
     /// consumers have started, so the node moves to catching up. <paramref name="consumers"/> is
@@ -170,8 +175,8 @@ public sealed class NodeHealth
     /// <summary>The <c>GET /readyz</c> status code and body (contract section 4): 200 when
     /// <c>ready</c> or <c>degraded</c>, 503 when <c>not_ready</c>. The status is the most severe
     /// contribution of the lifecycle and the read models (<c>STATE-MACHINES.md</c>, "Readiness:"
-    /// tables); <c>reasons</c> lists every non-ready one. Dependencies and mode are not reported
-    /// yet (step 4 of the implementation plan).</summary>
+    /// tables); <c>reasons</c> lists every non-ready one. dotnetcqrs has no maintenance mode and
+    /// compiles its deciders in, so <c>mode</c> is always running and <c>functions</c> complete.</summary>
     public (int StatusCode, IReadOnlyDictionary<string, object?> Body) Readyz()
     {
         Refresh();
@@ -213,6 +218,15 @@ public sealed class NodeHealth
             }
         }
 
+        // event_store: this node's own store is local, so not_ready on a reader; the sole writer
+        // stays in the pool as degraded. shared_dependencies (KMS, the writer on a reader) fail
+        // every node at once, so degraded, one reason however many are down.
+        var dependencies = _dependencies?.States() ?? [];
+        foreach (var (name, up) in dependencies.Where(d => !d.Up && d.Name == DependencyMonitor.EventStore))
+            contributions.Add((identity?.Role == "writer" ? Readiness.Degraded : Readiness.NotReady, "event_store_unavailable"));
+        if (dependencies.Any(d => !d.Up && d.Name != DependencyMonitor.EventStore))
+            contributions.Add((Readiness.Degraded, "dependency_unavailable"));
+
         var status = contributions.Count == 0 ? Readiness.Ready : contributions.Max(c => c.Status);
         var body = new Dictionary<string, object?>
         {
@@ -231,7 +245,7 @@ public sealed class NodeHealth
                 // A writer is the replication source, so 0; a reader, the heartbeat's age.
                 ["write_lag_seconds"] = Math.Round(writeLag, 3),
                 ["projection_lag_seconds"] = Math.Round(readModels.Select(c => c.LagSeconds ?? 0).DefaultIfEmpty(0).Max(), 3),
-                ["dependencies"] = new Dictionary<string, string>(),
+                ["dependencies"] = dependencies.ToDictionary(d => d.Name, d => d.Up ? "up" : "down"),
             },
         };
         return (status == Readiness.NotReady ? 503 : 200, body);

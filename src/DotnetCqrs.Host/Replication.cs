@@ -103,6 +103,16 @@ public sealed class ReplicationMonitor(
         return _current = new ReplicationStatus(up ? ReplicationState.StaleWriterUp : ReplicationState.StaleWriterDown, lag);
     }
 
+    /// <summary>The <c>writer</c> dependency's check (machine 3, on a reader): throws unless the
+    /// heartbeat names a writer and that writer's <c>/healthz</c> answers.</summary>
+    public async Task CheckWriterAsync(CancellationToken ct = default)
+    {
+        var row = await store.ReadHeartbeatAsync(ct)
+            ?? throw new InvalidOperationException("no writer heartbeat visible, so no writer to check");
+        if (!await WriterAnswersAsync(row.WriterOpsUrl, ct))
+            throw new HttpRequestException($"the writer at {row.WriterOpsUrl} did not answer /healthz");
+    }
+
     /// <summary>Measures every <paramref name="interval"/> until cancelled.</summary>
     public async Task RunAsync(TimeSpan interval, CancellationToken ct = default)
     {

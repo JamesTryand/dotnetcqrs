@@ -407,6 +407,13 @@ is `200` `degraded` rather than `503`, so the only write authority never leaves 
 the same reason a writer still catching up after `DOTNETCQRS_CATCHUP_DEADLINE_SECONDS`
 (default `60`) serves anyway.
 
+`/readyz` also lists the host's required dependencies under `checks.dependencies`: the event
+store, and the key-management facade when the domain has personal data. Each is checked every
+`DOTNETCQRS_DEPENDENCY_CHECK_SECONDS` (default `5`) and counts as down after
+`DOTNETCQRS_DEPENDENCY_FAILURES` (default `3`) failures in a row. The event store down is
+`event_store_unavailable`; the key service down is `dependency_unavailable`. On this host, the
+writer, both are `degraded` rather than `503`.
+
 `GET /metrics` on the same port serves the contract's `cqrs_` series in the Prometheus text
 format, every one present from the first scrape: identity, readiness, commands by outcome
 (`accepted`, `rejected`, `conflict`, `unavailable`, `error`) with a duration histogram, events
@@ -415,7 +422,8 @@ appended, each consumer's lag and state, and the dead-letter depth.
 The host is the writer, so it also keeps a **heartbeat**: one row beside the event log
 (`writer_heartbeat`, never an event), upserted every `DOTNETCQRS_HEARTBEAT_INTERVAL_SECONDS`
 (default `1`) with its node id and `CQRS_OPS_URL` (the ops port's address as other nodes reach it,
-default `http://<hostname>:<ops port>`). A read replica measures its lag from that row's age; once
+default `http://<hostname>:<ops port>`, or the `CQRS_OPS_BIND` address when that names one). A read
+replica measures its lag from that row's age; once
 it is older than `DOTNETCQRS_STALE_THRESHOLD_SECONDS` (default `5`) the replica asks the writer's
 `/healthz` whether the writer is up (`ReplicationMonitor` in `DotnetCqrs.Host`).
 

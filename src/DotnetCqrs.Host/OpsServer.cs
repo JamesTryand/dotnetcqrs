@@ -36,12 +36,18 @@ public sealed class OpsServer : IAsyncDisposable
     public const string UrlVariable = "CQRS_OPS_URL";
 
     /// <summary><c>CQRS_OPS_URL</c> (<paramref name="configured"/>) if set, else
-    /// <c>http://{host}:{port}</c>. Throws <see cref="InvalidOpsUrlException"/> for anything but an
-    /// absolute http or https URL, which fails the boot like any other bad setting.</summary>
-    public static string AdvertisedUrl(string? configured, string host, int port)
+    /// <c>http://{bind}:{port}</c> when <paramref name="bind"/> (<c>CQRS_OPS_BIND</c>) names a specific
+    /// address, since nothing else reaches it, else <c>http://{host}:{port}</c>. Throws
+    /// <see cref="InvalidOpsUrlException"/> for anything but an absolute http or https URL, which
+    /// fails the boot like any other bad setting.</summary>
+    public static string AdvertisedUrl(string? configured, string? bind, string host, int port)
     {
         if (string.IsNullOrWhiteSpace(configured))
+        {
+            if (!string.IsNullOrWhiteSpace(bind) && bind is not ("*" or "0.0.0.0" or "::"))
+                host = bind.Contains(':') && !bind.StartsWith('[') ? $"[{bind}]" : bind;
             return $"http://{host}:{port.ToString(CultureInfo.InvariantCulture)}";
+        }
         return Uri.TryCreate(configured, UriKind.Absolute, out var url) && (url.Scheme == Uri.UriSchemeHttp || url.Scheme == Uri.UriSchemeHttps)
             ? configured.TrimEnd('/')
             : throw new InvalidOpsUrlException(configured);

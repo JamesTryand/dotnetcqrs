@@ -229,13 +229,20 @@ public class ReplicationTests
 
     [Fact]
     public void The_ops_url_defaults_to_the_host_and_ops_port() =>
-        Assert.Equal("http://node-3:10056", OpsServer.AdvertisedUrl(null, "node-3", 10056));
+        Assert.Equal("http://node-3:10056", OpsServer.AdvertisedUrl(null, null, "node-3", 10056));
+
+    [Theory]
+    [InlineData("127.0.0.1", "http://127.0.0.1:10056")]
+    [InlineData("::1", "http://[::1]:10056")]
+    [InlineData("0.0.0.0", "http://node-3:10056")]
+    public void The_ops_url_defaults_to_a_specific_bind_address(string bind, string expected) =>
+        Assert.Equal(expected, OpsServer.AdvertisedUrl(null, bind, "node-3", 10056));
 
     [Theory]
     [InlineData("http://writer.internal:9000", "http://writer.internal:9000")]
     [InlineData("https://writer.example/ops/", "https://writer.example/ops")]
     public void A_configured_ops_url_is_used_as_given(string configured, string expected) =>
-        Assert.Equal(expected, OpsServer.AdvertisedUrl(configured, "node-3", 10056));
+        Assert.Equal(expected, OpsServer.AdvertisedUrl(configured, null, "node-3", 10056));
 
     [Theory]
     [InlineData("writer:10056")]
@@ -243,7 +250,7 @@ public class ReplicationTests
     [InlineData("/relative")]
     public void An_invalid_ops_url_fails_the_boot(string configured)
     {
-        var ex = Assert.Throws<InvalidOpsUrlException>(() => OpsServer.AdvertisedUrl(configured, "node-3", 10056));
+        var ex = Assert.Throws<InvalidOpsUrlException>(() => OpsServer.AdvertisedUrl(configured, null, "node-3", 10056));
         Assert.Contains(OpsServer.UrlVariable, ex.Message);
     }
 

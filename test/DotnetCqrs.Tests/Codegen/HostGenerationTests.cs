@@ -339,6 +339,10 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
                 Assert.Equal("ready", readyz.GetProperty("status").GetString());
                 Assert.Equal(0, readyz.GetProperty("reasons").GetArrayLength());
                 Assert.Equal(nodeId, readyz.GetProperty("node_id").GetString());
+                // Section 4.6: this sample has personal data, so the key service is required too.
+                var dependencies = readyz.GetProperty("checks").GetProperty("dependencies");
+                Assert.Equal("up", dependencies.GetProperty("event_store").GetString());
+                Assert.Equal("up", dependencies.GetProperty("kms").GetString());
 
                 // Section 6: the one command above was decided here, and its event appended.
                 var metrics = await ops.GetStringAsync("/metrics");
@@ -358,7 +362,8 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
                 }
                 Assert.NotNull(heartbeat);
                 Assert.Equal(nodeId, heartbeat.WriterNodeId);
-                Assert.EndsWith($":{opsPort}", heartbeat.WriterOpsUrl, StringComparison.Ordinal);
+                // CQRS_OPS_BIND=127.0.0.1 here, so that is the address readers are told.
+                Assert.Equal($"http://127.0.0.1:{opsPort}", heartbeat.WriterOpsUrl);
                 Assert.True(heartbeat.Sequence >= 1);
             }
             using (var traffic = await client.GetAsync("/healthz"))

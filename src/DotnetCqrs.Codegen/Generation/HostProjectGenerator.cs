@@ -65,6 +65,10 @@ namespace DotnetCqrs.Codegen.Generation;
 /// <c>CQRS_OPS_URL</c> (default <c>http://&lt;host&gt;:&lt;ops port&gt;</c>), so readers can
 /// measure their replication lag and find this writer's <c>/healthz</c>. An invalid
 /// <c>CQRS_OPS_URL</c> exits 1.</para>
+///
+/// <para><b>Required dependencies:</b> <c>/readyz</c> reports the event store and, when the domain
+/// has PII, the key-management facade, each checked every <c>DOTNETCQRS_DEPENDENCY_CHECK_SECONDS</c>
+/// (default 5) and down after <c>DOTNETCQRS_DEPENDENCY_FAILURES</c> (default 3) failures in a row.</para>
 /// </summary>
 public static class HostProjectGenerator
 {
@@ -254,7 +258,8 @@ public static class HostProjectGenerator
         b.AppendLine("string opsUrl;");
         b.AppendLine("try");
         b.AppendLine("{");
-        b.AppendLine("    opsUrl = OpsServer.AdvertisedUrl(Environment.GetEnvironmentVariable(OpsServer.UrlVariable), health.Host, opsServer.Address.Port);");
+        b.AppendLine("    opsUrl = OpsServer.AdvertisedUrl(Environment.GetEnvironmentVariable(OpsServer.UrlVariable),");
+        b.AppendLine("        Environment.GetEnvironmentVariable(OpsServer.BindVariable), health.Host, opsServer.Address.Port);");
         b.AppendLine("}");
         b.AppendLine("catch (InvalidOpsUrlException ex)");
         b.AppendLine("{");
@@ -449,7 +454,20 @@ public static class HostProjectGenerator
         }
         b.AppendLine();
 
+        // Health/telemetry section 4.6: the required dependencies, checked once before boot
+        // completes (so none is unknown once the node serves) and then on a loop.
+        b.AppendLine("// Required dependencies (/readyz): the event store, and the key service when the domain has");
+        b.AppendLine("// personal data. Checked once now, then every DOTNETCQRS_DEPENDENCY_CHECK_SECONDS (default 5);");
+        b.AppendLine("// down after DOTNETCQRS_DEPENDENCY_FAILURES (default 3) failures in a row.");
+        b.AppendLine("var dependencies = new DependencyMonitor(readiness.DependencyFailures, Console.Error.WriteLine);");
+        b.AppendLine("dependencies.Add(DependencyMonitor.EventStore, async ct => await eventStore.HeadPositionAsync(ct));");
+        if (hasPii)
+            b.AppendLine("dependencies.Add(DependencyMonitor.Kms, async ct => await kms.ListErasuresAsync(0, 1, ct));");
+        b.AppendLine("health.SetDependencies(dependencies);");
+        b.AppendLine("await dependencies.CheckAllAsync();");
+        b.AppendLine();
         b.AppendLine("var app = builder.Build();");
+        b.AppendLine("_ = dependencies.RunAsync(readiness.DependencyCheckInterval, app.Lifetime.ApplicationStopping);");
         b.AppendLine("_ = engine.StartAsync(app.Lifetime.ApplicationStopping);");
         // Health/telemetry section 5: this host is the writer, so it heartbeats for readers.
         b.AppendLine("// The writer heartbeat (a row beside the event log, never an event): readers measure their");
