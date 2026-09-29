@@ -31,7 +31,7 @@ public class OpsServerTests
     public async Task While_booting_healthz_answers_alive_with_the_unresolved_fields_null()
     {
         var health = new NodeHealth("node-3", Started);
-        await using var ops = await OpsServer.StartAsync(health, port: 0);
+        await using var ops = await OpsServer.StartAsync(health, port: 0, bind: "127.0.0.1");
 
         var body = await HealthzAsync(ops);
 
@@ -49,7 +49,7 @@ public class OpsServerTests
     public async Task Once_identity_is_resolved_every_field_is_set_in_the_contracts_order()
     {
         var health = new NodeHealth("node-3", Started);
-        await using var ops = await OpsServer.StartAsync(health, port: 0);
+        await using var ops = await OpsServer.StartAsync(health, port: 0, bind: "127.0.0.1");
 
         health.SetIdentity(Identity());
         var body = await HealthzAsync(ops);
@@ -97,9 +97,9 @@ public class OpsServerTests
     [Fact]
     public async Task A_port_that_is_already_taken_fails_the_boot()
     {
-        await using var first = await OpsServer.StartAsync(new NodeHealth("a", Started), port: 0);
+        await using var first = await OpsServer.StartAsync(new NodeHealth("a", Started), port: 0, bind: "127.0.0.1");
 
         await Assert.ThrowsAnyAsync<IOException>(() =>
-            OpsServer.StartAsync(new NodeHealth("b", Started), first.Address.Port));
+            OpsServer.StartAsync(new NodeHealth("b", Started), first.Address.Port, bind: "127.0.0.1"));
     }
 }

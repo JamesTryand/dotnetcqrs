@@ -234,6 +234,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         foreach (var a in new[] { "run", "--project", _scratchDir, "--no-build" }) noKms.ArgumentList.Add(a);
         noKms.Environment.Remove("KMS_FACADE_URL");
         noKms.Environment["CQRS_OPS_PORT"] = "0";
+        noKms.Environment["CQRS_OPS_BIND"] = "127.0.0.1";
         using (var refused = Process.Start(noKms)!)
         {
             var refusedErr = await refused.StandardError.ReadToEndAsync();
@@ -249,6 +250,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         foreach (var a in new[] { "run", "--project", _scratchDir, "--no-build" }) badId.ArgumentList.Add(a);
         badId.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
         badId.Environment["CQRS_OPS_PORT"] = "0";
+        badId.Environment["CQRS_OPS_BIND"] = "127.0.0.1";
         badId.Environment["CQRS_NODE_ID"] = "not.a.valid.id";
         using (var refused = Process.Start(badId)!)
         {
@@ -272,6 +274,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         psi.ArgumentList.Add("--no-build");
         psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
         psi.Environment["CQRS_OPS_PORT"] = opsPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        psi.Environment["CQRS_OPS_BIND"] = "127.0.0.1";
         psi.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
         psi.Environment["DOTNETCQRS_POSTGRES"] = postgres ?? "";
         psi.Environment["CQRS_STATE_DIR"] = stateDir;
@@ -435,6 +438,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         foreach (var a in new[] { "run", "--project", _scratchDir, "--no-build" }) psi.ArgumentList.Add(a);
         psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
         psi.Environment["CQRS_OPS_PORT"] = "0";
+        psi.Environment["CQRS_OPS_BIND"] = "127.0.0.1";
         psi.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
         psi.Environment["KMS_INDEX_KEY"] = "pii-host-test";
         psi.Environment["DOTNETCQRS_POSTGRES"] = postgres ?? "";
@@ -538,6 +542,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             port = FreeTcpPort();
             psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
             psi.Environment["CQRS_OPS_PORT"] = "0";
+            psi.Environment["CQRS_OPS_BIND"] = "127.0.0.1";
             process = StartHost(psi, hostLog);
             client.Dispose();
             client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
@@ -617,6 +622,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             port = FreeTcpPort();
             psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
             psi.Environment["CQRS_OPS_PORT"] = "0";
+            psi.Environment["CQRS_OPS_BIND"] = "127.0.0.1";
             process = StartHost(psi, hostLog);
             client.Dispose();
             client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };

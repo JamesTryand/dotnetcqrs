@@ -24,6 +24,11 @@ public sealed class OpsServer : IAsyncDisposable
     public const string PortVariable = "CQRS_OPS_PORT";
     public const int DefaultPort = 10056;
 
+    /// <summary>The address the ops port binds. Unset means every interface, which a real node
+    /// needs so an orchestrator can reach it; <c>127.0.0.1</c> keeps it local (tests use this,
+    /// which also avoids a Windows firewall prompt per test binary).</summary>
+    public const string BindVariable = "CQRS_OPS_BIND";
+
     private readonly WebApplication _app;
 
     private OpsServer(WebApplication app, Uri address)
@@ -49,13 +54,15 @@ public sealed class OpsServer : IAsyncDisposable
             : throw new InvalidOpsPortException(configured);
     }
 
-    /// <summary>Binds the ops port on all interfaces and starts answering. Port 0 picks a free
-    /// port (tests). Throws if the port cannot be bound: the node must not start without it.</summary>
-    public static async Task<OpsServer> StartAsync(NodeHealth health, int port, CancellationToken ct = default)
+    /// <summary>Binds the ops port on <paramref name="bind"/> (null or empty: every interface)
+    /// and starts answering. Port 0 picks a free port (tests). Throws if the port cannot be bound:
+    /// the node must not start without it.</summary>
+    public static async Task<OpsServer> StartAsync(NodeHealth health, int port, string? bind = null, CancellationToken ct = default)
     {
+        var host = string.IsNullOrWhiteSpace(bind) ? "*" : bind.Contains(':') && !bind.StartsWith('[') ? $"[{bind}]" : bind;
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [] });
         builder.Logging.ClearProviders();
-        builder.WebHost.UseUrls($"http://*:{port}");
+        builder.WebHost.UseUrls($"http://{host}:{port}");
         var app = builder.Build();
 
         app.MapGet("/healthz", () => Results.Json(health.HealthzBody()));
@@ -66,10 +73,9 @@ public sealed class OpsServer : IAsyncDisposable
         return new OpsServer(app, bound);
     }
 
-    /// <summary><see cref="StartAsync(NodeHealth, int, CancellationToken)"/> on
-    /// <see cref="PortFromEnvironment"/>.</summary>
+    /// <summary>Starts on <see cref="PortFromEnvironment"/> and <c>CQRS_OPS_BIND</c>.</summary>
     public static Task<OpsServer> StartAsync(NodeHealth health, CancellationToken ct = default) =>
-        StartAsync(health, PortFromEnvironment(), ct);
+        StartAsync(health, PortFromEnvironment(), Environment.GetEnvironmentVariable(BindVariable), ct);
 
     public async ValueTask DisposeAsync()
     {

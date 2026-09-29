@@ -394,7 +394,8 @@ Every host also binds an **ops port** first, before it reads any other setting, 
 orchestrator gets an answer while the node boots: `CQRS_OPS_PORT` (default `10056`),
 serving `GET /healthz` with the same identity (its fields are `null` until identity is
 resolved). It is separate from the traffic port and unauthenticated, so keep it off any
-ingress. Several hosts on one machine must each set their own; a host that can't bind it
+ingress. `CQRS_OPS_BIND` sets the address it binds (default every interface;
+`127.0.0.1` keeps it local). Several hosts on one machine must each set their own port; a host that can't bind it
 refuses to start. `/readyz` and `/metrics` follow on the same port.
 
 ## Checking a document's own scenarios automatically
