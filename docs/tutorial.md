@@ -396,7 +396,16 @@ serving `GET /healthz` with the same identity (its fields are `null` until ident
 resolved). It is separate from the traffic port and unauthenticated, so keep it off any
 ingress. `CQRS_OPS_BIND` sets the address it binds (default every interface;
 `127.0.0.1` keeps it local). Several hosts on one machine must each set their own port; a host that can't bind it
-refuses to start. `/readyz` and `/metrics` follow on the same port.
+refuses to start.
+
+`GET /readyz` on the same port says whether to route traffic here: `503` with reason
+`starting` while booting, `503` `catching_up` once the traffic port listens and the
+projections are catching up, then `200` `ready` when every read model is within
+`DOTNETCQRS_LAG_THRESHOLD_SECONDS` (default `5`). A projection that later falls behind or
+blocks shows up as `projection_behind` / `projection_blocked`; on this host, the writer, that
+is `200` `degraded` rather than `503`, so the only write authority never leaves the pool. For
+the same reason a writer still catching up after `DOTNETCQRS_CATCHUP_DEADLINE_SECONDS`
+(default `60`) serves anyway. `/metrics` follows on the same port.
 
 ## Checking a document's own scenarios automatically
 

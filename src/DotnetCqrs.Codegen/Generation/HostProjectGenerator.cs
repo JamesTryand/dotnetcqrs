@@ -53,6 +53,12 @@ namespace DotnetCqrs.Codegen.Generation;
 /// project name is its <c>instance</c>; its role is always <c>writer</c>. Set
 /// <c>CQRS_STATE_DIR</c> to a node-local directory to keep the id across restarts, or
 /// <c>CQRS_NODE_ID</c> to assign one; an invalid <c>CQRS_NODE_ID</c> exits 1.</para>
+///
+/// <para><b>Readiness:</b> the ops port serves <c>/readyz</c> (the health/telemetry contract):
+/// <c>starting</c> until the traffic port listens, then <c>catching_up</c> until every read model
+/// is within <c>DOTNETCQRS_LAG_THRESHOLD_SECONDS</c> (default 5) or, since this host is the
+/// writer, <c>DOTNETCQRS_CATCHUP_DEADLINE_SECONDS</c> (default 60) passes. An invalid value
+/// exits 1.</para>
 /// </summary>
 public static class HostProjectGenerator
 {
@@ -223,6 +229,20 @@ public static class HostProjectGenerator
         b.AppendLine();
         b.AppendLine("health.SetIdentity(nodeIdentity);");
         b.AppendLine();
+        b.AppendLine("// Readiness thresholds, in seconds: DOTNETCQRS_LAG_THRESHOLD_SECONDS (how far behind a read model");
+        b.AppendLine("// may be and still count as current, default 5) and DOTNETCQRS_CATCHUP_DEADLINE_SECONDS (how");
+        b.AppendLine("// long the initial catch-up may take before this writer serves anyway, default 60).");
+        b.AppendLine("ReadinessSettings readiness;");
+        b.AppendLine("try");
+        b.AppendLine("{");
+        b.AppendLine("    readiness = ReadinessSettings.FromEnvironment();");
+        b.AppendLine("}");
+        b.AppendLine("catch (InvalidReadinessSettingException ex)");
+        b.AppendLine("{");
+        b.AppendLine("    Console.Error.WriteLine(ex.Message);");
+        b.AppendLine("    return 1;");
+        b.AppendLine("}");
+        b.AppendLine();
         b.AppendLine("var builder = WebApplication.CreateBuilder(args);");
         b.AppendLine("builder.Services.AddSingleton(nodeIdentity);");
         b.AppendLine("builder.Services.AddSingleton(health);");
@@ -298,7 +318,10 @@ public static class HostProjectGenerator
         // engine's default logger discards that, so a stuck projection or reactor would be
         // invisible. The app's ILogger doesn't exist until builder.Build() below, so stderr.
         // Each line names the consumer and the event position it is stuck on.
-        b.AppendLine("var engine = new ConsumerEngine(eventStore, eventStore, logger: Console.Error.WriteLine);");
+        b.AppendLine("var engine = new ConsumerEngine(eventStore, eventStore, logger: Console.Error.WriteLine)");
+        b.AppendLine("{");
+        b.AppendLine("    LagThreshold = readiness.LagThreshold,");
+        b.AppendLine("};");
         foreach (var v in projectionVars)
             b.AppendLine($"engine.Register({v});");
         foreach (var domain in mapped.Domains)
@@ -402,6 +425,11 @@ public static class HostProjectGenerator
 
         b.AppendLine("var app = builder.Build();");
         b.AppendLine("_ = engine.StartAsync(app.Lifetime.ApplicationStopping);");
+        // Machine 1's BootCompleted: the traffic port is listening and the consumers run, so
+        // /readyz moves from starting to catching_up, then to ready once the read models are.
+        b.AppendLine("// Boot is complete once the traffic port listens: /readyz moves from starting to catching_up,");
+        b.AppendLine("// and opens when every read model is within threshold (or the catch-up deadline passes).");
+        b.AppendLine("app.Lifetime.ApplicationStarted.Register(() => health.BeginCatchUp(engine.Status, readiness.CatchUpDeadline, Console.WriteLine));");
         // Generated.CommandAuthorization.AuthorizeAsync (Generated/CommandAuthorization.cs)
         // is always emitted, but never auto-wired here -- same posture as resolveActor
         // above, which this generator also leaves unset. Both need project-specific

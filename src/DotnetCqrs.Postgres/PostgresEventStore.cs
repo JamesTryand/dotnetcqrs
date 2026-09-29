@@ -144,6 +144,15 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore
     }
 
     /// <inheritdoc/>
+    public async Task<long?> HeadPositionAsync(CancellationToken ct = default)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COALESCE(MAX(position), 0) FROM events";
+        return Convert.ToInt64(await command.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <inheritdoc/>
     public void Subscribe(Action<Event> handler)
     {
         lock (_subscribersLock)

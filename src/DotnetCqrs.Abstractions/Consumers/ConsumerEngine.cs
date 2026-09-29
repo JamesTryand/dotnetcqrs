@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Globalization;
 using System.Threading.Channels;
 using DotnetCqrs.EventStore;
 
@@ -15,6 +17,10 @@ public sealed class ConsumerEngine
     private readonly ICheckpointStore _checkpoints;
     private readonly TimeSpan _tick;
     private readonly Action<string> _log;
+    private readonly TimeProvider _time;
+
+    // Each consumer's progress as of its latest pass, for Status(); written only by the pass.
+    private readonly ConcurrentDictionary<string, Progress> _progress = new(StringComparer.Ordinal);
 
     private readonly Lock _consumersLock = new();
     private readonly List<Registration> _consumers = [];
@@ -28,14 +34,25 @@ public sealed class ConsumerEngine
     /// against <paramref name="checkpoints"/> — pass the same <see cref="SqliteEventStore"/>
     /// for both in the ordinary single-node case. <paramref name="tick"/> is the fallback
     /// poll interval (default 1s); <paramref name="logger"/> receives run-error messages
-    /// (default: discarded).</summary>
-    public ConsumerEngine(IPollSource source, ICheckpointStore checkpoints, TimeSpan? tick = null, Action<string>? logger = null)
+    /// (default: discarded); <paramref name="timeProvider"/> is the clock lag is measured
+    /// against (default: the system clock).</summary>
+    public ConsumerEngine(
+        IPollSource source, ICheckpointStore checkpoints, TimeSpan? tick = null, Action<string>? logger = null,
+        TimeProvider? timeProvider = null)
     {
         _source = source;
         _checkpoints = checkpoints;
         _tick = tick ?? TimeSpan.FromSeconds(1);
         _log = logger ?? (_ => { });
+        _time = timeProvider ?? TimeProvider.System;
     }
+
+    /// <summary>The default <see cref="LagThreshold"/>.</summary>
+    public static readonly TimeSpan DefaultLagThreshold = TimeSpan.FromSeconds(5);
+
+    /// <summary>How old the oldest unapplied event may be before a consumer counts as
+    /// <see cref="ConsumerState.Behind"/> rather than <see cref="ConsumerState.Current"/>.</summary>
+    public TimeSpan LagThreshold { get; init; } = DefaultLagThreshold;
 
     /// <summary>Adds a consumer, checkpointed in the engine's store.</summary>
     public void Register(IConsumer consumer) => Register(consumer, _checkpoints);
@@ -57,6 +74,37 @@ public sealed class ConsumerEngine
     {
         lock (_consumersLock)
             _consumers.RemoveAll(r => r.Consumer.Name == name);
+        _progress.TryRemove(name, out _);
+    }
+
+    /// <summary>Every registered consumer's state and lag (health/telemetry contract sections 4.4
+    /// and 4.5), sorted by name. Read from what the passes last recorded, so it never touches
+    /// the store: the lag in seconds is measured now, against the oldest event each consumer
+    /// has not yet applied. A consumer that has not run a pass yet is
+    /// <see cref="ConsumerState.Behind"/> with unknown lag.</summary>
+    public IReadOnlyList<ConsumerStatus> Status()
+    {
+        List<Registration> snapshot;
+        lock (_consumersLock)
+            snapshot = [.. _consumers];
+
+        var now = _time.GetUtcNow();
+        var result = new List<ConsumerStatus>(snapshot.Count);
+        foreach (var (consumer, _) in snapshot)
+        {
+            if (!_progress.TryGetValue(consumer.Name, out var p))
+            {
+                result.Add(new ConsumerStatus(consumer.Name, consumer.IsReadModel, ConsumerState.Behind, null, null, null));
+                continue;
+            }
+            var lagSeconds = p.PendingSince is { } since ? Math.Max(0, (now - since).TotalSeconds) : 0;
+            var state = p.Blocked ? ConsumerState.Blocked
+                : lagSeconds <= LagThreshold.TotalSeconds ? ConsumerState.Current
+                : ConsumerState.Behind;
+            long? lagPositions = p.Head is { } head ? Math.Max(0, head - p.Checkpoint) : null;
+            result.Add(new ConsumerStatus(consumer.Name, consumer.IsReadModel, state, p.Checkpoint, lagPositions, lagSeconds));
+        }
+        return result.OrderBy(s => s.Name, StringComparer.Ordinal).ToList();
     }
 
     /// <summary>The registered consumer names, sorted (a snapshot).</summary>
@@ -127,22 +175,38 @@ public sealed class ConsumerEngine
         lock (_consumersLock)
             snapshot = [.. _consumers];
 
+        // Read once per pass, for each consumer's lag in positions. A failure here is the store
+        // being unreachable, which every consumer is about to report as blocked anyway.
+        long? head = null;
+        try
+        {
+            head = await _source.HeadPositionAsync(ct);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+        }
+
         List<Exception>? errors = null;
         foreach (var (consumer, checkpoints) in snapshot)
         {
-            if (await RunOnceForAsync(consumer, checkpoints, ct) is { } blocked)
+            if (await RunOnceForAsync(consumer, checkpoints, head, ct) is { } blocked)
                 (errors ??= []).Add(blocked);
         }
         if (errors is { Count: > 0 })
             throw new AggregateException(errors);
     }
 
-    /// <summary>Catches one consumer up. Returns null when it caught up, or the (already
-    /// logged) failure that blocked it; cancellation propagates.</summary>
-    private async Task<Exception?> RunOnceForAsync(IConsumer consumer, ICheckpointStore checkpoints, CancellationToken ct)
+    /// <summary>Catches one consumer up, recording its progress for <see cref="Status"/> as it
+    /// goes. Returns null when it caught up, or the (already logged) failure that blocked it;
+    /// cancellation propagates.</summary>
+    private async Task<Exception?> RunOnceForAsync(IConsumer consumer, ICheckpointStore checkpoints, long? head, CancellationToken ct)
     {
         long pos = 0;
         Event? current = null;
+        _progress.TryGetValue(consumer.Name, out var before);
+        // A blocked consumer stays blocked while it retries, until an event applies.
+        var blocked = before?.Blocked ?? false;
+        var pendingSince = before?.PendingSince;
         try
         {
             pos = await checkpoints.CheckpointAsync(consumer.Name, ct);
@@ -153,12 +217,17 @@ public sealed class ConsumerEngine
                 foreach (var ev in batch)
                 {
                     current = ev;
+                    // The event about to be applied is the oldest one not yet applied.
+                    pendingSince = CreatedAt(ev);
+                    _progress[consumer.Name] = new Progress(pos, head, pendingSince, blocked);
                     await consumer.ApplyAsync(ev, ct);
                     await checkpoints.SaveCheckpointAsync(consumer.Name, ev.Position, ct);
                     pos = ev.Position;
                     current = null;
+                    blocked = false;
                 }
             }
+            _progress[consumer.Name] = new Progress(pos, head, null, false);
             return null;
         }
         catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
@@ -175,10 +244,24 @@ public sealed class ConsumerEngine
                 ? $"position={pos} (reading checkpoint or polling after it)"
                 : $"position={current.Position} event={current.Id} type={current.Type} stream={current.Aggregate}/{current.AggregateId}";
             _log($"consumer blocked, will retry: consumer={consumer.Name} {at} error={ex}");
+            _progress[consumer.Name] = new Progress(pos, head, pendingSince ?? _time.GetUtcNow(), true);
             var where = current is null ? $"after position {pos}" : $"at position {current.Position}";
             return new InvalidOperationException($"consumer {consumer.Name} blocked {where}: {ex.Message}", ex);
         }
     }
 
+    /// <summary>When <paramref name="ev"/> was committed. A timestamp that does not parse (a
+    /// third-party store's own format) counts from now, so its lag still grows while it waits.</summary>
+    private DateTimeOffset CreatedAt(Event ev) =>
+        DateTimeOffset.TryParse(ev.Created, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var at)
+            ? at
+            : _time.GetUtcNow();
+
     private sealed record Registration(IConsumer Consumer, ICheckpointStore Checkpoints);
+
+    /// <summary>A consumer's progress as of its latest pass: its checkpoint, the log head that
+    /// pass saw, when the oldest event it has not applied was committed (null: caught up), and
+    /// whether it is blocked.</summary>
+    private sealed record Progress(long Checkpoint, long? Head, DateTimeOffset? PendingSince, bool Blocked);
 }

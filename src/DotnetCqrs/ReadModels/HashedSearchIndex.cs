@@ -30,6 +30,9 @@ public interface IHashedSearchIndex : IConsumer
     /// <summary>Deletes every row whose key version is not in <paramref name="keep"/> (an empty
     /// list deletes every row).</summary>
     Task DeleteVersionsExceptAsync(IReadOnlyCollection<int> keep, CancellationToken ct = default);
+
+    /// <summary>A search index is a read model: its lag counts toward readiness.</summary>
+    bool IConsumer.IsReadModel => true;
 }
 
 /// <summary>
@@ -153,6 +156,9 @@ public static class HashedSearchIndexRegistration
     {
         public string Name => inner.Name;
 
+        // The version searches use while the rebuild runs, so it counts toward readiness.
+        public bool IsReadModel => true;
+
         public async Task ApplyAsync(Event ev, CancellationToken ct)
         {
             // Retired: a pass that snapshotted the consumer list before the switch must not
@@ -166,6 +172,10 @@ public static class HashedSearchIndexRegistration
     private sealed class RebuildConsumer(IHashedSearchIndex inner, SwitchOver switchOver) : IConsumer
     {
         public string Name => inner.Name;
+
+        // Not a read model yet: nothing searches this version until it has caught up and
+        // switched over, so a slow rebuild must not take the node out of the pool.
+        public bool IsReadModel => false;
 
         public async Task ApplyAsync(Event ev, CancellationToken ct)
         {

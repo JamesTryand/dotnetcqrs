@@ -323,6 +323,22 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
                 Assert.Equal("OrderFulfillment", healthz.GetProperty("instance").GetString());
                 Assert.Equal("writer", healthz.GetProperty("role").GetString());
                 Assert.Equal("dotnetcqrs", healthz.GetProperty("stack").GetString());
+
+                // Section 4: /readyz opens once the projections have caught up with the one
+                // command above (they poll every ~1s), with no reasons.
+                JsonElement readyz = default;
+                var readyzCode = HttpStatusCode.ServiceUnavailable;
+                for (var attempt = 0; attempt < 30 && readyzCode != HttpStatusCode.OK; attempt++)
+                {
+                    using var readyzResponse = await ops.GetAsync("/readyz");
+                    readyzCode = readyzResponse.StatusCode;
+                    readyz = await readyzResponse.Content.ReadFromJsonAsync<JsonElement>();
+                    if (readyzCode != HttpStatusCode.OK) await Task.Delay(500);
+                }
+                Assert.True(readyzCode == HttpStatusCode.OK, $"/readyz never opened: {readyz}\n{Tail(hostLog)}");
+                Assert.Equal("ready", readyz.GetProperty("status").GetString());
+                Assert.Equal(0, readyz.GetProperty("reasons").GetArrayLength());
+                Assert.Equal(nodeId, readyz.GetProperty("node_id").GetString());
             }
             using (var traffic = await client.GetAsync("/healthz"))
                 Assert.Equal(HttpStatusCode.NotFound, traffic.StatusCode);

@@ -49,6 +49,9 @@ internal static class SearchIndexGenerator
         b.AppendLine("{");
         b.AppendLine($"    public string Name => \"{readModel.Collection}:search\";");
         b.AppendLine();
+        b.AppendLine("    /// <summary>Searches read it, so its lag counts toward the node's readiness.</summary>");
+        b.AppendLine("    public bool IsReadModel => true;");
+        b.AppendLine();
         b.AppendLine("    public async Task InitAsync(CancellationToken ct = default)");
         b.AppendLine("    {");
         b.AppendLine("        await using var command = index.Connection.CreateCommand();");

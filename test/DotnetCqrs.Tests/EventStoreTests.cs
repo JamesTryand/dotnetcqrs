@@ -63,4 +63,15 @@ public class EventStoreTests
         Assert.Equal(1, ex.ActualSequence);
         Assert.Equal(0, ex.ExpectedSequence);
     }
+
+    [Fact]
+    public async Task HeadPosition_is_the_newest_position_and_0_for_an_empty_log()
+    {
+        await using var store = await OpenAsync();
+        Assert.Equal(0, await store.HeadPositionAsync());
+
+        await store.AppendAsync("task", "t1", 0, [new NewEvent("TaskCreated", "{}"), new NewEvent("TaskCompleted", "{}")]);
+
+        Assert.Equal(2, await store.HeadPositionAsync());
+    }
 }

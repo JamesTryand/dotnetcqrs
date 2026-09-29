@@ -181,6 +181,14 @@ public sealed class SqliteEventStore : IEventStore, IDeadLetterStore
         return results;
     }
 
+    /// <summary>The newest committed position, 0 for an empty log.</summary>
+    public async Task<long?> HeadPositionAsync(CancellationToken ct = default)
+    {
+        await using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT COALESCE(MAX(position), 0) FROM events";
+        return (long)(await command.ExecuteScalarAsync(ct))!;
+    }
+
     /// <summary>Registers <paramref name="handler"/> to be called (best-effort, in-process)
     /// with each event right after it commits. A consumer needing guaranteed delivery
     /// should poll via <see cref="PollAsync"/> with a durable checkpoint instead.</summary>

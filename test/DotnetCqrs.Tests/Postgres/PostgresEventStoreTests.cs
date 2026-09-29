@@ -118,4 +118,16 @@ public class PostgresEventStoreTests(PostgresFixture fx)
         // every one, in ascending order, with no gap and no duplicate.
         Assert.Equal(Enumerable.Range(1, writers).Select(n => (long)n), seenPositions);
     }
+
+    [SkippableFact]
+    public async Task HeadPosition_is_the_newest_position_and_0_for_an_empty_log()
+    {
+        Skip.IfNot(fx.Available, fx.SkipReason);
+        await using var store = await OpenAsync();
+        Assert.Equal(0, await store.HeadPositionAsync());
+
+        var appended = await store.AppendAsync("task", "t1", 0, [new NewEvent("TaskCreated", "{}"), new NewEvent("TaskCompleted", "{}")]);
+
+        Assert.Equal(appended[1].Position, await store.HeadPositionAsync());
+    }
 }
