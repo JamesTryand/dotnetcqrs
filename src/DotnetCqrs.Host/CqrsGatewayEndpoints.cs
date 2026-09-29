@@ -88,10 +88,19 @@ public static class CqrsGatewayEndpoints
             {
                 if (forward is not null)
                 {
+                    // Counted and timed only on the writer that decides it (contract section 6.5).
                     await forward(httpContext);
                     return Results.Empty;
                 }
-                return await HandleAsync(aggregate, aggregateId, command, request, httpContext, registry, resolveActor, authorize, ct);
+                // Command outcomes (health/telemetry contract section 7), when the host registered
+                // a NodeMetrics; without one nothing is recorded.
+                var metrics = httpContext.RequestServices.GetService<NodeMetrics>();
+                var started = System.Diagnostics.Stopwatch.GetTimestamp();
+                var result = await HandleAsync(aggregate, aggregateId, command, request, httpContext, registry, resolveActor, authorize, ct);
+                metrics?.RecordCommand(
+                    (result as IStatusCodeHttpResult)?.StatusCode ?? StatusCodes.Status200OK,
+                    System.Diagnostics.Stopwatch.GetElapsedTime(started));
+                return result;
             });
     }
 

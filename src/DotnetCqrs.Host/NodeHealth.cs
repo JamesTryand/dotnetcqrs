@@ -79,6 +79,12 @@ public sealed class NodeHealth
 
     public NodeLifecycleState Lifecycle => (NodeLifecycleState)_lifecycle;
 
+    /// <summary>The <c>/metrics</c> series (contract section 6), which exist from process start.</summary>
+    public NodeMetrics Metrics { get; } = new();
+
+    /// <summary>The consumer engine's status once boot has completed; empty while booting.</summary>
+    public IReadOnlyList<ConsumerStatus> Consumers() => _consumers?.Invoke() ?? [];
+
     public void SetIdentity(NodeIdentity identity) => _identity = identity;
 
     public void SetLifecycle(NodeLifecycleState state) => _lifecycle = (int)state;

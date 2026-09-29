@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging;
 namespace DotnetCqrs.Host;
 
 /// <summary>
-/// The ops port (health/telemetry contract section 2): <c>/healthz</c> and <c>/readyz</c>, and later
+/// The ops port (health/telemetry contract section 2): <c>/healthz</c>, <c>/readyz</c> and
 /// <c>/metrics</c>, on a port of their own, never the traffic port. It is a separate, minimal
 /// Kestrel app so it can bind first, before configuration is validated or any store opens, and a
 /// booting node answers instead of refusing connections.
@@ -71,6 +71,8 @@ public sealed class OpsServer : IAsyncDisposable
             var (statusCode, body) = health.Readyz();
             return Results.Json(body, statusCode: statusCode);
         });
+        app.MapGet("/metrics", async (CancellationToken ct) =>
+            Results.Text(await health.Metrics.RenderAsync(health, ct), "text/plain; version=0.0.4; charset=utf-8"));
 
         await app.StartAsync(ct);
         var bound = new Uri(app.Urls.First().Replace("*", "localhost", StringComparison.Ordinal)

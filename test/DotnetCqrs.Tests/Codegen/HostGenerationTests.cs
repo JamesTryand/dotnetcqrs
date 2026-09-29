@@ -339,6 +339,12 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
                 Assert.Equal("ready", readyz.GetProperty("status").GetString());
                 Assert.Equal(0, readyz.GetProperty("reasons").GetArrayLength());
                 Assert.Equal(nodeId, readyz.GetProperty("node_id").GetString());
+
+                // Section 6: the one command above was decided here, and its event appended.
+                var metrics = await ops.GetStringAsync("/metrics");
+                Assert.Contains("cqrs_commands_total{status=\"accepted\"} 1\n", metrics, StringComparison.Ordinal);
+                Assert.DoesNotContain("cqrs_events_appended_total 0\n", metrics, StringComparison.Ordinal);
+                Assert.Contains("cqrs_readiness_status{status=\"ready\"} 1\n", metrics, StringComparison.Ordinal);
             }
             using (var traffic = await client.GetAsync("/healthz"))
                 Assert.Equal(HttpStatusCode.NotFound, traffic.StatusCode);

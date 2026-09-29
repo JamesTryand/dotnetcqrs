@@ -246,10 +246,17 @@ public static class HostProjectGenerator
         b.AppendLine("var builder = WebApplication.CreateBuilder(args);");
         b.AppendLine("builder.Services.AddSingleton(nodeIdentity);");
         b.AppendLine("builder.Services.AddSingleton(health);");
+        // The gateway records command outcomes into this (contract section 7).
+        b.AppendLine("builder.Services.AddSingleton(health.Metrics);");
         b.AppendLine();
         b.AppendLine("IEventStore eventStore = postgres is not null");
         b.AppendLine("    ? await PostgresEventStore.OpenAsync(postgres)");
         b.AppendLine("    : await SqliteEventStore.OpenAsync(Path.Combine(dataDir, \"events.db\"));");
+        // /metrics: every committed event counts toward cqrs_events_appended_total, and the
+        // dead-letter depth is read on each scrape (reads only; the ops port never writes).
+        b.AppendLine("eventStore.Subscribe(_ => health.Metrics.EventAppended());");
+        b.AppendLine("if (eventStore is IDeadLetterStore deadLetters)");
+        b.AppendLine("    health.Metrics.SetDeadLetterDepth(async ct => (await deadLetters.ListDeadLettersAsync(ct: ct)).Count);");
         b.AppendLine("IReadModelStore readModelDb = postgres is not null");
         b.AppendLine("    ? await PostgresReadModelStore.OpenInSchemaAsync(postgres, \"read_models\")");
         b.AppendLine("    : await SqliteReadModelStore.OpenAsync(Path.Combine(dataDir, \"readmodel.db\"));");

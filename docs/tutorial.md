@@ -405,7 +405,12 @@ projections are catching up, then `200` `ready` when every read model is within
 blocks shows up as `projection_behind` / `projection_blocked`; on this host, the writer, that
 is `200` `degraded` rather than `503`, so the only write authority never leaves the pool. For
 the same reason a writer still catching up after `DOTNETCQRS_CATCHUP_DEADLINE_SECONDS`
-(default `60`) serves anyway. `/metrics` follows on the same port.
+(default `60`) serves anyway.
+
+`GET /metrics` on the same port serves the contract's `cqrs_` series in the Prometheus text
+format, every one present from the first scrape: identity, readiness, commands by outcome
+(`accepted`, `rejected`, `conflict`, `unavailable`, `error`) with a duration histogram, events
+appended, each consumer's lag and state, and the dead-letter depth.
 
 ## Checking a document's own scenarios automatically
 
