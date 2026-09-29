@@ -29,6 +29,7 @@
     <ProjectReference Include="..\..\src\DotnetCqrs.Host\DotnetCqrs.Host.csproj" />
     <ProjectReference Include="..\..\src\DotnetCqrs.Codegen\DotnetCqrs.Codegen.csproj" />
     <ProjectReference Include="..\..\src\DotnetCqrs.Crypto\DotnetCqrs.Crypto.csproj" />
+    <ProjectReference Include="..\..\src\DotnetCqrs.Telemetry.Nats\DotnetCqrs.Telemetry.Nats.csproj" />
   </ItemGroup>
 
   <!-- For CqrsGatewayAuthTests: JwtBearerDefaults, AddJwtBearer, TokenValidationParameters. -->

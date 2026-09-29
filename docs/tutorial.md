@@ -414,6 +414,17 @@ store, and the key-management facade when the domain has personal data. Each is 
 `event_store_unavailable`; the key service down is `dependency_unavailable`. On this host, the
 writer, both are `degraded` rather than `503`.
 
+A host can also **push** its metrics to a message bus, so a monitor on the bus sees a mixed estate
+without scraping every node. Set `CQRS_TELEMETRY_URL` to the bus's address (`nats://host:4222`; the
+scheme selects the transport, NATS being the one this host ships, and unset means no push) and,
+optionally, `CQRS_TELEMETRY_INTERVAL` (seconds, default `15`). Each snapshot is JSON, the same
+figures `/metrics` returns, published to the subject `cqrs.telemetry.metrics.<node_id>`: once the
+node is up, then on the interval, and once more as draining begins. It is best-effort and never a
+dependency: a snapshot the bus cannot take within a second is dropped, never queued, and an
+unreachable bus changes nothing in `/healthz` or `/readyz`. A bad setting, or a scheme with no
+transport, refuses to start. The NATS client lives in `DotnetCqrs.Telemetry.Nats`, so a host that
+does not push carries no bus client.
+
 On `SIGTERM` or Ctrl+C the host **drains** rather than just stopping: `/readyz` goes `503`
 `draining` first, so whatever routes to this node stops, then in-flight requests finish, then
 each consumer finishes the event it is applying and stops (the next start resumes from the next

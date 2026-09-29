@@ -104,6 +104,7 @@ public static class HostProjectGenerator
         var codegenProjectPath = Path.Combine(srcDir, "DotnetCqrs.Codegen", "DotnetCqrs.Codegen.csproj");
         var cryptoProjectPath = Path.Combine(srcDir, "DotnetCqrs.Crypto", "DotnetCqrs.Crypto.csproj");
         var postgresProjectPath = Path.Combine(srcDir, "DotnetCqrs.Postgres", "DotnetCqrs.Postgres.csproj");
+        var natsTelemetryProjectPath = Path.Combine(srcDir, "DotnetCqrs.Telemetry.Nats", "DotnetCqrs.Telemetry.Nats.csproj");
 
         var source = $"""
             <Project Sdk="Microsoft.NET.Sdk.Web">
@@ -121,6 +122,7 @@ public static class HostProjectGenerator
                 <ProjectReference Include="{codegenProjectPath}" />
                 <ProjectReference Include="{cryptoProjectPath}" />
                 <ProjectReference Include="{postgresProjectPath}" />
+                <ProjectReference Include="{natsTelemetryProjectPath}" />
               </ItemGroup>
 
               <ItemGroup>
@@ -151,6 +153,8 @@ public static class HostProjectGenerator
         b.AppendLine("using DotnetCqrs.Deciders;");
         b.AppendLine("using DotnetCqrs.EventStore;");
         b.AppendLine("using DotnetCqrs.Host;");
+        b.AppendLine("using DotnetCqrs.Host.Telemetry;");
+        b.AppendLine("using DotnetCqrs.Host.Telemetry.Nats;");
         b.AppendLine("using DotnetCqrs.Postgres;");
         b.AppendLine("using DotnetCqrs.ReadModels;");
         b.AppendLine("using DotnetCqrs.Reactors;");
@@ -248,6 +252,27 @@ public static class HostProjectGenerator
         b.AppendLine("    readiness = ReadinessSettings.FromEnvironment();");
         b.AppendLine("}");
         b.AppendLine("catch (InvalidReadinessSettingException ex)");
+        b.AppendLine("{");
+        b.AppendLine("    Console.Error.WriteLine(ex.Message);");
+        b.AppendLine("    return 1;");
+        b.AppendLine("}");
+        b.AppendLine();
+        // Health/telemetry section 8: the optional push. Configuration is checked now, so a bad value
+        // fails the boot like any other; an unreachable bus never does.
+        b.AppendLine("// The optional telemetry push (health/telemetry section 8): CQRS_TELEMETRY_URL names the bus (the scheme");
+        b.AppendLine("// selects the transport; unset, no push) and CQRS_TELEMETRY_INTERVAL the seconds between snapshots (15).");
+        b.AppendLine("// A bad setting refuses to start; an unreachable bus never affects /healthz or /readyz.");
+        b.AppendLine("TelemetryPublisher? telemetry = null;");
+        b.AppendLine("try");
+        b.AppendLine("{");
+        b.AppendLine("    var telemetrySettings = TelemetrySettings.FromEnvironment();");
+        b.AppendLine("    if (telemetrySettings.Url is { } telemetryUrl)");
+        b.AppendLine("    {");
+        b.AppendLine("        var transport = NatsTelemetryTransport.Register(new TelemetryTransports()).Create(telemetryUrl, Console.WriteLine);");
+        b.AppendLine("        telemetry = new TelemetryPublisher(health, transport, telemetrySettings.Interval, Console.WriteLine);");
+        b.AppendLine("    }");
+        b.AppendLine("}");
+        b.AppendLine("catch (InvalidTelemetrySettingException ex)");
         b.AppendLine("{");
         b.AppendLine("    Console.Error.WriteLine(ex.Message);");
         b.AppendLine("    return 1;");
@@ -478,9 +503,11 @@ public static class HostProjectGenerator
         b.AppendLine("{");
         b.AppendLine("    drainStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();");
         b.AppendLine("    health.BeginDraining(Console.WriteLine);");
+        b.AppendLine("    telemetry?.NotifyDraining();");
         b.AppendLine("});");
         b.AppendLine("_ = dependencies.RunAsync(readiness.DependencyCheckInterval, app.Lifetime.ApplicationStopping);");
         b.AppendLine("_ = engine.StartAsync(CancellationToken.None);");
+        b.AppendLine("telemetry?.Start();");
         // Health/telemetry section 5: this host is the writer, so it heartbeats for readers.
         b.AppendLine("// The writer heartbeat (a row beside the event log, never an event): readers measure their");
         b.AppendLine("// replication lag from its age.");
@@ -527,6 +554,8 @@ public static class HostProjectGenerator
         b.AppendLine("    : readiness.DrainDeadline - System.Diagnostics.Stopwatch.GetElapsedTime(drainStartedAt);");
         b.AppendLine("if (!await engine.StopAsync(drainLeft))");
         b.AppendLine("    Console.Error.WriteLine(\"drain deadline reached: consumers were stopped mid-event and will redo it on restart\");");
+        b.AppendLine("// The final telemetry snapshot (draining) goes out before the process ends, bounded by its one-second timeout.");
+        b.AppendLine("if (telemetry is not null) await telemetry.DisposeAsync();");
         b.AppendLine("Console.WriteLine(\"drained; exiting\");");
         b.AppendLine("return 0;");
 
