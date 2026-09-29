@@ -162,6 +162,25 @@ public static class HostProjectGenerator
         b.AppendLine("}");
         b.AppendLine();
 
+        // Health/telemetry contract section 2: the ops port binds first, before configuration is
+        // read or anything opens, so a booting node answers /healthz instead of refusing
+        // connections. A node that cannot bind it (bad CQRS_OPS_PORT, port taken) does not start.
+        b.AppendLine("// Health/telemetry: the ops port (CQRS_OPS_PORT, default 10056) binds before anything else, so");
+        b.AppendLine("// /healthz answers while the node boots. Several nodes on one machine must each set their own.");
+        b.AppendLine("var health = NodeHealth.ForThisProcess(Console.Error.WriteLine);");
+        b.AppendLine("OpsServer startedOps;");
+        b.AppendLine("try");
+        b.AppendLine("{");
+        b.AppendLine("    startedOps = await OpsServer.StartAsync(health);");
+        b.AppendLine("}");
+        b.AppendLine("catch (Exception ex) when (ex is InvalidOpsPortException or IOException)");
+        b.AppendLine("{");
+        b.AppendLine("    Console.Error.WriteLine($\"ops port: {ex.Message}\");");
+        b.AppendLine("    return 1;");
+        b.AppendLine("}");
+        b.AppendLine("await using var opsServer = startedOps;");
+        b.AppendLine("Console.WriteLine($\"ops port listening on {opsServer.Address}\");");
+        b.AppendLine();
         b.AppendLine("// DOTNETCQRS_POSTGRES: a Postgres connection string. Set, the event log, read models (schema");
         b.AppendLine("// read_models) and search indexes (schema search) all live in that database; unset, in SQLite");
         b.AppendLine("// files under data/. The generated code is the same either way.");
@@ -202,8 +221,11 @@ public static class HostProjectGenerator
         b.AppendLine("    return 1;");
         b.AppendLine("}");
         b.AppendLine();
+        b.AppendLine("health.SetIdentity(nodeIdentity);");
+        b.AppendLine();
         b.AppendLine("var builder = WebApplication.CreateBuilder(args);");
         b.AppendLine("builder.Services.AddSingleton(nodeIdentity);");
+        b.AppendLine("builder.Services.AddSingleton(health);");
         b.AppendLine();
         b.AppendLine("IEventStore eventStore = postgres is not null");
         b.AppendLine("    ? await PostgresEventStore.OpenAsync(postgres)");

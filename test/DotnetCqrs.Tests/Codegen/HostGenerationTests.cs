@@ -175,6 +175,15 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         Assert.True(resolve < program.IndexOf("SqliteEventStore.OpenAsync", StringComparison.Ordinal));
         Assert.Contains("catch (InvalidIdentitySettingException ex)", program);
         Assert.Contains("builder.Services.AddSingleton(nodeIdentity);", program);
+
+        // Health/telemetry contract section 2: the ops port binds before configuration is read,
+        // identity is resolved, or anything opens; then it is told the identity.
+        var ops = program.IndexOf("await OpsServer.StartAsync(health)", StringComparison.Ordinal);
+        Assert.True(ops >= 0, program);
+        Assert.True(ops < program.IndexOf("DOTNETCQRS_POSTGRES", StringComparison.Ordinal));
+        Assert.True(ops < resolve);
+        Assert.True(program.IndexOf("health.SetIdentity(nodeIdentity);", StringComparison.Ordinal) > resolve);
+        Assert.Contains("builder.Services.AddSingleton(health);", program);
     }
 
     [Fact(Timeout = 300000)]
@@ -224,6 +233,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         var noKms = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         foreach (var a in new[] { "run", "--project", _scratchDir, "--no-build" }) noKms.ArgumentList.Add(a);
         noKms.Environment.Remove("KMS_FACADE_URL");
+        noKms.Environment["CQRS_OPS_PORT"] = "0";
         using (var refused = Process.Start(noKms)!)
         {
             var refusedErr = await refused.StandardError.ReadToEndAsync();
@@ -238,6 +248,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         var badId = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         foreach (var a in new[] { "run", "--project", _scratchDir, "--no-build" }) badId.ArgumentList.Add(a);
         badId.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
+        badId.Environment["CQRS_OPS_PORT"] = "0";
         badId.Environment["CQRS_NODE_ID"] = "not.a.valid.id";
         using (var refused = Process.Start(badId)!)
         {
@@ -253,12 +264,14 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         // for the hand-written host -- not just that the process starts without
         // throwing.
         var port = FreeTcpPort();
+        var opsPort = FreeTcpPort();
         var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         psi.ArgumentList.Add("run");
         psi.ArgumentList.Add("--project");
         psi.ArgumentList.Add(_scratchDir);
         psi.ArgumentList.Add("--no-build");
         psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+        psi.Environment["CQRS_OPS_PORT"] = opsPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
         psi.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
         psi.Environment["DOTNETCQRS_POSTGRES"] = postgres ?? "";
         psi.Environment["CQRS_STATE_DIR"] = stateDir;
@@ -295,6 +308,21 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             var nodeId = File.ReadAllText(Path.Combine(stateDir, "node-id")).Trim();
             Assert.Contains($"node identity: node_id={nodeId} identity=persistent instance=OrderFulfillment", Tail(hostLog));
             Assert.Contains("stack=dotnetcqrs role=writer started_at=", Tail(hostLog));
+
+            // Health/telemetry contract section 3: /healthz on the ops port, never the traffic
+            // port, reports the same identity.
+            using (var ops = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{opsPort}") })
+            {
+                var healthz = await ops.GetFromJsonAsync<JsonElement>("/healthz");
+                Assert.Equal("alive", healthz.GetProperty("status").GetString());
+                Assert.Equal(nodeId, healthz.GetProperty("node_id").GetString());
+                Assert.Equal("persistent", healthz.GetProperty("identity").GetString());
+                Assert.Equal("OrderFulfillment", healthz.GetProperty("instance").GetString());
+                Assert.Equal("writer", healthz.GetProperty("role").GetString());
+                Assert.Equal("dotnetcqrs", healthz.GetProperty("stack").GetString());
+            }
+            using (var traffic = await client.GetAsync("/healthz"))
+                Assert.Equal(HttpStatusCode.NotFound, traffic.StatusCode);
 
             // auto-ship-pending-orders is a same-aggregate reactor (order-placed ->
             // ship-order, both "order"): it must dispatch back into the SAME order's
@@ -406,6 +434,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         foreach (var a in new[] { "run", "--project", _scratchDir, "--no-build" }) psi.ArgumentList.Add(a);
         psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+        psi.Environment["CQRS_OPS_PORT"] = "0";
         psi.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
         psi.Environment["KMS_INDEX_KEY"] = "pii-host-test";
         psi.Environment["DOTNETCQRS_POSTGRES"] = postgres ?? "";
@@ -508,6 +537,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             facade.Handler.RotateIndexKey("pii-host-test");
             port = FreeTcpPort();
             psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+            psi.Environment["CQRS_OPS_PORT"] = "0";
             process = StartHost(psi, hostLog);
             client.Dispose();
             client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
@@ -586,6 +616,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             }
             port = FreeTcpPort();
             psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+            psi.Environment["CQRS_OPS_PORT"] = "0";
             process = StartHost(psi, hostLog);
             client.Dispose();
             client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
