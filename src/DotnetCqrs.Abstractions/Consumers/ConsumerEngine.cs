@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Globalization;
 using System.Threading.Channels;
 using DotnetCqrs.EventStore;
 
@@ -15,9 +17,20 @@ public sealed class ConsumerEngine
     private readonly ICheckpointStore _checkpoints;
     private readonly TimeSpan _tick;
     private readonly Action<string> _log;
+    private readonly TimeProvider _time;
+
+    // Each consumer's progress as of its latest pass, for Status(); written only by the pass.
+    private readonly ConcurrentDictionary<string, Progress> _progress = new(StringComparer.Ordinal);
 
     private readonly Lock _consumersLock = new();
     private readonly List<Registration> _consumers = [];
+
+    // Set by StopAsync (health/telemetry machine 1, Draining): the loop ends, and a pass stops after
+    // the event in hand, rather than running on until it is caught up. _hardStop is what a passed
+    // deadline cancels; it is linked to the token StartAsync was given.
+    private volatile bool _stopRequested;
+    private CancellationTokenSource? _hardStop;
+    private Task? _loop;
 
     // Bounded to 1 and drops on a full channel: the same "non-blocking nudge,
     // coalesce bursts" shape as pocketcqrs's buffered-channel-with-default-case.
@@ -28,14 +41,25 @@ public sealed class ConsumerEngine
     /// against <paramref name="checkpoints"/> — pass the same <see cref="SqliteEventStore"/>
     /// for both in the ordinary single-node case. <paramref name="tick"/> is the fallback
     /// poll interval (default 1s); <paramref name="logger"/> receives run-error messages
-    /// (default: discarded).</summary>
-    public ConsumerEngine(IPollSource source, ICheckpointStore checkpoints, TimeSpan? tick = null, Action<string>? logger = null)
+    /// (default: discarded); <paramref name="timeProvider"/> is the clock lag is measured
+    /// against (default: the system clock).</summary>
+    public ConsumerEngine(
+        IPollSource source, ICheckpointStore checkpoints, TimeSpan? tick = null, Action<string>? logger = null,
+        TimeProvider? timeProvider = null)
     {
         _source = source;
         _checkpoints = checkpoints;
         _tick = tick ?? TimeSpan.FromSeconds(1);
         _log = logger ?? (_ => { });
+        _time = timeProvider ?? TimeProvider.System;
     }
+
+    /// <summary>The default <see cref="LagThreshold"/>.</summary>
+    public static readonly TimeSpan DefaultLagThreshold = TimeSpan.FromSeconds(5);
+
+    /// <summary>How old the oldest unapplied event may be before a consumer counts as
+    /// <see cref="ConsumerState.Behind"/> rather than <see cref="ConsumerState.Current"/>.</summary>
+    public TimeSpan LagThreshold { get; init; } = DefaultLagThreshold;
 
     /// <summary>Adds a consumer, checkpointed in the engine's store.</summary>
     public void Register(IConsumer consumer) => Register(consumer, _checkpoints);
@@ -57,6 +81,37 @@ public sealed class ConsumerEngine
     {
         lock (_consumersLock)
             _consumers.RemoveAll(r => r.Consumer.Name == name);
+        _progress.TryRemove(name, out _);
+    }
+
+    /// <summary>Every registered consumer's state and lag (health/telemetry contract sections 4.4
+    /// and 4.5), sorted by name. Read from what the passes last recorded, so it never touches
+    /// the store: the lag in seconds is measured now, against the oldest event each consumer
+    /// has not yet applied. A consumer that has not run a pass yet is
+    /// <see cref="ConsumerState.Behind"/> with unknown lag.</summary>
+    public IReadOnlyList<ConsumerStatus> Status()
+    {
+        List<Registration> snapshot;
+        lock (_consumersLock)
+            snapshot = [.. _consumers];
+
+        var now = _time.GetUtcNow();
+        var result = new List<ConsumerStatus>(snapshot.Count);
+        foreach (var (consumer, _) in snapshot)
+        {
+            if (!_progress.TryGetValue(consumer.Name, out var p))
+            {
+                result.Add(new ConsumerStatus(consumer.Name, consumer.IsReadModel, ConsumerState.Behind, null, null, null));
+                continue;
+            }
+            var lagSeconds = p.PendingSince is { } since ? Math.Max(0, (now - since).TotalSeconds) : 0;
+            var state = p.Blocked ? ConsumerState.Blocked
+                : lagSeconds <= LagThreshold.TotalSeconds ? ConsumerState.Current
+                : ConsumerState.Behind;
+            long? lagPositions = p.Head is { } head ? Math.Max(0, head - p.Checkpoint) : null;
+            result.Add(new ConsumerStatus(consumer.Name, consumer.IsReadModel, state, p.Checkpoint, lagPositions, lagSeconds));
+        }
+        return result.OrderBy(s => s.Name, StringComparer.Ordinal).ToList();
     }
 
     /// <summary>The registered consumer names, sorted (a snapshot).</summary>
@@ -72,14 +127,17 @@ public sealed class ConsumerEngine
     /// <summary>Runs the catch-up loop until <paramref name="ct"/> is cancelled: immediately
     /// on every committed event (in-process nudge) and on a slow tick fallback (covers
     /// restarts and missed nudges). Returns the background task; do not await it to
-    /// completion except as part of shutdown.</summary>
+    /// completion except as part of shutdown; <see cref="StopAsync"/> is the orderly way to end it,
+    /// and cancelling <paramref name="ct"/> the abrupt one.</summary>
     public Task StartAsync(CancellationToken ct)
     {
         _source.Subscribe(_ => _nudge.Writer.TryWrite(0));
+        _hardStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        ct = _hardStop.Token;
 
-        return Task.Run(async () =>
+        return _loop = Task.Run(async () =>
         {
-            while (!ct.IsCancellationRequested)
+            while (!ct.IsCancellationRequested && !_stopRequested)
             {
                 try
                 {
@@ -115,6 +173,48 @@ public sealed class ConsumerEngine
         }, ct);
     }
 
+    /// <summary>Stops the engine in order (health/telemetry machine 1, draining): no new pass begins,
+    /// and each consumer finishes the event it is applying, saves that checkpoint, and stops, so a
+    /// restart resumes from the next event. It does not catch up first: that is what the restart
+    /// is for. Returns true once every consumer has stopped. If <paramref name="deadline"/> passes
+    /// first it cancels them mid-event (each event is applied at least once, so the interrupted
+    /// one is redone on restart) and returns false. Returns true at once if the engine never
+    /// started. After this the engine does not run again.</summary>
+    public async Task<bool> StopAsync(TimeSpan deadline)
+    {
+        _stopRequested = true;
+        _nudge.Writer.TryWrite(0);
+        if (_loop is not { } loop)
+            return true;
+
+        var graceful = true;
+        try
+        {
+            await loop.WaitAsync(deadline > TimeSpan.Zero ? deadline : TimeSpan.Zero);
+        }
+        catch (TimeoutException)
+        {
+            graceful = false;
+            _log($"drain deadline of {deadline.TotalSeconds:0.###}s reached: cancelling consumers mid-event");
+            _hardStop?.Cancel();
+            try
+            {
+                // A consumer that ignores cancellation cannot be stopped from here; do not hang on it.
+                await loop.WaitAsync(TimeSpan.FromSeconds(1));
+            }
+            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+            {
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The token given to StartAsync was cancelled first: already stopped, abruptly.
+        }
+        _hardStop?.Dispose();
+        _hardStop = null;
+        return graceful;
+    }
+
     /// <summary>Applies every pending event to every consumer until caught up. A failing
     /// consumer stops at the failing event and retries next pass; other consumers are
     /// unaffected. The consumer set is snapshotted first, so a Register/Unregister swap
@@ -127,22 +227,40 @@ public sealed class ConsumerEngine
         lock (_consumersLock)
             snapshot = [.. _consumers];
 
+        // Read once per pass, for each consumer's lag in positions. A failure here is the store
+        // being unreachable, which every consumer is about to report as blocked anyway.
+        long? head = null;
+        try
+        {
+            head = await _source.HeadPositionAsync(ct);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+        }
+
         List<Exception>? errors = null;
         foreach (var (consumer, checkpoints) in snapshot)
         {
-            if (await RunOnceForAsync(consumer, checkpoints, ct) is { } blocked)
+            if (_stopRequested)
+                break;
+            if (await RunOnceForAsync(consumer, checkpoints, head, ct) is { } blocked)
                 (errors ??= []).Add(blocked);
         }
         if (errors is { Count: > 0 })
             throw new AggregateException(errors);
     }
 
-    /// <summary>Catches one consumer up. Returns null when it caught up, or the (already
-    /// logged) failure that blocked it; cancellation propagates.</summary>
-    private async Task<Exception?> RunOnceForAsync(IConsumer consumer, ICheckpointStore checkpoints, CancellationToken ct)
+    /// <summary>Catches one consumer up, recording its progress for <see cref="Status"/> as it
+    /// goes. Returns null when it caught up, or the (already logged) failure that blocked it;
+    /// cancellation propagates.</summary>
+    private async Task<Exception?> RunOnceForAsync(IConsumer consumer, ICheckpointStore checkpoints, long? head, CancellationToken ct)
     {
         long pos = 0;
         Event? current = null;
+        _progress.TryGetValue(consumer.Name, out var before);
+        // A blocked consumer stays blocked while it retries, until an event applies.
+        var blocked = before?.Blocked ?? false;
+        var pendingSince = before?.PendingSince;
         try
         {
             pos = await checkpoints.CheckpointAsync(consumer.Name, ct);
@@ -153,12 +271,23 @@ public sealed class ConsumerEngine
                 foreach (var ev in batch)
                 {
                     current = ev;
+                    // The event about to be applied is the oldest one not yet applied.
+                    pendingSince = CreatedAt(ev);
+                    _progress[consumer.Name] = new Progress(pos, head, pendingSince, blocked);
                     await consumer.ApplyAsync(ev, ct);
                     await checkpoints.SaveCheckpointAsync(consumer.Name, ev.Position, ct);
                     pos = ev.Position;
                     current = null;
+                    blocked = false;
+                    if (_stopRequested)
+                    {
+                        // Draining: the event in hand is applied and checkpointed; leave the rest.
+                        _progress[consumer.Name] = new Progress(pos, head, pendingSince, false);
+                        return null;
+                    }
                 }
             }
+            _progress[consumer.Name] = new Progress(pos, head, null, false);
             return null;
         }
         catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
@@ -175,10 +304,24 @@ public sealed class ConsumerEngine
                 ? $"position={pos} (reading checkpoint or polling after it)"
                 : $"position={current.Position} event={current.Id} type={current.Type} stream={current.Aggregate}/{current.AggregateId}";
             _log($"consumer blocked, will retry: consumer={consumer.Name} {at} error={ex}");
+            _progress[consumer.Name] = new Progress(pos, head, pendingSince ?? _time.GetUtcNow(), true);
             var where = current is null ? $"after position {pos}" : $"at position {current.Position}";
             return new InvalidOperationException($"consumer {consumer.Name} blocked {where}: {ex.Message}", ex);
         }
     }
 
+    /// <summary>When <paramref name="ev"/> was committed. A timestamp that does not parse (a
+    /// third-party store's own format) counts from now, so its lag still grows while it waits.</summary>
+    private DateTimeOffset CreatedAt(Event ev) =>
+        DateTimeOffset.TryParse(ev.Created, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var at)
+            ? at
+            : _time.GetUtcNow();
+
     private sealed record Registration(IConsumer Consumer, ICheckpointStore Checkpoints);
+
+    /// <summary>A consumer's progress as of its latest pass: its checkpoint, the log head that
+    /// pass saw, when the oldest event it has not applied was committed (null: caught up), and
+    /// whether it is blocked.</summary>
+    private sealed record Progress(long Checkpoint, long? Head, DateTimeOffset? PendingSince, bool Blocked);
 }

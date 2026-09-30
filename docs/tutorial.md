@@ -390,6 +390,93 @@ The log line also names the node: `instance` is the project name unless
 `CQRS_INSTANCE` sets another (same format as the id), and `host` is the
 hostname, or `unknown` if it can't be read.
 
+Every host also binds an **ops port** first, before it reads any other setting, so an
+orchestrator gets an answer while the node boots: `CQRS_OPS_PORT` (default `10056`),
+serving `GET /healthz` with the same identity (its fields are `null` until identity is
+resolved). It is separate from the traffic port and unauthenticated, so keep it off any
+ingress. `CQRS_OPS_BIND` sets the address it binds (default every interface;
+`127.0.0.1` keeps it local). Several hosts on one machine must each set their own port; a host that can't bind it
+refuses to start.
+
+`GET /readyz` on the same port says whether to route traffic here: `503` with reason
+`starting` while booting, `503` `catching_up` once the traffic port listens and the
+projections are catching up, then `200` `ready` when every read model is within
+`DOTNETCQRS_LAG_THRESHOLD_SECONDS` (default `5`). A projection that later falls behind or
+blocks shows up as `projection_behind` / `projection_blocked`; on this host, the writer, that
+is `200` `degraded` rather than `503`, so the only write authority never leaves the pool. For
+the same reason a writer still catching up after `DOTNETCQRS_CATCHUP_DEADLINE_SECONDS`
+(default `60`) serves anyway.
+
+`/readyz` also lists the host's required dependencies under `checks.dependencies`: the event
+store, and the key-management facade when the domain has personal data. Each is checked every
+`DOTNETCQRS_DEPENDENCY_CHECK_SECONDS` (default `5`) and counts as down after
+`DOTNETCQRS_DEPENDENCY_FAILURES` (default `3`) failures in a row. The event store down is
+`event_store_unavailable`; the key service down is `dependency_unavailable`. On this host, the
+writer, both are `degraded` rather than `503`.
+
+A host can also **push** its metrics to a message bus, so a monitor on the bus sees a mixed estate
+without scraping every node. Set `CQRS_TELEMETRY_URL` to the bus's address (`nats://host:4222`; the
+scheme selects the transport, NATS being the one this host ships, and unset means no push) and,
+optionally, `CQRS_TELEMETRY_INTERVAL` (seconds, default `15`). Each snapshot is JSON, the same
+figures `/metrics` returns, published to the subject `cqrs.telemetry.metrics.<node_id>`: once the
+node is up, then on the interval, and once more as draining begins. It is best-effort and never a
+dependency: a snapshot the bus cannot take within a second is dropped, never queued, and an
+unreachable bus changes nothing in `/healthz` or `/readyz`. A bad setting, or a scheme with no
+transport, refuses to start. The NATS client lives in `DotnetCqrs.Telemetry.Nats`, so a host that
+does not push carries no bus client.
+
+On `SIGTERM` or Ctrl+C the host **drains** rather than just stopping: `/readyz` goes `503`
+`draining` first, so whatever routes to this node stops, then in-flight requests finish, then
+each consumer finishes the event it is applying and stops (the next start resumes from the next
+event; it does not catch up first). The ops port keeps answering until the process exits.
+`DOTNETCQRS_DRAIN_DEADLINE_SECONDS` (default `30`) bounds all of it; past that the consumers
+are cancelled mid-event, which the next start redoes, and the log says so.
+
+`GET /metrics` on the same port serves the contract's `cqrs_` series in the Prometheus text
+format, every one present from the first scrape: identity, readiness, commands by outcome
+(`accepted`, `rejected`, `conflict`, `unavailable`, `error`) with a duration histogram, events
+appended, each consumer's lag and state, and the dead-letter depth.
+
+A writer also keeps a **heartbeat**: one row beside the event log
+(`writer_heartbeat`, never an event), upserted every `DOTNETCQRS_HEARTBEAT_INTERVAL_SECONDS`
+(default `1`) with its node id and `CQRS_OPS_URL` (the ops port's address as other nodes reach it,
+default `http://<hostname>:<ops port>`, or the `CQRS_OPS_BIND` address when that names one). A read
+replica measures its lag from that row's age; once
+it is older than `DOTNETCQRS_STALE_THRESHOLD_SECONDS` (default `5`) the replica asks the writer's
+`/healthz` whether the writer is up (`ReplicationMonitor` in `DotnetCqrs.Host`).
+
+### Running a reader
+
+The same generated host runs as a **reader** with `DOTNETCQRS_ROLE=reader` (the default is
+`writer`; anything else refuses to start). One writer and any number of readers make the
+single-writer/multi-reader topology:
+
+- **The event log is the writer's.** On SQLite the reader opens `DOTNETCQRS_EVENTS_PATH` read-only:
+  the writer's `events.db` as it reaches this host, typically inside a LiteFS mount (see
+  [cross-host replication](cross-host-replication.md); a writer can set the same variable to put its
+  own `events.db` inside the mount). The file must already exist. On Postgres it reads
+  `DOTNETCQRS_POSTGRES`, the writer's database.
+- **Everything else is the reader's own**, in SQLite under its `data/` whichever backend the log is
+  on: its read models, search indexes, and its consumers' checkpoints and dead letters
+  (`checkpoints.db`). It runs every projection and search index, so its query routes answer from
+  local data.
+- **Side effects happen once, on the writer.** A reader runs no reactors and never destroys a
+  key; it still empties its own reveal cache when a subject is erased.
+- **Commands go to the writer.** With `DOTNETCQRS_WRITER_URL` (the writer's traffic port) a reader
+  forwards each command there, where it is decided and counted; a writer that can't be reached
+  gives `502`, one that times out `504`. Without it every command is refused with `503`, counted
+  on the reader as `unavailable`.
+- **Health.** `/healthz` and `/readyz` say `role: reader`. The reader measures the writer's
+  heartbeat (`replication_stale`, `replication_unknown`), requires the writer as a dependency
+  (`writer` in `dependencies`, found through the heartbeat's `CQRS_OPS_URL`), and does not serve
+  until its read models have caught up, however long that takes.
+
+```sh
+# the reader, beside a writer whose traffic port is writer-host:8080
+DOTNETCQRS_ROLE=reader DOTNETCQRS_EVENTS_PATH=/litefs/events.db \
+  DOTNETCQRS_WRITER_URL=http://writer-host:8080 dotnet run
+```
+
 ## Checking a document's own scenarios automatically
 
 You don't have to write demo code like the above by hand to check a

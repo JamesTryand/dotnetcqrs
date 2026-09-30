@@ -3,7 +3,7 @@ using DotnetCqrs.Host;
 namespace DotnetCqrs.Tests;
 
 /// <summary>
-/// The node-identity contract (<c>platform/cqrs-runtime-contract/contracts/node-identity.md</c>,
+/// The node-identity contract (<c>lab/cqrs-system-contracts/contracts/node-identity.md</c>,
 /// 1.0). <see cref="Every_combination_of_inputs_resolves_as_the_contract_table_says"/> runs all
 /// 24 input combinations against the contract's seven-row resolution table, copied below; the
 /// rest check the same behaviour against a real directory, including what the file looks like

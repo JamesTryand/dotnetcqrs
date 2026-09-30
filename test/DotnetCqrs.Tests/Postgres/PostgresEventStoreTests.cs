@@ -118,4 +118,30 @@ public class PostgresEventStoreTests(PostgresFixture fx)
         // every one, in ascending order, with no gap and no duplicate.
         Assert.Equal(Enumerable.Range(1, writers).Select(n => (long)n), seenPositions);
     }
+
+    [SkippableFact]
+    public async Task Heartbeat_is_one_row_whose_sequence_advances()
+    {
+        Skip.IfNot(fx.Available, fx.SkipReason);
+        await using var store = await OpenAsync();
+        Assert.Null(await store.ReadHeartbeatAsync());
+        var at = new DateTimeOffset(2026, 9, 29, 12, 0, 0, TimeSpan.Zero);
+
+        await store.WriteHeartbeatAsync("writer-1", "http://writer:10056", at);
+        await store.WriteHeartbeatAsync("writer-1", "http://writer:10056", at.AddSeconds(1));
+
+        Assert.Equal(new WriterHeartbeat("writer-1", "http://writer:10056", "2026-09-29T12:00:01.000Z", 2), await store.ReadHeartbeatAsync());
+    }
+
+    [SkippableFact]
+    public async Task HeadPosition_is_the_newest_position_and_0_for_an_empty_log()
+    {
+        Skip.IfNot(fx.Available, fx.SkipReason);
+        await using var store = await OpenAsync();
+        Assert.Equal(0, await store.HeadPositionAsync());
+
+        var appended = await store.AppendAsync("task", "t1", 0, [new NewEvent("TaskCreated", "{}"), new NewEvent("TaskCompleted", "{}")]);
+
+        Assert.Equal(appended[1].Position, await store.HeadPositionAsync());
+    }
 }

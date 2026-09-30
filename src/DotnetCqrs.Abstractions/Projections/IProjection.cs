@@ -14,4 +14,7 @@ public interface IProjection : IConsumer
     /// wipes, and a future write-guard (see the concepts doc) would protect from
     /// direct writes.</summary>
     IReadOnlyList<string> Tables { get; }
+
+    /// <summary>A projection is a read model: its lag counts toward readiness.</summary>
+    bool IConsumer.IsReadModel => true;
 }

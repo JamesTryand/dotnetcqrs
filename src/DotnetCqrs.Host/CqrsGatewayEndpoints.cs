@@ -88,10 +88,19 @@ public static class CqrsGatewayEndpoints
             {
                 if (forward is not null)
                 {
+                    // Counted and timed only on the writer that decides it (contract section 6.5).
                     await forward(httpContext);
                     return Results.Empty;
                 }
-                return await HandleAsync(aggregate, aggregateId, command, request, httpContext, registry, resolveActor, authorize, ct);
+                // Command outcomes (health/telemetry contract section 7), when the host registered
+                // a NodeMetrics; without one nothing is recorded.
+                var metrics = httpContext.RequestServices.GetService<NodeMetrics>();
+                var started = System.Diagnostics.Stopwatch.GetTimestamp();
+                var result = await HandleAsync(aggregate, aggregateId, command, request, httpContext, registry, resolveActor, authorize, ct);
+                metrics?.RecordCommand(
+                    (result as IStatusCodeHttpResult)?.StatusCode ?? StatusCodes.Status200OK,
+                    System.Diagnostics.Stopwatch.GetElapsedTime(started));
+                return result;
             });
     }
 
@@ -151,6 +160,22 @@ public static class CqrsGatewayEndpoints
         httpContext.Response.StatusCode = (int)response.StatusCode;
         httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "application/json";
         await response.Content.CopyToAsync(httpContext.Response.Body, httpContext.RequestAborted);
+    };
+
+    /// <summary>A <see cref="MapCqrsGateway"/> <c>forward</c> for a reader with no writer to
+    /// forward to: every command is refused with <c>503</c> and a problem body, decided by nothing
+    /// and appended to nothing (this node's event log is a read-only replica). Health/telemetry
+    /// contract section 7 counts it as <c>unavailable</c> ("read-only node without forwarding"); no
+    /// writer ever sees it, so unlike a forwarded command it is counted here, when the host
+    /// registered a <see cref="NodeMetrics"/>.</summary>
+    public static readonly RequestDelegate RefuseReadOnly = async httpContext =>
+    {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        await Results.Problem("this node is a read-only reader with no writer configured to forward commands to; " +
+            "send commands to the writer", statusCode: StatusCodes.Status503ServiceUnavailable, title: "read-only node")
+            .ExecuteAsync(httpContext);
+        httpContext.RequestServices.GetService<NodeMetrics>()?.RecordCommand(
+            StatusCodes.Status503ServiceUnavailable, System.Diagnostics.Stopwatch.GetElapsedTime(started));
     };
 
     /// <summary>Checks well-known claim types rather than assuming one identity

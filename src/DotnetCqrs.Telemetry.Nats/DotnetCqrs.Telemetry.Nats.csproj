@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackageId>JamesTryand.DotnetCqrs.Telemetry.Nats</PackageId>
+    <Description>NATS transport for dotnetcqrs's optional telemetry push (health/telemetry contract, section 8): publishes each node's metrics snapshot to subject cqrs.telemetry.metrics.&lt;node_id&gt;.</Description>
+  </PropertyGroup>
+
+  <!-- NATS.Net is the only PackageReference, kept out of DotnetCqrs.Host so a host that does not push
+       telemetry carries no bus client: the same split as DotnetCqrs.Postgres and Npgsql. -->
+  <ItemGroup>
+    <PackageReference Include="NATS.Net" Version="3.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DotnetCqrs.Host\DotnetCqrs.Host.csproj" />
+  </ItemGroup>
+
+</Project>
