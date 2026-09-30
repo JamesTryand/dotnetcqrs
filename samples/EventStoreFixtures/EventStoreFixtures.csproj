@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DotnetCqrs\DotnetCqrs.csproj" />
+    <ProjectReference Include="..\..\src\DotnetCqrs.Crypto\DotnetCqrs.Crypto.csproj" />
+    <ProjectReference Include="..\..\src\DotnetCqrs.Postgres\DotnetCqrs.Postgres.csproj" />
+    <ProjectReference Include="..\OrderFulfillment\OrderFulfillment.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+</Project>
