@@ -37,6 +37,15 @@ path that happens to live inside a LiteFS FUSE mount:
   `tasks` projection, `CqrsGatewayEndpoints.ForwardTo` proxying writes back to the
   primary over HTTP) is identical to Milestone 1/2's same-host code.
 
+A **generated host** does the same without hand-written code: run it with `DOTNETCQRS_ROLE=reader`,
+`DOTNETCQRS_EVENTS_PATH=/litefs/events.db` and `DOTNETCQRS_WRITER_URL` pointing at the writer (see
+the tutorial's "Running a reader"). It keeps its own read models and checkpoints outside the mount,
+forwards commands, and reports its replication from the writer heartbeat that LiteFS carries along
+with the log. Verified 2026-09-30 on `m5`: a generated writer and reader on two LiteFS mounts (LiteFS
+0.5.14), the reader ready at 0.26s lag with `writer` up, a command forwarded and counted only on the
+writer, the health/telemetry probe passing against the reader, and, with the writer stopped, the
+reader `degraded` (`replication_stale`, `dependency_unavailable`) and a command answered `502`.
+
 `ops/litefs/` stands the pair up as two Docker containers (see `docker-compose.yml`)
 on one Docker host; `ops/litefs/two-host/` runs the same two images on two separate
 machines (primary on host A, secondary on host B). Both were run on 2026-08-28 (see

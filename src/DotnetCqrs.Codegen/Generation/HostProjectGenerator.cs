@@ -206,7 +206,47 @@ public static class HostProjectGenerator
         b.AppendLine("// files under data/. The generated code is the same either way.");
         b.AppendLine("var postgres = Environment.GetEnvironmentVariable(\"DOTNETCQRS_POSTGRES\") is { Length: > 0 } configuredPostgres ? configuredPostgres : null;");
         b.AppendLine("var dataDir = Path.Combine(AppContext.BaseDirectory, \"data\");");
-        b.AppendLine("if (postgres is null) Directory.CreateDirectory(dataDir);");
+        b.AppendLine();
+        // The single-writer/multi-reader topology (dotnetcqrs-multi-node; the health/telemetry
+        // contract's writer and reader roles). One generated host runs as either: a reader reads
+        // the writer's event log read-only, keeps everything else node-local, runs no side
+        // effects, and forwards or refuses commands.
+        b.AppendLine("// DOTNETCQRS_ROLE: writer (the default) or reader. A reader serves reads from the writer's event");
+        b.AppendLine("// log: on SQLite, the file at DOTNETCQRS_EVENTS_PATH as replicated to this host (e.g. inside a");
+        b.AppendLine("// LiteFS mount), opened read-only; on Postgres, DOTNETCQRS_POSTGRES. Its read models, search");
+        b.AppendLine("// indexes and consumer checkpoints are its own, in SQLite under data/, whichever backend the log");
+        b.AppendLine("// is on. It runs projections but no reactors or key destruction (those happen once, on the");
+        b.AppendLine("// writer), and it forwards commands to DOTNETCQRS_WRITER_URL, or refuses them (503) when unset.");
+        b.AppendLine("var role = Environment.GetEnvironmentVariable(\"DOTNETCQRS_ROLE\") is { Length: > 0 } configuredRole ? configuredRole : \"writer\";");
+        b.AppendLine("if (role is not (\"writer\" or \"reader\"))");
+        b.AppendLine("{");
+        b.AppendLine("    Console.Error.WriteLine($\"DOTNETCQRS_ROLE must be writer or reader, not '{role}'.\");");
+        b.AppendLine("    return 1;");
+        b.AppendLine("}");
+        b.AppendLine("var isReader = role == \"reader\";");
+        b.AppendLine("// The event log, read models and search indexes share Postgres only on the writer.");
+        b.AppendLine("var sharedStores = postgres is not null && !isReader;");
+        b.AppendLine("if (!sharedStores) Directory.CreateDirectory(dataDir);");
+        b.AppendLine("// DOTNETCQRS_EVENTS_PATH (SQLite only): where events.db is, default data/events.db.");
+        b.AppendLine("var eventsPath = Environment.GetEnvironmentVariable(\"DOTNETCQRS_EVENTS_PATH\") is { Length: > 0 } configuredEventsPath");
+        b.AppendLine("    ? configuredEventsPath : Path.Combine(dataDir, \"events.db\");");
+        b.AppendLine("if (isReader && postgres is null && !File.Exists(eventsPath))");
+        b.AppendLine("{");
+        b.AppendLine("    Console.Error.WriteLine($\"A reader reads the writer's event log, and there is none at {eventsPath} (DOTNETCQRS_EVENTS_PATH).\");");
+        b.AppendLine("    return 1;");
+        b.AppendLine("}");
+        b.AppendLine("Uri? writerUrl = null;");
+        b.AppendLine("if (Environment.GetEnvironmentVariable(\"DOTNETCQRS_WRITER_URL\") is { Length: > 0 } configuredWriterUrl)");
+        b.AppendLine("{");
+        b.AppendLine("    if (!isReader || !Uri.TryCreate(configuredWriterUrl.TrimEnd('/') + \"/\", UriKind.Absolute, out writerUrl)");
+        b.AppendLine("        || writerUrl.Scheme is not (\"http\" or \"https\"))");
+        b.AppendLine("    {");
+        b.AppendLine("        Console.Error.WriteLine(isReader");
+        b.AppendLine("            ? $\"DOTNETCQRS_WRITER_URL '{configuredWriterUrl}' is not an http or https base URL (the writer's traffic port).\"");
+        b.AppendLine("            : \"DOTNETCQRS_WRITER_URL is only for a reader (DOTNETCQRS_ROLE=reader).\");");
+        b.AppendLine("        return 1;");
+        b.AppendLine("    }");
+        b.AppendLine("}");
         b.AppendLine();
         if (hasPii)
         {
@@ -226,14 +266,14 @@ public static class HostProjectGenerator
         }
         // Node identity (the cross-stack node-identity contract), resolved before anything opens
         // so an invalid CQRS_NODE_ID fails like any other bad setting. The project name is the
-        // instance; this host only ever opens a writable store, so its role is always writer.
+        // instance; the role is DOTNETCQRS_ROLE's.
         b.AppendLine("// Node identity: CQRS_NODE_ID if set, else the node-id file in CQRS_STATE_DIR (node-local, never");
         b.AppendLine("// data/ or anything replicated), else a new id -- ephemeral, with a warning, if there is nowhere");
         b.AppendLine("// to keep it. An invalid CQRS_NODE_ID refuses to start.");
         b.AppendLine("NodeIdentity nodeIdentity;");
         b.AppendLine("try");
         b.AppendLine("{");
-        b.AppendLine($"    nodeIdentity = NodeIdentity.FromEnvironment(\"{projectName}\", \"writer\", Console.WriteLine, Console.Error.WriteLine);");
+        b.AppendLine($"    nodeIdentity = NodeIdentity.FromEnvironment(\"{projectName}\", role, Console.WriteLine, Console.Error.WriteLine);");
         b.AppendLine("}");
         b.AppendLine("catch (InvalidIdentitySettingException ex)");
         b.AppendLine("{");
@@ -245,7 +285,9 @@ public static class HostProjectGenerator
         b.AppendLine();
         b.AppendLine("// Readiness thresholds, in seconds: DOTNETCQRS_LAG_THRESHOLD_SECONDS (how far behind a read model");
         b.AppendLine("// may be and still count as current, default 5) and DOTNETCQRS_CATCHUP_DEADLINE_SECONDS (how");
-        b.AppendLine("// long the initial catch-up may take before this writer serves anyway, default 60).");
+        b.AppendLine("// long the initial catch-up may take before a writer serves anyway, default 60; a reader keeps");
+        b.AppendLine("// catching up), and DOTNETCQRS_HEARTBEAT_INTERVAL_SECONDS / DOTNETCQRS_STALE_THRESHOLD_SECONDS for");
+        b.AppendLine("// the writer heartbeat a reader measures its replication by (1 and 5).");
         b.AppendLine("ReadinessSettings readiness;");
         b.AppendLine("try");
         b.AppendLine("{");
@@ -300,14 +342,19 @@ public static class HostProjectGenerator
         b.AppendLine();
         b.AppendLine("IEventStore eventStore = postgres is not null");
         b.AppendLine("    ? await PostgresEventStore.OpenAsync(postgres)");
-        b.AppendLine("    : await SqliteEventStore.OpenAsync(Path.Combine(dataDir, \"events.db\"));");
+        b.AppendLine("    : isReader ? await SqliteEventStore.OpenReadOnlyAsync(eventsPath) : await SqliteEventStore.OpenAsync(eventsPath);");
+        // A read-only replica can't hold checkpoints, and a shared Postgres log would mix a
+        // reader's checkpoints with the writer's under the same consumer names.
+        b.AppendLine("// Where the consumers keep their checkpoints and dead letters: beside the log on a writer; on a");
+        b.AppendLine("// reader, whose log is the writer's, a node-local data/checkpoints.db.");
+        b.AppendLine("IEventStore consumerState = isReader ? await SqliteEventStore.OpenAsync(Path.Combine(dataDir, \"checkpoints.db\")) : eventStore;");
         // /metrics: every committed event counts toward cqrs_events_appended_total, and the
         // dead-letter depth is read on each scrape (reads only; the ops port never writes).
         b.AppendLine("eventStore.Subscribe(_ => health.Metrics.EventAppended());");
-        b.AppendLine("if (eventStore is IDeadLetterStore deadLetters)");
+        b.AppendLine("if (consumerState is IDeadLetterStore deadLetters)");
         b.AppendLine("    health.Metrics.SetDeadLetterDepth(async ct => (await deadLetters.ListDeadLettersAsync(ct: ct)).Count);");
-        b.AppendLine("IReadModelStore readModelDb = postgres is not null");
-        b.AppendLine("    ? await PostgresReadModelStore.OpenInSchemaAsync(postgres, \"read_models\")");
+        b.AppendLine("IReadModelStore readModelDb = sharedStores");
+        b.AppendLine("    ? await PostgresReadModelStore.OpenInSchemaAsync(postgres!, \"read_models\")");
         b.AppendLine("    : await SqliteReadModelStore.OpenAsync(Path.Combine(dataDir, \"readmodel.db\"));");
         // Registered as a service so minimal API's parameter-source inference recognises
         // an IReadModelStore parameter (every ReadModelQueryGenerator-emitted route takes
@@ -374,21 +421,28 @@ public static class HostProjectGenerator
         // engine's default logger discards that, so a stuck projection or reactor would be
         // invisible. The app's ILogger doesn't exist until builder.Build() below, so stderr.
         // Each line names the consumer and the event position it is stuck on.
-        b.AppendLine("var engine = new ConsumerEngine(eventStore, eventStore, logger: Console.Error.WriteLine)");
+        b.AppendLine("var engine = new ConsumerEngine(eventStore, consumerState, logger: Console.Error.WriteLine)");
         b.AppendLine("{");
         b.AppendLine("    LagThreshold = readiness.LagThreshold,");
         b.AppendLine("};");
         foreach (var v in projectionVars)
             b.AppendLine($"engine.Register({v});");
-        foreach (var domain in mapped.Domains)
+        var reactors = mapped.Domains.SelectMany(d => d.Reactors).ToList();
+        if (reactors.Count > 0)
         {
-            foreach (var reactor in domain.Reactors)
+            // A reaction dispatches a command: once, on the writer. On a reader it could only be
+            // forwarded back there, so each reaction would run once per node.
+            b.AppendLine("// Reactors dispatch commands, so they run on the writer only.");
+            b.AppendLine("if (!isReader)");
+            b.AppendLine("{");
+            foreach (var reactor in reactors)
             {
                 var typeName = GenerationSupport.ExportName(reactor.Name) + "Reactor";
                 // Dispatched and dropped reactions go to stdout, so a rejected reaction is
                 // visible rather than silently discarded.
-                b.AppendLine($"engine.Register(new ReactorConsumer(new {typeName}(), registry, Console.WriteLine));");
+                b.AppendLine($"    engine.Register(new ReactorConsumer(new {typeName}(), registry, Console.WriteLine));");
             }
+            b.AppendLine("}");
         }
         var searchIndexed = mapped.Domains
             .SelectMany(d => d.ReadModels.Where(rm => GenerationSupport.IndexedMatchFilters(rm).Any()).Select(rm => (Domain: d, ReadModel: rm)))
@@ -408,9 +462,9 @@ public static class HostProjectGenerator
             b.AppendLine("// only a pg_dump needs --exclude-schema=search). It is rebuilt from the event log whenever");
             b.AppendLine("// it is missing.");
             b.AppendLine("ISearchIndexStore searchStore;");
-            b.AppendLine("if (postgres is not null)");
+            b.AppendLine("if (sharedStores)");
             b.AppendLine("{");
-            b.AppendLine("    searchStore = await PostgresSearchIndexStore.OpenAsync(postgres);");
+            b.AppendLine("    searchStore = await PostgresSearchIndexStore.OpenAsync(postgres!);");
             b.AppendLine("}");
             b.AppendLine("else");
             b.AppendLine("{");
@@ -474,8 +528,9 @@ public static class HostProjectGenerator
             // cache (in-memory checkpoint, seeded from the destroyer's; see
             // RegisterPiiCacheEvictorAsync). The seed is read once, here, before the engine
             // starts; any position at or behind the destroyer's is safe.
-            b.AppendLine("engine.Register(new SubjectKeyDestroyer(kms));");
-            b.AppendLine("await engine.RegisterPiiCacheEvictorAsync(piiCache, eventStore);");
+            // Destroying a key is the writer's; every node empties its own reveal cache.
+            b.AppendLine("if (!isReader) engine.Register(new SubjectKeyDestroyer(kms));");
+            b.AppendLine("await engine.RegisterPiiCacheEvictorAsync(piiCache, consumerState);");
         }
         b.AppendLine();
 
@@ -488,6 +543,20 @@ public static class HostProjectGenerator
         b.AppendLine("dependencies.Add(DependencyMonitor.EventStore, async ct => await eventStore.HeadPositionAsync(ct));");
         if (hasPii)
             b.AppendLine("dependencies.Add(DependencyMonitor.Kms, async ct => await kms.ListErasuresAsync(0, 1, ct));");
+        // Health/telemetry section 5 and machine 4: a reader measures its replication by the age
+        // of the writer's heartbeat row, and the writer (found through that row) is a required
+        // dependency of every reader.
+        b.AppendLine("// A reader: replication freshness from the writer heartbeat's age (stale past");
+        b.AppendLine("// DOTNETCQRS_STALE_THRESHOLD_SECONDS, then split by whether the writer's /healthz answers), and");
+        b.AppendLine("// the writer as a required dependency.");
+        b.AppendLine("ReplicationMonitor? replication = null;");
+        b.AppendLine("if (isReader && eventStore is IHeartbeatStore replicatedHeartbeat)");
+        b.AppendLine("{");
+        b.AppendLine("    replication = new ReplicationMonitor(replicatedHeartbeat, new HttpClient { Timeout = TimeSpan.FromSeconds(2) }, readiness.StaleThreshold);");
+        b.AppendLine("    health.SetReplication(() => replication.Current);");
+        b.AppendLine("    dependencies.Add(DependencyMonitor.Writer, replication.CheckWriterAsync);");
+        b.AppendLine("    await replication.MeasureAsync();");
+        b.AppendLine("}");
         b.AppendLine("health.SetDependencies(dependencies);");
         b.AppendLine("await dependencies.CheckAllAsync();");
         b.AppendLine();
@@ -508,10 +577,11 @@ public static class HostProjectGenerator
         b.AppendLine("_ = dependencies.RunAsync(readiness.DependencyCheckInterval, app.Lifetime.ApplicationStopping);");
         b.AppendLine("_ = engine.StartAsync(CancellationToken.None);");
         b.AppendLine("telemetry?.Start();");
-        // Health/telemetry section 5: this host is the writer, so it heartbeats for readers.
+        // Health/telemetry section 5: the writer heartbeats for readers; a reader measures it.
         b.AppendLine("// The writer heartbeat (a row beside the event log, never an event): readers measure their");
         b.AppendLine("// replication lag from its age.");
-        b.AppendLine("if (eventStore is IHeartbeatStore heartbeatStore)");
+        b.AppendLine("_ = replication?.RunAsync(readiness.HeartbeatInterval, app.Lifetime.ApplicationStopping);");
+        b.AppendLine("if (!isReader && eventStore is IHeartbeatStore heartbeatStore)");
         b.AppendLine("    _ = WriterHeartbeatLoop.RunAsync(heartbeatStore, nodeIdentity.NodeId, opsUrl, readiness.HeartbeatInterval,");
         b.AppendLine("        Console.Error.WriteLine, ct: app.Lifetime.ApplicationStopping);");
         // Machine 1's BootCompleted: the traffic port is listening and the consumers run, so
@@ -528,7 +598,13 @@ public static class HostProjectGenerator
         // id, payload, readModelDb, resolveOwnRole, resolveOwnStaffId, ct)` -- closing
         // over this same file's own `readModelDb`, not a new route-handler parameter --
         // is the operator's own addition, the same way resolveActor already is.
-        b.AppendLine("app.MapCqrsGateway();");
+        b.AppendLine("// A reader decides nothing: it forwards each command to the writer, or refuses it (503).");
+        b.AppendLine("if (isReader)");
+        b.AppendLine("    app.MapCqrsGateway(forward: writerUrl is not null");
+        b.AppendLine("        ? CqrsGatewayEndpoints.ForwardTo(new HttpClient { BaseAddress = writerUrl })");
+        b.AppendLine("        : CqrsGatewayEndpoints.RefuseReadOnly);");
+        b.AppendLine("else");
+        b.AppendLine("    app.MapCqrsGateway();");
         // Each Map{Model}Route() below (ReadModelQueryGenerator) takes its own optional
         // `resolveOwnRole` for a read model declaring `requiredRole` (schema 2.7.0) --
         // same "left unset here, wired by the operator" posture as authorize/resolveActor

@@ -437,13 +437,45 @@ format, every one present from the first scrape: identity, readiness, commands b
 (`accepted`, `rejected`, `conflict`, `unavailable`, `error`) with a duration histogram, events
 appended, each consumer's lag and state, and the dead-letter depth.
 
-The host is the writer, so it also keeps a **heartbeat**: one row beside the event log
+A writer also keeps a **heartbeat**: one row beside the event log
 (`writer_heartbeat`, never an event), upserted every `DOTNETCQRS_HEARTBEAT_INTERVAL_SECONDS`
 (default `1`) with its node id and `CQRS_OPS_URL` (the ops port's address as other nodes reach it,
 default `http://<hostname>:<ops port>`, or the `CQRS_OPS_BIND` address when that names one). A read
 replica measures its lag from that row's age; once
 it is older than `DOTNETCQRS_STALE_THRESHOLD_SECONDS` (default `5`) the replica asks the writer's
 `/healthz` whether the writer is up (`ReplicationMonitor` in `DotnetCqrs.Host`).
+
+### Running a reader
+
+The same generated host runs as a **reader** with `DOTNETCQRS_ROLE=reader` (the default is
+`writer`; anything else refuses to start). One writer and any number of readers make the
+single-writer/multi-reader topology:
+
+- **The event log is the writer's.** On SQLite the reader opens `DOTNETCQRS_EVENTS_PATH` read-only:
+  the writer's `events.db` as it reaches this host, typically inside a LiteFS mount (see
+  [cross-host replication](cross-host-replication.md); a writer can set the same variable to put its
+  own `events.db` inside the mount). The file must already exist. On Postgres it reads
+  `DOTNETCQRS_POSTGRES`, the writer's database.
+- **Everything else is the reader's own**, in SQLite under its `data/` whichever backend the log is
+  on: its read models, search indexes, and its consumers' checkpoints and dead letters
+  (`checkpoints.db`). It runs every projection and search index, so its query routes answer from
+  local data.
+- **Side effects happen once, on the writer.** A reader runs no reactors and never destroys a
+  key; it still empties its own reveal cache when a subject is erased.
+- **Commands go to the writer.** With `DOTNETCQRS_WRITER_URL` (the writer's traffic port) a reader
+  forwards each command there, where it is decided and counted; a writer that can't be reached
+  gives `502`, one that times out `504`. Without it every command is refused with `503`, counted
+  on the reader as `unavailable`.
+- **Health.** `/healthz` and `/readyz` say `role: reader`. The reader measures the writer's
+  heartbeat (`replication_stale`, `replication_unknown`), requires the writer as a dependency
+  (`writer` in `dependencies`, found through the heartbeat's `CQRS_OPS_URL`), and does not serve
+  until its read models have caught up, however long that takes.
+
+```sh
+# the reader, beside a writer whose traffic port is writer-host:8080
+DOTNETCQRS_ROLE=reader DOTNETCQRS_EVENTS_PATH=/litefs/events.db \
+  DOTNETCQRS_WRITER_URL=http://writer-host:8080 dotnet run
+```
 
 ## Checking a document's own scenarios automatically
 

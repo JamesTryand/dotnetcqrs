@@ -153,8 +153,8 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             .Generate(doc, mapped, "OrderFulfillment", DotnetCqrsProjectPath(), overrides)
             .Single(f => f.Name == "Program.cs").Source;
 
-        Assert.Contains("new ConsumerEngine(eventStore, eventStore, logger: Console.Error.WriteLine)", program);
-        Assert.DoesNotContain("new ConsumerEngine(eventStore, eventStore);", program);
+        Assert.Contains("new ConsumerEngine(eventStore, consumerState, logger: Console.Error.WriteLine)", program);
+        Assert.DoesNotContain("new ConsumerEngine(eventStore, consumerState);", program);
         Assert.Contains("new ReactorConsumer(", program);
         Assert.DoesNotContain("(), registry));", program); // every ReactorConsumer gets a logger too
     }
@@ -170,7 +170,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             .Generate(doc, mapped, "OrderFulfillment", DotnetCqrsProjectPath(), overrides)
             .Single(f => f.Name == "Program.cs").Source;
 
-        var resolve = program.IndexOf("NodeIdentity.FromEnvironment(\"OrderFulfillment\", \"writer\"", StringComparison.Ordinal);
+        var resolve = program.IndexOf("NodeIdentity.FromEnvironment(\"OrderFulfillment\", role", StringComparison.Ordinal);
         Assert.True(resolve >= 0, program);
         Assert.True(resolve < program.IndexOf("SqliteEventStore.OpenAsync", StringComparison.Ordinal));
         Assert.Contains("catch (InvalidIdentitySettingException ex)", program);
@@ -392,6 +392,289 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
                 process.WaitForExit(5000);
             }
         }
+    }
+
+    [Fact(Timeout = 300000)]
+    public Task A_generated_reader_follows_the_writer_forwards_commands_and_reports_replication()
+        => RunWriterAndReaderAsync(postgres: null);
+
+    [SkippableFact(Timeout = 600000)]
+    public async Task A_generated_reader_follows_the_writer_forwards_commands_and_reports_replication_on_postgres()
+    {
+        Skip.IfNot(_pg.Available, _pg.SkipReason);
+        await RunWriterAndReaderAsync(await _pg.NewDatabaseAsync());
+    }
+
+    /// <summary>The single-writer/multi-reader topology from one generated host: a writer, and a
+    /// reader (<c>DOTNETCQRS_ROLE=reader</c>) on the same event log (the shared <c>events.db</c> a
+    /// same-host reader opens read-only, or the same Postgres database). Each runs from its own copy
+    /// of the build, as separate installs would, so each has its own <c>data/</c>.</summary>
+    private async Task RunWriterAndReaderAsync(string? postgres)
+    {
+        var (genExit, genOutput) = await RunAsync("dotnet",
+        [
+            await CliUnderTest.DllAsync(),
+            "generate",
+            "--input", TestDataPath("order-fulfillment.json"),
+            "--output", _scratchDir,
+            "--host",
+            "--dotnetcqrs-project", DotnetCqrsProjectPath(),
+            "--aggregate-override", "notify-shipping-partner=ShippingNotification",
+        ]);
+        Assert.True(genExit == 0, $"generate --host exited {genExit}:\n{genOutput}");
+        var (buildExit, buildOutput) = await RunAsync("dotnet", ["build", _scratchDir, "-v", "quiet"]);
+        var buildDir = Path.Combine(_scratchDir, "bin", "Debug", "net10.0");
+        Assert.True(buildExit == 0, $"generated host project did not compile:\n{buildOutput}");
+        var writerDir = Path.Combine(_scratchDir, "writer");
+        var readerDir = Path.Combine(_scratchDir, "reader");
+        CopyDirectory(buildDir, writerDir);
+        CopyDirectory(buildDir, readerDir);
+
+        await using var facade = await StandInKmsFacade.StartAsync();
+        var sharedEvents = Path.Combine(_scratchDir, "shared", "events.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(sharedEvents)!);
+
+        ProcessStartInfo Host(string dir, int port, int opsPort, string stateDir)
+        {
+            var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            psi.ArgumentList.Add(Path.Combine(dir, "OrderFulfillment.dll"));
+            psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+            psi.Environment["CQRS_OPS_PORT"] = opsPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            psi.Environment["CQRS_OPS_BIND"] = "127.0.0.1";
+            psi.Environment["CQRS_STATE_DIR"] = stateDir;
+            psi.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
+            psi.Environment["DOTNETCQRS_POSTGRES"] = postgres ?? "";
+            psi.Environment["DOTNETCQRS_EVENTS_PATH"] = sharedEvents;
+            psi.Environment["DOTNETCQRS_STALE_THRESHOLD_SECONDS"] = "2";
+            psi.Environment.Remove("CQRS_NODE_ID");
+            psi.Environment.Remove("DOTNETCQRS_ROLE");
+            psi.Environment.Remove("DOTNETCQRS_WRITER_URL");
+            return psi;
+        }
+
+        static async Task<(HttpStatusCode Code, JsonElement Body)> ReadyzAsync(HttpClient ops)
+        {
+            using var response = await ops.GetAsync("/readyz");
+            return (response.StatusCode, await response.Content.ReadFromJsonAsync<JsonElement>());
+        }
+
+        static async Task<JsonElement> EventuallyReadyzAsync(HttpClient ops, string what, Func<HttpStatusCode, JsonElement, bool> cond, Func<string> log)
+        {
+            (HttpStatusCode Code, JsonElement Body) last = default;
+            for (var attempt = 0; attempt < 60; attempt++)
+            {
+                try
+                {
+                    last = await ReadyzAsync(ops);
+                    if (cond(last.Code, last.Body)) return last.Body;
+                }
+                catch (HttpRequestException)
+                {
+                    // not listening yet
+                }
+                await Task.Delay(500);
+            }
+            Assert.Fail($"timed out waiting for {what}; last /readyz: {(int)last.Code} {last.Body}\n{log()}");
+            return default;
+        }
+
+        static string Reasons(JsonElement readyz) => string.Join(",", readyz.GetProperty("reasons").EnumerateArray().Select(r => r.GetString()));
+        static string? Dependency(JsonElement readyz, string name) =>
+            readyz.GetProperty("checks").GetProperty("dependencies").TryGetProperty(name, out var d) ? d.GetString() : null;
+
+        var (writerPort, writerOpsPort, readerPort, readerOpsPort) = (FreeTcpPort(), FreeTcpPort(), FreeTcpPort(), FreeTcpPort());
+        var writerLog = new System.Text.StringBuilder();
+        var readerLog = new System.Text.StringBuilder();
+        using var writer = StartHost(Host(writerDir, writerPort, writerOpsPort, Path.Combine(_scratchDir, "writer-state")), writerLog);
+        Process? reader = null;
+        try
+        {
+            using var writerOps = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{writerOpsPort}") };
+            await EventuallyReadyzAsync(writerOps, "the writer to be ready", (code, _) => code == HttpStatusCode.OK, () => Tail(writerLog));
+
+            // A reader with no writer to forward to, and a bad role, refuse to start or refuse commands.
+            var badRole = Host(readerDir, readerPort, readerOpsPort, Path.Combine(_scratchDir, "reader-state"));
+            badRole.Environment["DOTNETCQRS_ROLE"] = "secondary";
+            var (badRoleExit, badRoleOutput) = await RunToExitAsync(badRole);
+            Assert.Equal(1, badRoleExit);
+            Assert.Contains("DOTNETCQRS_ROLE must be writer or reader", badRoleOutput);
+
+            var readerPsi = Host(readerDir, readerPort, readerOpsPort, Path.Combine(_scratchDir, "reader-state"));
+            readerPsi.Environment["DOTNETCQRS_ROLE"] = "reader";
+            readerPsi.Environment["DOTNETCQRS_WRITER_URL"] = $"http://127.0.0.1:{writerPort}";
+            reader = StartHost(readerPsi, readerLog);
+            using var readerOps = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{readerOpsPort}") };
+            using var readerTraffic = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{readerPort}") };
+
+            // ---- Fresh: a ready reader, the writer a dependency
+            var fresh = await EventuallyReadyzAsync(readerOps, "the reader to be ready",
+                (code, body) => code == HttpStatusCode.OK && Dependency(body, "writer") == "up", () => Tail(readerLog));
+            Assert.Equal("reader", fresh.GetProperty("role").GetString());
+            Assert.Equal("", Reasons(fresh));
+            Assert.Equal("up", Dependency(fresh, "event_store"));
+            Assert.Equal("up", Dependency(fresh, "kms"));
+            var healthz = await readerOps.GetFromJsonAsync<JsonElement>("/healthz");
+            Assert.Equal("reader", healthz.GetProperty("role").GetString());
+            Assert.Contains("role=reader", Tail(readerLog));
+
+            // ---- A command sent to the reader is forwarded, decided and counted on the writer
+            using (var forwarded = await readerTraffic.PostAsJsonAsync("/api/cqrs/order/o7/PlaceOrder",
+                new { customerId = "11111111-1111-1111-1111-111111111111", items = new[] { new { sku = "widget", qty = 1 } } }))
+            {
+                Assert.True(forwarded.StatusCode == HttpStatusCode.OK, $"forwarded command: {(int)forwarded.StatusCode} {await forwarded.Content.ReadAsStringAsync()}\n{Tail(readerLog)}");
+            }
+            Assert.Contains("cqrs_commands_total{status=\"accepted\"} 1\n", await writerOps.GetStringAsync("/metrics"), StringComparison.Ordinal);
+            Assert.Contains("cqrs_commands_total{status=\"accepted\"} 0\n", await readerOps.GetStringAsync("/metrics"), StringComparison.Ordinal);
+
+            // ---- ...and the reader's own read model catches up with it
+            var seen = false;
+            for (var attempt = 0; attempt < 40 && !seen; attempt++)
+            {
+                using var query = await readerTraffic.GetAsync("/api/query/orderSummary?orderId=o7");
+                seen = query.IsSuccessStatusCode && (await query.Content.ReadFromJsonAsync<JsonElement>()).GetArrayLength() == 1;
+                if (!seen) await Task.Delay(500);
+            }
+            Assert.True(seen, $"the reader's orderSummary never showed o7\n{Tail(readerLog)}");
+
+            // ---- Side effects happen once, on the writer: its reactor shipped the order, the reader's did not run
+            var shipped = false;
+            for (var attempt = 0; attempt < 30 && !shipped; attempt++)
+            {
+                shipped = Tail(writerLog).Contains("reaction dispatched: reactor=", StringComparison.Ordinal);
+                if (!shipped) await Task.Delay(500);
+            }
+            Assert.True(shipped, $"the writer's reactor never dispatched\n{Tail(writerLog)}");
+            Assert.DoesNotContain("reaction dispatched", Tail(readerLog));
+
+            // ---- StaleWriterDown: the writer goes away; the reader stays in the pool as degraded
+            writer.Kill(entireProcessTree: true);
+            writer.WaitForExit(5000);
+            var down = await EventuallyReadyzAsync(readerOps, "StaleWriterDown once the writer is gone",
+                (code, body) => code == HttpStatusCode.OK && body.GetProperty("status").GetString() == "degraded"
+                    && Reasons(body).Contains("replication_stale", StringComparison.Ordinal) && Dependency(body, "writer") == "down",
+                () => Tail(readerLog));
+            Assert.Contains("dependency_unavailable", Reasons(down));
+
+            // ---- With nobody to forward to, a command is a forward failure (502), never decided here
+            using (var orphaned = await readerTraffic.PostAsJsonAsync("/api/cqrs/order/o8/PlaceOrder",
+                new { customerId = "11111111-1111-1111-1111-111111111111", items = Array.Empty<object>() }))
+            {
+                Assert.Equal(HttpStatusCode.BadGateway, orphaned.StatusCode);
+            }
+        }
+        finally
+        {
+            foreach (var p in new[] { writer, reader })
+            {
+                if (p is { HasExited: false })
+                {
+                    p.Kill(entireProcessTree: true);
+                    p.WaitForExit(5000);
+                }
+            }
+            reader?.Dispose();
+        }
+    }
+
+    [Fact(Timeout = 300000)]
+    public async Task A_generated_reader_without_a_writer_url_refuses_commands_with_503()
+    {
+        var (genExit, genOutput) = await RunAsync("dotnet",
+        [
+            await CliUnderTest.DllAsync(), "generate", "--input", TestDataPath("minimal.json"), "--output", _scratchDir,
+            "--host", "--dotnetcqrs-project", DotnetCqrsProjectPath(), "--aggregate-override", "place-order=Order",
+        ]);
+        Assert.True(genExit == 0, $"generate --host exited {genExit}:\n{genOutput}");
+        var (buildExit, buildOutput) = await RunAsync("dotnet", ["build", _scratchDir, "-v", "quiet"]);
+        var buildDir = Path.Combine(_scratchDir, "bin", "Debug", "net10.0");
+        Assert.True(buildExit == 0, $"generated host project did not compile:\n{buildOutput}");
+
+        // The writer creates the log the reader opens read-only; it need not keep running.
+        var events = Path.Combine(_scratchDir, "shared", "events.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(events)!);
+        await (await SqliteEventStore.OpenAsync(events)).DisposeAsync();
+
+        var (port, opsPort) = (FreeTcpPort(), FreeTcpPort());
+        var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        psi.ArgumentList.Add(Path.Combine(buildDir, "MinimalExample.dll"));
+        psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+        psi.Environment["CQRS_OPS_PORT"] = opsPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        psi.Environment["CQRS_OPS_BIND"] = "127.0.0.1";
+        psi.Environment["DOTNETCQRS_ROLE"] = "reader";
+        psi.Environment["DOTNETCQRS_EVENTS_PATH"] = events;
+        psi.Environment["DOTNETCQRS_POSTGRES"] = "";
+        psi.Environment.Remove("DOTNETCQRS_WRITER_URL");
+        psi.Environment.Remove("CQRS_NODE_ID");
+
+        // DOTNETCQRS_WRITER_URL is only for a reader, and must be a URL.
+        var badUrl = new ProcessStartInfo(psi.FileName) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        foreach (var a in psi.ArgumentList) badUrl.ArgumentList.Add(a);
+        foreach (var (k, v) in psi.Environment) badUrl.Environment[k] = v;
+        badUrl.Environment["DOTNETCQRS_WRITER_URL"] = "not a url";
+        var (badUrlExit, badUrlOutput) = await RunToExitAsync(badUrl);
+        Assert.Equal(1, badUrlExit);
+        Assert.Contains("DOTNETCQRS_WRITER_URL", badUrlOutput);
+
+        var log = new System.Text.StringBuilder();
+        using var process = StartHost(psi, log);
+        try
+        {
+            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            HttpResponseMessage? response = null;
+            for (var attempt = 0; attempt < 60 && response is null; attempt++)
+            {
+                await Task.Delay(500);
+                try
+                {
+                    response = await client.PostAsync("/api/cqrs/order/o1/PlaceOrder", JsonContent.Create(new { }));
+                }
+                catch (HttpRequestException)
+                {
+                    // not listening yet
+                }
+            }
+            Assert.True(response is not null, $"the reader never answered:\n{Tail(log)}");
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response!.StatusCode);
+            Assert.Contains("read-only node", await response.Content.ReadAsStringAsync());
+
+            // Health/telemetry section 7: counted here, as unavailable.
+            using var ops = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{opsPort}") };
+            Assert.Contains("cqrs_commands_total{status=\"unavailable\"} 1\n", await ops.GetStringAsync("/metrics"), StringComparison.Ordinal);
+            // No writer has ever beaten into this log: nothing trustworthy to serve.
+            using var readyz = await ops.GetAsync("/readyz");
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, readyz.StatusCode);
+            Assert.Contains("replication_unknown", await readyz.Content.ReadAsStringAsync());
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
+            }
+        }
+    }
+
+    private static async Task<(int ExitCode, string Output)> RunToExitAsync(ProcessStartInfo psi)
+    {
+        using var process = Process.Start(psi)!;
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(60000))
+        {
+            process.Kill(entireProcessTree: true);
+            Assert.Fail("the host should have refused to start, and is still running");
+        }
+        return (process.ExitCode, await stdout + await stderr);
+    }
+
+    private static void CopyDirectory(string from, string to)
+    {
+        foreach (var dir in Directory.GetDirectories(from, "*", SearchOption.AllDirectories))
+            Directory.CreateDirectory(dir.Replace(from, to, StringComparison.Ordinal));
+        Directory.CreateDirectory(to);
+        foreach (var file in Directory.GetFiles(from, "*", SearchOption.AllDirectories))
+            File.Copy(file, file.Replace(from, to, StringComparison.Ordinal));
     }
 
     // Milestone D4: a document whose only aggregate stores PII, and whose read model
