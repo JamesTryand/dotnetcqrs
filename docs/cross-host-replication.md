@@ -44,7 +44,11 @@ forwards commands, and reports its replication from the writer heartbeat that Li
 with the log. Verified 2026-09-30 on `m5`: a generated writer and reader on two LiteFS mounts (LiteFS
 0.5.14), the reader ready at 0.26s lag with `writer` up, a command forwarded and counted only on the
 writer, the health/telemetry probe passing against the reader, and, with the writer stopped, the
-reader `degraded` (`replication_stale`, `dependency_unavailable`) and a command answered `502`.
+reader `degraded` (`replication_stale`, `dependency_unavailable`) and a command answered `502`. Then
+across two hosts on 2026-10-01: the writer and the primary LiteFS on `m4`, the reader and the replica on
+`m5`. The reader was ready with `writer` up; a command sent to it on `m5` was decided on `m4` and its event
+was in `m5`'s copy 0.05s after the `200`; the probe passed against the reader; with `m4`'s writer stopped
+the reader went `degraded` and answered `502`.
 
 `ops/litefs/` stands the pair up as two Docker containers (see `docker-compose.yml`)
 on one Docker host; `ops/litefs/two-host/` runs the same two images on two separate
