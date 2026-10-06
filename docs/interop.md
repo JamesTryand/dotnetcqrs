@@ -19,9 +19,11 @@ Checked directly, not assumed:
   (`CqrsGatewayEndpoints`) both serve `POST /api/cqrs/{aggregate}/{id}/{command}`, body
   = the command payload as JSON, response = `{"events":[...]}` on success, `400` for a
   domain rejection, `409` for a concurrency conflict, `404` for an unknown aggregate.
-  (dotnetcqrs also returns `410` for personal data sent for an erased data subject, and
-  `400` for a `$pii` envelope in a command payload. `pocketcqrs` has no personal-data
-  support yet; its port should match both. dotnetcqrs also keeps infrastructure failures
+  (Both stacks also return `410` for personal data sent for an erased data subject, and
+  `400` for a `$pii` envelope in a command payload. `pocketcqrs` matches since its
+  personal-data port (v0.14.0), which uses the same `$pii` envelope,
+  `{"$redacted":true}` marker and pinned 3.1.1 normalizers, so a hashed index matches
+  across stacks. dotnetcqrs also keeps infrastructure failures
   out of `400`: `503` when a dependency the command needs is unavailable -- the event
   store, the key service, a timeout, or a read-only node with no forwarding -- and `500`
   for any other failure around the decision (a wiring fault or bug in the host). `400`
