@@ -227,6 +227,13 @@ the same way, without storing the value. The hashes still have to go on
 erasure, because anyone who can ask the key service for a hash could
 confirm a guessed value against them.
 
+**A request is not an erasure.** Erasure is permanent, and a business is often
+*required* to keep records (payroll, tax, employment) for years. So a request
+goes through a governed lifecycle instead of destroying a key on the spot:
+request, then a retention check that either holds it (with a review date) or
+approves it, then the erasure. A legal hold blocks it whatever the policy says.
+See [Governed erasure](erasure-governance.md).
+
 ## A CRUD → `dotnetcqrs` glossary
 
 | CRUD instinct | `dotnetcqrs` equivalent |
