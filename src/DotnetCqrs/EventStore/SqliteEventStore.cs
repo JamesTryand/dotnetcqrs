@@ -58,10 +58,28 @@ public sealed class SqliteEventStore : IEventStore, IDeadLetterStore, IHeartbeat
 
     private readonly SqliteConnection _connection;
 
-    // Serializes appends so the expected-sequence check and the insert stay
-    // atomic from the store's point of view (one writer, same as SQLite itself
-    // wants for a single file).
+    // Serializes every use of the ONE connection. Appends need it so the expected-sequence
+    // check and the insert stay atomic (one writer, same as SQLite itself wants for a single
+    // file); but reads, checkpoint saves and dead-letter writes share that connection too, and
+    // a SqliteConnection is not safe for concurrent use: running one while an append holds a
+    // transaction open on it fails (a command on a connection with a pending transaction must
+    // carry that transaction), which surfaced as intermittent 500/503s under a busy host. So
+    // nothing touches _connection except through Locked().
     private readonly SemaphoreSlim _appendLock = new(1, 1);
+
+    private async Task<T> Locked<T>(Func<Task<T>> body, CancellationToken ct)
+    {
+        await _appendLock.WaitAsync(ct);
+        try { return await body(); }
+        finally { _appendLock.Release(); }
+    }
+
+    private async Task Locked(Func<Task> body, CancellationToken ct)
+    {
+        await _appendLock.WaitAsync(ct);
+        try { await body(); }
+        finally { _appendLock.Release(); }
+    }
 
     private readonly Lock _subscribersLock = new();
     private readonly List<Action<Event>> _subscribers = [];
@@ -175,27 +193,33 @@ public sealed class SqliteEventStore : IEventStore, IDeadLetterStore, IHeartbeat
     /// in position order — the catch-up feed a <see cref="ConsumerEngine"/> polls.</summary>
     public async Task<IReadOnlyList<Event>> PollAsync(long after, int limit, CancellationToken ct = default)
     {
-        await using var command = _connection.CreateCommand();
-        command.CommandText = """
-            SELECT position, id, aggregate, aggregate_id, sequence, type, data, metadata, created
-            FROM events WHERE position > $after ORDER BY position LIMIT $limit
-            """;
-        command.Parameters.AddWithValue("$after", after);
-        command.Parameters.AddWithValue("$limit", limit);
+        return await Locked(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = """
+                SELECT position, id, aggregate, aggregate_id, sequence, type, data, metadata, created
+                FROM events WHERE position > $after ORDER BY position LIMIT $limit
+                """;
+            command.Parameters.AddWithValue("$after", after);
+            command.Parameters.AddWithValue("$limit", limit);
 
-        var results = new List<Event>();
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
-            results.Add(ReadEvent(reader));
-        return results;
+            var results = new List<Event>();
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                results.Add(ReadEvent(reader));
+            return results;
+        }, ct);
     }
 
     /// <summary>The newest committed position, 0 for an empty log.</summary>
     public async Task<long?> HeadPositionAsync(CancellationToken ct = default)
     {
-        await using var command = _connection.CreateCommand();
-        command.CommandText = "SELECT COALESCE(MAX(position), 0) FROM events";
-        return (long)(await command.ExecuteScalarAsync(ct))!;
+        return await Locked(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT COALESCE(MAX(position), 0) FROM events";
+            return (long)(await command.ExecuteScalarAsync(ct))!;
+        }, ct);
     }
 
     /// <summary>Registers <paramref name="handler"/> to be called (best-effort, in-process)
@@ -222,44 +246,53 @@ public sealed class SqliteEventStore : IEventStore, IDeadLetterStore, IHeartbeat
     /// <summary>Returns the durable position of a named consumer (0 if none).</summary>
     public async Task<long> CheckpointAsync(string name, CancellationToken ct = default)
     {
-        await using var command = _connection.CreateCommand();
-        command.CommandText = "SELECT position FROM consumer_checkpoints WHERE name = $name";
-        command.Parameters.AddWithValue("$name", name);
-        var result = await command.ExecuteScalarAsync(ct);
-        return result is null ? 0 : (long)result;
+        return await Locked(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT position FROM consumer_checkpoints WHERE name = $name";
+            command.Parameters.AddWithValue("$name", name);
+            var result = await command.ExecuteScalarAsync(ct);
+            return result is null ? 0 : (long)result;
+        }, ct);
     }
 
     /// <summary>Durably stores the position of a named consumer.</summary>
     public async Task SaveCheckpointAsync(string name, long position, CancellationToken ct = default)
     {
         if (_readOnly) throw new ReadOnlyStoreException("save checkpoint");
-        await using var command = _connection.CreateCommand();
-        command.CommandText = """
-            INSERT INTO consumer_checkpoints (name, position) VALUES ($name, $position)
-            ON CONFLICT (name) DO UPDATE SET position = excluded.position
-            """;
-        command.Parameters.AddWithValue("$name", name);
-        command.Parameters.AddWithValue("$position", position);
-        await command.ExecuteNonQueryAsync(ct);
+        await Locked(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO consumer_checkpoints (name, position) VALUES ($name, $position)
+                ON CONFLICT (name) DO UPDATE SET position = excluded.position
+                """;
+            command.Parameters.AddWithValue("$name", name);
+            command.Parameters.AddWithValue("$position", position);
+            await command.ExecuteNonQueryAsync(ct);
+        }, ct);
     }
 
     /// <summary>Returns all events of one stream in sequence order.</summary>
     public async Task<IReadOnlyList<Event>> LoadStreamAsync(string aggregate, string aggregateId, CancellationToken ct = default)
     {
-        await using var command = _connection.CreateCommand();
-        command.CommandText = """
-            SELECT position, id, aggregate, aggregate_id, sequence, type, data, metadata, created
-            FROM events WHERE aggregate = $aggregate AND aggregate_id = $aggregateId
-            ORDER BY sequence
-            """;
-        command.Parameters.AddWithValue("$aggregate", aggregate);
-        command.Parameters.AddWithValue("$aggregateId", aggregateId);
+        return await Locked(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = """
+                SELECT position, id, aggregate, aggregate_id, sequence, type, data, metadata, created
+                FROM events WHERE aggregate = $aggregate AND aggregate_id = $aggregateId
+                ORDER BY sequence
+                """;
+            command.Parameters.AddWithValue("$aggregate", aggregate);
+            command.Parameters.AddWithValue("$aggregateId", aggregateId);
 
-        var results = new List<Event>();
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
-            results.Add(ReadEvent(reader));
-        return results;
+            var results = new List<Event>();
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                results.Add(ReadEvent(reader));
+            return results;
+        }, ct);
     }
 
     private static async Task<long> CurrentSequenceAsync(
@@ -311,38 +344,44 @@ public sealed class SqliteEventStore : IEventStore, IDeadLetterStore, IHeartbeat
     public async Task AddDeadLetterAsync(string consumer, Event ev, string error, CancellationToken ct = default)
     {
         if (_readOnly) throw new ReadOnlyStoreException("add dead letter");
-        var now = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
-        await using var command = _connection.CreateCommand();
-        command.CommandText = """
-            INSERT INTO dead_letters (consumer, event_pos, event, error, first_failed, last_failed)
-            VALUES ($consumer, $eventPos, $event, $error, $now, $now)
-            """;
-        command.Parameters.AddWithValue("$consumer", consumer);
-        command.Parameters.AddWithValue("$eventPos", ev.Position);
-        command.Parameters.AddWithValue("$event", JsonSerializer.Serialize(ev));
-        command.Parameters.AddWithValue("$error", error);
-        command.Parameters.AddWithValue("$now", now);
-        await command.ExecuteNonQueryAsync(ct);
+        await Locked(async () =>
+        {
+            var now = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+            await using var command = _connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO dead_letters (consumer, event_pos, event, error, first_failed, last_failed)
+                VALUES ($consumer, $eventPos, $event, $error, $now, $now)
+                """;
+            command.Parameters.AddWithValue("$consumer", consumer);
+            command.Parameters.AddWithValue("$eventPos", ev.Position);
+            command.Parameters.AddWithValue("$event", JsonSerializer.Serialize(ev));
+            command.Parameters.AddWithValue("$error", error);
+            command.Parameters.AddWithValue("$now", now);
+            await command.ExecuteNonQueryAsync(ct);
+        }, ct);
     }
 
     /// <summary>Lists dead letters, pending only unless <paramref name="includeResolved"/>.</summary>
     public async Task<IReadOnlyList<DeadLetter>> ListDeadLettersAsync(bool includeResolved = false, CancellationToken ct = default)
     {
-        await using var command = _connection.CreateCommand();
-        command.CommandText = "SELECT id, consumer, event_pos, event, error, attempts, first_failed, last_failed, resolved FROM dead_letters"
-            + (includeResolved ? " ORDER BY id" : " WHERE resolved = 0 ORDER BY id");
-
-        var results = new List<DeadLetter>();
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
+        return await Locked(async () =>
         {
-            var ev = JsonSerializer.Deserialize<Event>(reader.GetString(3))!;
-            results.Add(new DeadLetter(
-                reader.GetInt64(0), reader.GetString(1), reader.GetInt64(2), ev,
-                reader.GetString(4), reader.GetInt64(5), reader.GetString(6), reader.GetString(7),
-                reader.GetInt64(8) != 0));
-        }
-        return results;
+            await using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT id, consumer, event_pos, event, error, attempts, first_failed, last_failed, resolved FROM dead_letters"
+                + (includeResolved ? " ORDER BY id" : " WHERE resolved = 0 ORDER BY id");
+
+            var results = new List<DeadLetter>();
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                var ev = JsonSerializer.Deserialize<Event>(reader.GetString(3))!;
+                results.Add(new DeadLetter(
+                    reader.GetInt64(0), reader.GetString(1), reader.GetInt64(2), ev,
+                    reader.GetString(4), reader.GetInt64(5), reader.GetString(6), reader.GetString(7),
+                    reader.GetInt64(8) != 0));
+            }
+            return results;
+        }, ct);
     }
 
     /// <summary>Marks a dead letter resolved (retry succeeded, or dismissed). Throws
@@ -350,12 +389,15 @@ public sealed class SqliteEventStore : IEventStore, IDeadLetterStore, IHeartbeat
     public async Task ResolveDeadLetterAsync(long id, CancellationToken ct = default)
     {
         if (_readOnly) throw new ReadOnlyStoreException("resolve dead letter");
-        await using var command = _connection.CreateCommand();
-        command.CommandText = "UPDATE dead_letters SET resolved = 1 WHERE id = $id";
-        command.Parameters.AddWithValue("$id", id);
-        var affected = await command.ExecuteNonQueryAsync(ct);
-        if (affected == 0)
-            throw new KeyNotFoundException($"dead letter {id} not found");
+        await Locked(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = "UPDATE dead_letters SET resolved = 1 WHERE id = $id";
+            command.Parameters.AddWithValue("$id", id);
+            var affected = await command.ExecuteNonQueryAsync(ct);
+            if (affected == 0)
+                throw new KeyNotFoundException($"dead letter {id} not found");
+        }, ct);
     }
 
     private static Event ReadEvent(SqliteDataReader reader) => new(
@@ -399,20 +441,23 @@ public sealed class SqliteEventStore : IEventStore, IDeadLetterStore, IHeartbeat
     /// <inheritdoc/>
     public async Task<WriterHeartbeat?> ReadHeartbeatAsync(CancellationToken ct = default)
     {
-        await using var command = _connection.CreateCommand();
-        command.CommandText = "SELECT writer_node_id, writer_ops_url, written_at, sequence FROM writer_heartbeat WHERE id = 1";
-        try
+        return await Locked(async () =>
         {
-            await using var reader = await command.ExecuteReaderAsync(ct);
-            return await reader.ReadAsync(ct)
-                ? new WriterHeartbeat(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3))
-                : null;
-        }
-        catch (SqliteException ex) when (ex.Message.Contains("no such table", StringComparison.Ordinal))
-        {
-            // A copy made before any writer created the table: no heartbeat to see.
-            return null;
-        }
+            await using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT writer_node_id, writer_ops_url, written_at, sequence FROM writer_heartbeat WHERE id = 1";
+            try
+            {
+                await using var reader = await command.ExecuteReaderAsync(ct);
+                return await reader.ReadAsync(ct)
+                    ? new WriterHeartbeat(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3))
+                    : null;
+            }
+            catch (SqliteException ex) when (ex.Message.Contains("no such table", StringComparison.Ordinal))
+            {
+                // A copy made before any writer created the table: no heartbeat to see.
+                return null;
+            }
+        }, ct);
     }
 
     public ValueTask DisposeAsync() => _connection.DisposeAsync();
