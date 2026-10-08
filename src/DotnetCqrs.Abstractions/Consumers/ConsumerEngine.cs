@@ -29,6 +29,11 @@ public sealed class ConsumerEngine
     // the event in hand, rather than running on until it is caught up. _hardStop is what a passed
     // deadline cancels; it is linked to the token StartAsync was given.
     private volatile bool _stopRequested;
+
+    // One catch-up pass at a time. The background loop (StartAsync) and a caller's own RunOnceAsync
+    // would otherwise both read the same checkpoints and each apply every pending event: twice
+    // delivered, and concurrently, to a consumer that was only ever promised one event at a time.
+    private readonly SemaphoreSlim _passGate = new(1, 1);
     private CancellationTokenSource? _hardStop;
     private Task? _loop;
 
@@ -220,8 +225,26 @@ public sealed class ConsumerEngine
     /// unaffected. The consumer set is snapshotted first, so a Register/Unregister swap
     /// applies cleanly to the next pass. Throws an <see cref="AggregateException"/>
     /// covering every consumer that failed this pass, or returns normally if all
-    /// succeeded.</summary>
+    /// succeeded.
+    ///
+    /// <para>Passes take turns: a call made while another pass is running (the background loop's,
+    /// or another caller's) waits for it, then runs its own, so it returns only once everything
+    /// committed before the call has been applied. The wait honours <paramref name="ct"/>. A consumer
+    /// must not call this from inside <c>ApplyAsync</c>: that pass would wait for itself.</para></summary>
     public async Task RunOnceAsync(CancellationToken ct = default)
+    {
+        await _passGate.WaitAsync(ct);
+        try
+        {
+            await RunPassAsync(ct);
+        }
+        finally
+        {
+            _passGate.Release();
+        }
+    }
+
+    private async Task RunPassAsync(CancellationToken ct)
     {
         List<Registration> snapshot;
         lock (_consumersLock)

@@ -107,6 +107,55 @@ public class ConsumerEngineTests
     }
 
     [Fact]
+    public async Task Overlapping_passes_take_turns_so_no_event_is_delivered_twice_or_concurrently()
+    {
+        // A host runs StartAsync's background loop AND may call RunOnceAsync itself (a batch step
+        // that needs a deterministic catch-up). Two passes reading the same checkpoint would each
+        // apply every pending event.
+        await using var store = await SeededStoreAsync("c1", 5);
+        var engine = new ConsumerEngine(store, store);
+        var inFlight = 0;
+        var maxInFlight = 0;
+        var delivered = new ConcurrentQueue<long>();
+        engine.Register(new DelegateConsumer("proj-a", async ev =>
+        {
+            var now = Interlocked.Increment(ref inFlight);
+            InterlockedMax(ref maxInFlight, now);
+            await Task.Delay(15);
+            delivered.Enqueue(ev.Sequence);
+            Interlocked.Decrement(ref inFlight);
+        }));
+
+        await Task.WhenAll(engine.RunOnceAsync(), engine.RunOnceAsync(), engine.RunOnceAsync());
+
+        Assert.Equal(1, maxInFlight);
+        Assert.Equal([1L, 2L, 3L, 4L, 5L], delivered.OrderBy(x => x));
+        Assert.Equal(5, await store.CheckpointAsync("proj-a"));
+    }
+
+    [Fact]
+    public async Task A_pass_waiting_its_turn_can_be_cancelled()
+    {
+        await using var store = await SeededStoreAsync("c1", 1);
+        var engine = new ConsumerEngine(store, store);
+        var release = new TaskCompletionSource();
+        engine.Register(new DelegateConsumer("proj-a", _ => release.Task));
+
+        var first = engine.RunOnceAsync();
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => engine.RunOnceAsync(cts.Token));
+
+        release.SetResult();
+        await first;
+    }
+
+    private static void InterlockedMax(ref int target, int value)
+    {
+        int seen;
+        while (value > (seen = Volatile.Read(ref target)) && Interlocked.CompareExchange(ref target, value, seen) != seen) { }
+    }
+
+    [Fact]
     public async Task StartAsync_delivers_a_committed_event_promptly_via_the_nudge_not_the_slow_tick()
     {
         await using var store = await SqliteEventStore.OpenAsync(":memory:");
