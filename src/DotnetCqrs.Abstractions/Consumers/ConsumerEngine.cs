@@ -244,6 +244,29 @@ public sealed class ConsumerEngine
         }
     }
 
+    /// <summary>Runs <paramref name="body"/> with the engine to itself: no background pass (and no other
+    /// <see cref="RunOnceAsync"/>) runs until it returns, though events keep being accepted and are applied
+    /// afterwards. <paramref name="body"/> is handed <c>catchUp</c>, which applies everything pending, the way
+    /// <see cref="RunOnceAsync"/> would, from inside the hold; calling <see cref="RunOnceAsync"/> itself in there
+    /// would wait for the hold it is in.
+    ///
+    /// <para>For a batch step inside a live host that must read the read models between its own catch-ups (the
+    /// legacy migration does, once per row): with the loop kept out, a read can never overlap a projection's write
+    /// on a store whose one connection is not safe for it (SQLite). While it is held, the read models do not
+    /// advance, so keep it for work that is finite.</para></summary>
+    public async Task RunExclusivelyAsync(Func<Func<CancellationToken, Task>, Task> body, CancellationToken ct = default)
+    {
+        await _passGate.WaitAsync(ct);
+        try
+        {
+            await body(RunPassAsync);
+        }
+        finally
+        {
+            _passGate.Release();
+        }
+    }
+
     private async Task RunPassAsync(CancellationToken ct)
     {
         List<Registration> snapshot;

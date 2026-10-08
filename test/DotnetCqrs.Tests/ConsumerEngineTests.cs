@@ -149,6 +149,51 @@ public class ConsumerEngineTests
         await first;
     }
 
+    [Fact]
+    public async Task RunExclusively_keeps_the_background_loop_out_until_the_body_is_done()
+    {
+        // A batch step inside a live host reads the read models between its own catch-ups. A background
+        // pass writing projections in the middle of that read is the overlap SQLite cannot take.
+        await using var store = await SqliteEventStore.OpenAsync(":memory:");
+        var engine = new ConsumerEngine(store, store, tick: TimeSpan.FromMilliseconds(20));
+        var delivered = new ConcurrentQueue<long>();
+        engine.Register(new DelegateConsumer("proj-a", ev => { delivered.Enqueue(ev.Sequence); return Task.CompletedTask; }));
+        using var cts = new CancellationTokenSource();
+        var loop = engine.StartAsync(cts.Token);
+
+        var deliveredWhileHeld = -1;
+        await engine.RunExclusivelyAsync(async catchUp =>
+        {
+            // Events arrive (and nudge the loop) while the hold is on.
+            await store.AppendAsync("counter", "c1", 0, [new NewEvent("Ticked", "{}"), new NewEvent("Ticked", "{}")]);
+            await Task.Delay(200);                   // ten ticks of the background loop, all kept out
+            deliveredWhileHeld = delivered.Count;
+            await catchUp(CancellationToken.None);   // the body's own catch-up still works
+            Assert.Equal(2, delivered.Count);
+        });
+
+        Assert.Equal(0, deliveredWhileHeld);
+        Assert.Equal([1L, 2L], delivered.OrderBy(x => x));
+
+        cts.Cancel();
+        try { await loop; } catch (OperationCanceledException) { }
+    }
+
+    [Fact]
+    public async Task RunExclusively_releases_the_engine_even_when_the_body_throws()
+    {
+        await using var store = await SeededStoreAsync("c1", 1);
+        var engine = new ConsumerEngine(store, store);
+        var consumer = new RecordingConsumer("proj-a");
+        engine.Register(consumer);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            engine.RunExclusivelyAsync(_ => throw new InvalidOperationException("boom")));
+        await engine.RunOnceAsync();
+
+        Assert.Single(consumer.Applied);
+    }
+
     private static void InterlockedMax(ref int target, int value)
     {
         int seen;
