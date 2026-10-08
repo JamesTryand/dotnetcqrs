@@ -38,10 +38,12 @@ public interface IReadModelStore : IAsyncDisposable
     /// projections' writes -- what an HTTP query route or an authorization check does,
     /// one per request. <see cref="Connection"/> belongs to the projections, and not every
     /// provider lets two commands share one connection at once: Npgsql refuses ("A command
-    /// is already in progress"), so the Postgres store runs <paramref name="read"/> on its
-    /// own pooled connection. The default runs it on <see cref="Connection"/>, which SQLite
-    /// serializes internally. <paramref name="read"/> must not write, and must not keep the
-    /// connection it is given.</summary>
+    /// is already in progress"), and neither does SQLite (a read overlapping a projection's write
+    /// throws from inside it), so the Postgres store and a file-backed SQLite store run
+    /// <paramref name="read"/> on a connection of their own. The default runs it on <see cref="Connection"/>,
+    /// which is only right for a store whose connection tolerates that. Anything that reads while
+    /// projections write should come through here, not <see cref="Connection"/>.
+    /// <paramref name="read"/> must not write, and must not keep the connection it is given.</summary>
     Task<T> ReadAsync<T>(Func<DbConnection, CancellationToken, Task<T>> read, CancellationToken ct = default)
         => read(Connection, ct);
 }

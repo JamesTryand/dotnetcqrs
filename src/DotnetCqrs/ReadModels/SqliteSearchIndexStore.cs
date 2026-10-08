@@ -81,6 +81,8 @@ public sealed class SqliteSearchIndexStore : ISearchIndexStore
         p.Value = path;
         command.Parameters.Add(p);
         await command.ExecuteNonQueryAsync(ct);
+        // Reads do not run on this connection (see SqliteReadModelStore.ReadAsync): remember the attach for theirs.
+        ReadConnectionAttachments.Record(readModelConnection, SchemaName, path);
     }
 
     public async Task<long> CheckpointAsync(string name, CancellationToken ct = default)
