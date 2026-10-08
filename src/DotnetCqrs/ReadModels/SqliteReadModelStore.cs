@@ -29,6 +29,9 @@ public sealed class SqliteReadModelStore : IReadModelStore
     // owner now.
     private int _bypassDepth;
 
+    // Reads take turns on the shared connection: see ReadAsync.
+    private readonly SemaphoreSlim _reads = new(1, 1);
+
     private SqliteReadModelStore(SqliteConnection connection) => _connection = connection;
 
     public DbConnection Connection => _connection;
@@ -91,6 +94,27 @@ public sealed class SqliteReadModelStore : IReadModelStore
             store._bypassDepth--;
             return ValueTask.CompletedTask;
         }
+    }
+
+    /// <summary>
+    /// Runs a read, one at a time, on the shared connection. SQLite does NOT make one
+    /// <see cref="SqliteConnection"/> safe for overlapping commands, whatever the interface default
+    /// assumes: under 20 overlapping query requests a generated route intermittently returned 500 (about
+    /// one run in twenty), so overlapping reads must queue.
+    ///
+    /// <para>Why the shared connection and not a connection per read, as Postgres does: databases attached
+    /// to this connection (the search index, <c>ATTACH DATABASE ... AS search</c>) exist per connection, so
+    /// a fresh connection cannot see them, and every host attaches that way.</para>
+    ///
+    /// <para><b>Not covered:</b> a projection's writes go straight to <see cref="Connection"/> without
+    /// this lock, so a read can still overlap one. Closing that needs the writes to share the lock, or an
+    /// attachment-aware read connection; tracked as a follow-up.</para>
+    /// </summary>
+    public async Task<T> ReadAsync<T>(Func<DbConnection, CancellationToken, Task<T>> read, CancellationToken ct = default)
+    {
+        await _reads.WaitAsync(ct);
+        try { return await read(_connection, ct); }
+        finally { _reads.Release(); }
     }
 
     public ValueTask DisposeAsync() => _connection.DisposeAsync();
