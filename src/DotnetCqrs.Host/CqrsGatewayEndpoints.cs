@@ -218,6 +218,18 @@ public static class CqrsGatewayEndpoints
                 $"command payload contains a \"{PiiEnvelopeKey}\" object; send personal data as plaintext, " +
                 "the host encrypts it", statusCode: StatusCodes.Status400BadRequest);
 
+        // Erasure is permanent and cannot be undone, and a command with no declared policy is allowed
+        // through this gateway, so the built-in dataSubject aggregate fails CLOSED: with no authorize
+        // policy wired at all, none of its commands (RequestErasure, ApproveErasure, EraseSubject, ...)
+        // is accepted. A host opts in by wiring `authorize` and deciding who may do what
+        // (DataSubject.DefaultRequiredRoles lists the roles to declare). Compared ignoring case so a
+        // differently-cased route can never slip past a registry that might also match it.
+        if (authorize is null && string.Equals(aggregate, DotnetCqrs.Crypto.DataSubject.Aggregate, StringComparison.OrdinalIgnoreCase))
+            return Results.Problem(
+                "erasure commands are refused until the host wires an authorize policy for them " +
+                "(see DataSubject.DefaultRequiredRoles); nothing was recorded",
+                statusCode: StatusCodes.Status403Forbidden);
+
         if (authorize is not null)
         {
             // Parsed once, here, alongside the raw string still used for dispatch below

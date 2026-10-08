@@ -90,7 +90,12 @@ _ = governor.RunReviewLoopAsync(TimeSpan.FromHours(1), stoppingToken);
 screen. It holds no personal data.
 
 **Authorise every command.** The generic gateway allows a command that has no declared policy, and erasure cannot
-be undone. Declare one for each, for example from `DataSubject.DefaultRequiredRoles(command)` (anyone who runs
+be undone. So the gateway **fails closed for this aggregate**: while no `authorize` policy is wired at all, it refuses
+every `dataSubject` command with `403` and records nothing. (A generated PII host is an unauthenticated scaffold and
+wires none, so erasure is closed there by default; for a throwaway local run only,
+`DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE=1` opens it, with a warning at startup.) Once you wire a policy it decides, and it
+must cover these commands: a policy that returns true for a command it has no rule for opens erasure again. Declare one
+for each, for example from `DataSubject.DefaultRequiredRoles(command)` (anyone who runs
 the roster may *ask*; only an administrator may hold, approve, place or release a legal hold, or erase directly):
 
 ```csharp

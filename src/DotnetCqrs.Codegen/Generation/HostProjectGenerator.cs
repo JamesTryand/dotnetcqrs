@@ -386,9 +386,10 @@ public static class HostProjectGenerator
         }
         if (hasPii)
         {
-            // Erasure: POST /api/cqrs/dataSubject/{subjectId}/EraseSubject through the
-            // gateway below. Who may call it is the operator's auth decision, like every
-            // other command here.
+            // Erasure: POST /api/cqrs/dataSubject/{subjectId}/<command> through the gateway
+            // below. Who may call it is the operator's auth decision, but unlike every other
+            // command here it fails CLOSED: the gateway refuses the whole dataSubject aggregate
+            // while no `authorize` policy is wired (see the MapCqrsGateway call below).
             b.AppendLine("registry.RegisterDataSubjects();");
         }
         b.AppendLine("builder.Services.AddSingleton(registry);");
@@ -598,13 +599,25 @@ public static class HostProjectGenerator
         // id, payload, readModelDb, resolveOwnRole, resolveOwnStaffId, ct)` -- closing
         // over this same file's own `readModelDb`, not a new route-handler parameter --
         // is the operator's own addition, the same way resolveActor already is.
+        if (hasPii)
+        {
+            b.AppendLine("// Erasure is permanent, so the gateway refuses every dataSubject command (RequestErasure, ApproveErasure,");
+            b.AppendLine("// EraseSubject, ...) while no `authorize` policy is wired, and this scaffold is unauthenticated, so it wires");
+            b.AppendLine("// none: erasure is closed by default. Wire a real policy (DataSubject.DefaultRequiredRoles lists the roles).");
+            b.AppendLine("// For a THROWAWAY LOCAL RUN ONLY, DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE=1 lets any caller use them.");
+            b.AppendLine("var allowUnauthorizedErasure = Environment.GetEnvironmentVariable(\"DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE\") == \"1\";");
+            b.AppendLine("if (allowUnauthorizedErasure)");
+            b.AppendLine("    Console.Error.WriteLine(\"WARNING: DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE=1 -- anyone can erase any data subject. Never set this outside a throwaway local run.\");");
+        }
         b.AppendLine("// A reader decides nothing: it forwards each command to the writer, or refuses it (503).");
         b.AppendLine("if (isReader)");
         b.AppendLine("    app.MapCqrsGateway(forward: writerUrl is not null");
         b.AppendLine("        ? CqrsGatewayEndpoints.ForwardTo(new HttpClient { BaseAddress = writerUrl })");
         b.AppendLine("        : CqrsGatewayEndpoints.RefuseReadOnly);");
         b.AppendLine("else");
-        b.AppendLine("    app.MapCqrsGateway();");
+        b.AppendLine(hasPii
+            ? "    app.MapCqrsGateway(authorize: allowUnauthorizedErasure ? (_, _, _, _, _, _) => Task.FromResult(true) : null);"
+            : "    app.MapCqrsGateway();");
         // Each Map{Model}Route() below (ReadModelQueryGenerator) takes its own optional
         // `resolveOwnRole` for a read model declaring `requiredRole` (schema 2.7.0) --
         // same "left unset here, wired by the operator" posture as authorize/resolveActor

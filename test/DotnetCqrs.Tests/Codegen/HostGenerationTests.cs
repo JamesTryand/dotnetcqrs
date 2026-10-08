@@ -160,6 +160,25 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
     }
 
     [Fact]
+    public void The_generated_pii_host_refuses_erasure_unless_an_authorize_policy_is_wired()
+    {
+        // order-fulfillment.json has a field.pii value, so its host registers the dataSubject aggregate.
+        var overrides = new Dictionary<string, string> { ["notify-shipping-partner"] = "ShippingNotification" };
+        var doc = DotnetCqrs.Codegen.DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json"));
+        var mapped = DotnetCqrs.Codegen.Mapping.DocumentMapper.Map(doc,
+            new DotnetCqrs.Codegen.Mapping.MappingOptions { AggregateOverrides = overrides });
+        var program = DotnetCqrs.Codegen.Generation.HostProjectGenerator
+            .Generate(doc, mapped, "OrderFulfillment", DotnetCqrsProjectPath(), overrides)
+            .Single(f => f.Name == "Program.cs").Source;
+
+        // Closed by default: no authorize unless the throwaway switch is set, and the switch is loud.
+        Assert.Contains("app.MapCqrsGateway(authorize: allowUnauthorizedErasure ? (_, _, _, _, _, _) => Task.FromResult(true) : null);", program);
+        Assert.Contains("DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE", program);
+        Assert.Contains("WARNING: DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE=1", program);
+        Assert.DoesNotContain("app.MapCqrsGateway();", program.Replace("app.MapCqrsGateway(forward", ""));
+    }
+
+    [Fact]
     public void The_generated_host_resolves_its_node_identity_before_opening_anything_and_registers_it()
     {
         var overrides = new Dictionary<string, string> { ["notify-shipping-partner"] = "ShippingNotification" };
@@ -767,6 +786,10 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         psi.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
         psi.Environment["KMS_INDEX_KEY"] = "pii-host-test";
         psi.Environment["DOTNETCQRS_POSTGRES"] = postgres ?? "";
+        // This test erases through the gateway; a generated host refuses erasure unless authorised,
+        // so the throwaway local-run switch is set explicitly (the default is covered by
+        // The_generated_pii_host_refuses_erasure_unless_an_authorize_policy_is_wired).
+        psi.Environment["DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE"] = "1";
 
         // Reassigned by the restart below; local functions capture the variables.
         var hostLog = new System.Text.StringBuilder();
