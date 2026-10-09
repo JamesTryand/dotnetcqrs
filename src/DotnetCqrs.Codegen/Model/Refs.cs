@@ -17,4 +17,12 @@ public sealed record CommandRef(string CommandId, JsonElement? Data);
 /// <c>SelectRowsAsync</c> (<c>Verification/HarnessProgram.txt</c>), via
 /// <c>Generation.DateRangeResolver</c>. Absent, resolution falls back to the live
 /// clock, unchanged from before 2.6.0.</summary>
-public sealed record ReadModelQuery(string ReadModelId, JsonElement? QueryParams, string? AsOf);
+///
+/// <para><c>Caller</c> (schema 3.8.0) is who the scenario reads as: the subject id the runtime
+/// would resolve for them and the role it would check against <c>requiredRole</c>. Absent, the
+/// scenario reads as a caller holding <c>requiredRole</c>, which is what every scenario meant
+/// before 3.8.0.</para>
+public sealed record ReadModelQuery(string ReadModelId, JsonElement? QueryParams, string? AsOf, ScenarioCaller? Caller = null);
+
+/// <summary>A stateView scenario's caller (schema 3.8.0 <c>when.caller</c>).</summary>
+public sealed record ScenarioCaller(string SubjectId, string? Role);

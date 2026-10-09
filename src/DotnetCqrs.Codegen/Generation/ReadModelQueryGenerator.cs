@@ -47,13 +47,19 @@ namespace DotnetCqrs.Codegen.Generation;
 /// parameter — wiring a real one (and <c>.RequireAuthorization()</c> for authentication
 /// itself) is the operator's job, not this generator's; see
 /// <c>HostProjectGenerator</c>'s generated <c>Program.cs</c> for where that wiring goes.
-/// Deliberately does NOT force a <c>scopes</c> param (e.g. <c>pmStaffId</c>) to the
-/// caller's own identity — this generator never has, for any read model — so there is
-/// no interaction to reason about between the two: <c>requiredRole</c> gates the whole
-/// route regardless of which params a request supplies, and a project needing
-/// per-caller scope-forcing on top of that still hand-writes it, exactly as
-/// <c>project/timesheets</c>'s own Phase 04g already did before this capability
-/// existed.</para>
+/// A plain <c>scopes</c> param still takes its value from the request.</para>
+///
+/// <para><b>Row access (schema 3.2.0 <c>selfAccess</c>, 3.8.0 <c>grantsAccess</c> and
+/// <c>selfAccess.param</c>):</b> a read model declaring any of these gets a route that applies
+/// <see cref="ReadAccess"/>. A caller holding <c>requiredRole</c> sees every row. Anyone else
+/// sees only their own rows and the rows a granting scope admits for them. A bound param
+/// (<c>selfAccess.param</c>, a granting scope's param) always names the caller, whatever the
+/// request sends. Such a route takes a second hook, <c>resolveSubjectId</c>, and fails closed:
+/// it refuses rather than serve every row when the host has wired no role resolver, or needs a
+/// subject id and has wired no <c>resolveSubjectId</c>. A read model declaring none of these
+/// gets exactly the route it got before. Before 3.8.0 this per-caller narrowing had to be
+/// hand-written (<c>project/timesheets</c> Phase 04g), and it applied only when the request
+/// carried the param, which is how a staff caller could read every row (its decision D21).</para>
 ///
 /// <para><b>Plain params are whitelisted.</b> Any other query key names a column, and that
 /// name goes into the SQL text, so it must be one of the table's own columns (the key plus
@@ -124,13 +130,33 @@ public static class ReadModelQueryGenerator
             b.AppendLine("    };");
             b.AppendLine();
         }
+        var hasAccessRules = readModel.HasAccessRules;
+        var grants = readModel.Scopes.Where(s => s.GrantsAccess).ToList();
+        if (hasAccessRules)
+        {
+            // Schema 3.8.0: who may read which rows, applied by the shared ReadAccess helper (the
+            // verify harness applies the same one, so a scenario checks what this route does).
+            var requiredRoleLiteral = readModel.RequiredRole is { Count: > 0 } roles ? GenerationSupport.QuotedArray(roles) : "null";
+            var subjectLiteral = readModel.SelfAccess is { } sa ? $"\"{ToSnakeCase(sa.SubjectField)}\"" : "null";
+            var selfParamLiteral = readModel.SelfAccess?.Param is { } sp ? $"\"{sp}\"" : "null";
+            b.AppendLine("    /// <summary>Who may read which rows (schema 3.8.0): see ReadAccess.</summary>");
+            b.AppendLine($"    private static readonly ReadAccess.Policy AccessPolicy = new({requiredRoleLiteral}, {subjectLiteral}, {selfParamLiteral},");
+            b.AppendLine("    [");
+            foreach (var grant in grants)
+                b.AppendLine($"        new(\"{grant.Param}\", \"{grant.ViaCollection}\", \"{ToSnakeCase(grant.MatchParamToField)}\", \"{ToSnakeCase(grant.SelectField)}\", \"{ToSnakeCase(grant.FilterLocalField)}\"),");
+            b.AppendLine("    ]);");
+            b.AppendLine();
+        }
         if (hasPii)
         {
             b.AppendLine("    /// <summary>Columns holding the ciphertext envelope: revealed on the way out, never filtered on.</summary>");
             b.AppendLine($"    private static readonly string[] PiiColumns = {GenerationSupport.QuotedArray(piiColumns)};");
             b.AppendLine();
         }
-        b.AppendLine($"    public static RouteHandlerBuilder Map{typeName}Route(this IEndpointRouteBuilder endpoints, string prefix = \"/api/query\", Func<ClaimsPrincipal, string>? resolveOwnRole = null)");
+        // resolveSubjectId (schema 3.8.0) only on a route with access rules, so every other route's
+        // signature is unchanged.
+        var subjectHook = hasAccessRules ? ", Func<ClaimsPrincipal, string?>? resolveSubjectId = null" : "";
+        b.AppendLine($"    public static RouteHandlerBuilder Map{typeName}Route(this IEndpointRouteBuilder endpoints, string prefix = \"/api/query\", Func<ClaimsPrincipal, string>? resolveOwnRole = null{subjectHook})");
         b.AppendLine("    {");
         // IKmsClient is required, so a host that has PII but no key service fails the
         // request instead of serving envelopes as if they were values. The cache is
@@ -143,7 +169,23 @@ public static class ReadModelQueryGenerator
             piiParams += ", [FromServices] HashedIndexKey indexKey";
         b.AppendLine($"        return endpoints.MapGet($\"{{prefix}}/{readModel.Collection}\", async (HttpRequest request, IReadModelStore store{piiParams}, CancellationToken ct) =>");
         b.AppendLine("        {");
-        if (readModel.RequiredRole is { Count: > 0 } requiredRole)
+        if (hasAccessRules)
+        {
+            b.AppendLine("            var user = request.HttpContext.User;");
+            b.AppendLine("            var standing = ReadAccess.Decide(AccessPolicy, resolveOwnRole is not null, resolveOwnRole?.Invoke(user));");
+            b.AppendLine("            if (standing == ReadAccess.Standing.Refused)");
+            b.AppendLine("                return Results.Problem(\"not authorized\", statusCode: StatusCodes.Status403Forbidden);");
+            b.AppendLine("            string? subjectId = null;");
+            b.AppendLine("            if (standing == ReadAccess.Standing.Restricted || request.Query.Keys.Any(AccessPolicy.IsBound))");
+            b.AppendLine("            {");
+            b.AppendLine("                // Fail closed: without a way to know who is asking, the rule cannot be applied.");
+            b.AppendLine("                if (resolveSubjectId is null)");
+            b.AppendLine("                    return Results.Problem(\"not authorized: this read model's access rules need the caller's subject id, and the host has not wired resolveSubjectId\", statusCode: StatusCodes.Status403Forbidden);");
+            b.AppendLine("                subjectId = resolveSubjectId(user);");
+            b.AppendLine("            }");
+            b.AppendLine();
+        }
+        else if (readModel.RequiredRole is { Count: > 0 } requiredRole)
         {
             // A bare collection expression has no target type when `.Contains(...)` is
             // called on it directly (CS9176) -- an explicitly-typed local gives it one,
@@ -161,6 +203,11 @@ public static class ReadModelQueryGenerator
         b.AppendLine("            var clauses = new List<string>();");
         b.AppendLine("            var parameters = new Dictionary<string, object?>();");
         b.AppendLine("            var i = 0;");
+        if (hasAccessRules)
+        {
+            b.AppendLine("            if (standing == ReadAccess.Standing.Restricted)");
+            b.AppendLine("                i = ReadAccess.Restrict(AccessPolicy, subjectId, clauses, parameters, i);");
+        }
         b.AppendLine("            foreach (var (key, values) in request.Query)");
         b.AppendLine("            {");
         b.AppendLine("                var raw = values.ToString();");
@@ -228,7 +275,19 @@ public static class ReadModelQueryGenerator
             b.AppendLine("                        break;");
             b.AppendLine("                    }");
         }
-        foreach (var scope in readModel.Scopes)
+        if (readModel.SelfAccess?.Param is { } selfParam)
+        {
+            b.AppendLine($"                    case \"{selfParam}\":");
+            b.AppendLine("                        i = ReadAccess.BindSelf(AccessPolicy, subjectId, clauses, parameters, i);");
+            b.AppendLine("                        break;");
+        }
+        for (var g = 0; g < grants.Count; g++)
+        {
+            b.AppendLine($"                    case \"{grants[g].Param}\":");
+            b.AppendLine($"                        i = ReadAccess.BindGrant(AccessPolicy.Grants[{g}], subjectId, clauses, parameters, i);");
+            b.AppendLine("                        break;");
+        }
+        foreach (var scope in readModel.Scopes.Where(s => !s.GrantsAccess))
         {
             b.AppendLine($"                    case \"{scope.Param}\":");
             b.AppendLine("                    {");

@@ -43,6 +43,11 @@ public static class DocumentLoader
         var errors = DocumentSchema.Validate(json);
         if (errors.Count > 0)
             throw new DocumentValidationException(errors);
+        // Valid under the pinned schema, but declaring something this generator would not
+        // honour: refused rather than generated without it (see UnsupportedFeatures).
+        var unsupported = UnsupportedFeatures.Find(json);
+        if (unsupported.Count > 0)
+            throw new DocumentValidationException(unsupported);
 
         return JsonSerializer.Deserialize<Document>(json, SerializerOptions)
             ?? throw new InvalidOperationException("document parsed as JSON null");

@@ -10,7 +10,7 @@
     "eventModelingSchemaVersion": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+$",
-      "default": "3.1.1"
+      "default": "3.8.0"
     },
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
@@ -26,12 +26,15 @@
     "commands": { "$ref": "#/$defs/commandRegistry" },
     "readModels": { "$ref": "#/$defs/readModelRegistry" },
     "screens": { "$ref": "#/$defs/screenRegistry" },
+    "ingresses": { "$ref": "#/$defs/ingressRegistry" },
     "automations": { "$ref": "#/$defs/automationRegistry" },
     "slices": {
       "type": "array",
       "items": { "$ref": "#/$defs/slice" }
     },
-    "hotspots": { "$ref": "#/$defs/hotspotRegistry" }
+    "hotspots": { "$ref": "#/$defs/hotspotRegistry" },
+    "dataSubjects": { "$ref": "#/$defs/dataSubjects" },
+    "partitioning": { "$ref": "#/$defs/partitioning" }
   },
   "additionalProperties": false,
 
@@ -226,6 +229,7 @@
         "swimlaneId": { "$ref": "#/$defs/id" },
         "aggregate": { "type": "string", "minLength": 1 },
         "endsStream": { "type": "boolean", "default": false },
+        "partitioned": { "type": "boolean", "default": true },
         "fields": {
           "type": "array",
           "items": { "$ref": "#/$defs/field" }
@@ -256,7 +260,8 @@
         "requiredRole": { "$ref": "#/$defs/roleRequirement" },
         "fieldGatedRole": { "$ref": "#/$defs/commandFieldGatedRole" },
         "requiredOwnership": { "$ref": "#/$defs/commandOwnership" },
-        "scope": { "$ref": "#/$defs/commandScope" }
+        "scope": { "$ref": "#/$defs/commandScope" },
+        "partitioned": { "type": "boolean", "default": true }
       },
       "additionalProperties": false
     },
@@ -287,16 +292,18 @@
           "items": { "$ref": "#/$defs/id" },
           "minItems": 1
         },
-        "via": {
-          "type": "object",
-          "required": ["readModelId", "keyField", "ownerField"],
-          "properties": {
-            "readModelId": { "$ref": "#/$defs/id" },
-            "keyField": { "type": "string", "minLength": 1 },
-            "ownerField": { "type": "string", "minLength": 1 }
-          },
-          "additionalProperties": false
-        }
+        "via": { "$ref": "#/$defs/ownershipVia" }
+      },
+      "additionalProperties": false
+    },
+
+    "ownershipVia": {
+      "type": "object",
+      "required": ["readModelId", "keyField", "ownerField"],
+      "properties": {
+        "readModelId": { "$ref": "#/$defs/id" },
+        "keyField": { "type": "string", "minLength": 1 },
+        "ownerField": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     },
@@ -348,7 +355,8 @@
             "filterLocalField": { "type": "string", "minLength": 1 }
           },
           "additionalProperties": false
-        }
+        },
+        "grantsAccess": { "type": "boolean", "default": false }
       },
       "additionalProperties": false
     },
@@ -430,8 +438,70 @@
           "type": "array",
           "items": { "$ref": "#/$defs/readModelFilter" }
         },
-        "requiredRole": { "$ref": "#/$defs/roleRequirement" }
+        "requiredRole": { "$ref": "#/$defs/roleRequirement" },
+        "selfAccess": { "$ref": "#/$defs/readModelSelfAccess" },
+        "partitioned": { "type": "boolean", "default": true }
       },
+      "additionalProperties": false
+    },
+
+    "readModelSelfAccess": {
+      "type": "object",
+      "required": ["subjectField"],
+      "properties": {
+        "subjectField": { "type": "string", "minLength": 1 },
+        "via": { "$ref": "#/$defs/ownershipVia" },
+        "param": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+
+    "partitioning": {
+      "type": "object",
+      "required": ["key"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+        "description": { "type": "string" },
+        "crossPartitionRoles": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "dataSubjects": {
+      "type": "object",
+      "properties": {
+        "erasure": { "$ref": "#/$defs/erasureAuthorization" }
+      },
+      "additionalProperties": false
+    },
+
+    "erasureAuthorization": {
+      "type": "object",
+      "properties": {
+        "self": { "type": "boolean", "default": false },
+        "roles": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "via": { "$ref": "#/$defs/ownershipVia" }
+      },
+      "anyOf": [
+        { "type": "object", "required": ["self"], "properties": { "self": { "const": true } } },
+        { "type": "object", "required": ["roles"] }
+      ],
+      "allOf": [
+        {
+          "if": { "type": "object", "required": ["via"] },
+          "then": { "type": "object", "required": ["self"], "properties": { "self": { "const": true } } }
+        }
+      ],
       "additionalProperties": false
     },
 
@@ -442,6 +512,26 @@
         "name": { "type": "string", "minLength": 1 },
         "description": { "type": "string" },
         "actorLaneId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": false
+    },
+
+    "ingress": {
+      "type": "object",
+      "required": ["name", "verification", "deliveryIdField"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "swimlaneId": { "$ref": "#/$defs/id" },
+        "verification": {
+          "type": "object",
+          "required": ["scheme"],
+          "properties": {
+            "scheme": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
+        "deliveryIdField": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     },
@@ -496,6 +586,11 @@
       "propertyNames": { "$ref": "#/$defs/id" },
       "additionalProperties": { "$ref": "#/$defs/screen" }
     },
+    "ingressRegistry": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/id" },
+      "additionalProperties": { "$ref": "#/$defs/ingress" }
+    },
     "automationRegistry": {
       "type": "object",
       "propertyNames": { "$ref": "#/$defs/id" },
@@ -527,6 +622,15 @@
       "additionalProperties": false
     },
 
+    "elapsedRef": {
+      "type": "object",
+      "required": ["elapsed"],
+      "properties": {
+        "elapsed": { "$ref": "#/$defs/duration" }
+      },
+      "additionalProperties": false
+    },
+
     "commandRef": {
       "type": "object",
       "required": ["commandId"],
@@ -543,7 +647,18 @@
       "properties": {
         "readModelId": { "$ref": "#/$defs/id" },
         "queryParams": { "type": "object" },
-        "asOf": { "type": "string", "format": "date" }
+        "asOf": { "type": "string", "format": "date" },
+        "caller": { "$ref": "#/$defs/scenarioCaller" }
+      },
+      "additionalProperties": false
+    },
+
+    "scenarioCaller": {
+      "type": "object",
+      "required": ["subjectId"],
+      "properties": {
+        "subjectId": { "type": "string", "minLength": 1 },
+        "role": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     },
@@ -596,7 +711,12 @@
         "kind": { "$ref": "#/$defs/scenarioKind" },
         "given": {
           "type": "array",
-          "items": { "$ref": "#/$defs/eventRef" }
+          "items": {
+            "oneOf": [
+              { "$ref": "#/$defs/eventRef" },
+              { "$ref": "#/$defs/elapsedRef" }
+            ]
+          }
         }
       }
     },
@@ -642,6 +762,115 @@
       "unevaluatedProperties": false
     },
 
+    "duration": {
+      "type": "string",
+      "pattern": "^P(?=\\d|T\\d)(\\d+W)?(\\d+D)?(T(?=\\d)(\\d+H)?(\\d+M)?(\\d+S)?)?$"
+    },
+
+    "settingName": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$"
+    },
+
+    "durationValue": {
+      "oneOf": [
+        { "$ref": "#/$defs/duration" },
+        {
+          "type": "object",
+          "required": ["setting", "default"],
+          "properties": {
+            "setting": { "$ref": "#/$defs/settingName" },
+            "default": { "$ref": "#/$defs/duration" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+
+    "cronExpression": {
+      "type": "string",
+      "pattern": "^\\S+(\\s+\\S+){4}$"
+    },
+
+    "cronValue": {
+      "oneOf": [
+        { "$ref": "#/$defs/cronExpression" },
+        {
+          "type": "object",
+          "required": ["setting", "default"],
+          "properties": {
+            "setting": { "$ref": "#/$defs/settingName" },
+            "default": { "$ref": "#/$defs/cronExpression" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+
+    "automationDelay": {
+      "type": "object",
+      "oneOf": [
+        { "type": "object", "required": ["after"] },
+        { "type": "object", "required": ["at"] }
+      ],
+      "properties": {
+        "after": { "$ref": "#/$defs/durationValue" },
+        "at": { "type": "string", "minLength": 1 },
+        "key": { "type": "string", "minLength": 1 },
+        "cancelledByEventIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "automationEffect": {
+      "type": "object",
+      "required": ["swimlaneId", "gaveUp"],
+      "properties": {
+        "swimlaneId": { "$ref": "#/$defs/id" },
+        "description": { "type": "string" },
+        "gaveUp": {
+          "type": "object",
+          "required": ["commandId", "resultEventIds"],
+          "properties": {
+            "commandId": { "$ref": "#/$defs/id" },
+            "resultEventIds": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/id" },
+              "minItems": 1
+            },
+            "outcomes": { "$ref": "#/$defs/eventOutcomes" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "automationSchedule": {
+      "type": "object",
+      "required": ["cron"],
+      "properties": {
+        "cron": { "$ref": "#/$defs/cronValue" },
+        "timeZone": { "type": "string", "minLength": 1, "default": "UTC" }
+      },
+      "additionalProperties": false
+    },
+
+    "eventOutcomes": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/id" },
+        "uniqueItems": true
+      },
+      "minItems": 1
+    },
+
     "sliceBase": {
       "type": "object",
       "required": ["id", "name", "pattern", "swimlaneId", "status", "scenarios"],
@@ -668,15 +897,21 @@
           "if": { "type": "object", "properties": { "pattern": { "const": "stateChange" } } },
           "then": {
             "type": "object",
-            "required": ["screenId", "commandId", "eventIds"],
+            "required": ["commandId", "eventIds"],
+            "oneOf": [
+              { "type": "object", "required": ["screenId"] },
+              { "type": "object", "required": ["ingressId"] }
+            ],
             "properties": {
               "screenId": { "$ref": "#/$defs/id" },
+              "ingressId": { "$ref": "#/$defs/id" },
               "commandId": { "$ref": "#/$defs/id" },
               "eventIds": {
                 "type": "array",
                 "items": { "$ref": "#/$defs/id" },
                 "minItems": 1
               },
+              "outcomes": { "$ref": "#/$defs/eventOutcomes" },
               "scenarios": {
                 "type": "array",
                 "items": {
@@ -709,7 +944,17 @@
           "if": { "type": "object", "properties": { "pattern": { "const": "automation" } } },
           "then": {
             "type": "object",
-            "required": ["automationId", "triggerEventIds", "commandId", "resultEventIds"],
+            "required": ["automationId", "commandId", "resultEventIds"],
+            "oneOf": [
+              { "type": "object", "required": ["triggerEventIds"] },
+              { "type": "object", "required": ["schedule"] }
+            ],
+            "allOf": [
+              {
+                "if": { "type": "object", "required": ["delay"] },
+                "then": { "type": "object", "required": ["triggerEventIds"] }
+              }
+            ],
             "properties": {
               "automationId": { "$ref": "#/$defs/id" },
               "triggerEventIds": {
@@ -717,6 +962,10 @@
                 "items": { "$ref": "#/$defs/id" },
                 "minItems": 1
               },
+              "delay": { "$ref": "#/$defs/automationDelay" },
+              "schedule": { "$ref": "#/$defs/automationSchedule" },
+              "effect": { "$ref": "#/$defs/automationEffect" },
+              "partitionFrom": { "type": "string", "minLength": 1 },
               "readModelId": { "$ref": "#/$defs/id" },
               "commandId": { "$ref": "#/$defs/id" },
               "resultEventIds": {
@@ -724,6 +973,7 @@
                 "items": { "$ref": "#/$defs/id" },
                 "minItems": 1
               },
+              "outcomes": { "$ref": "#/$defs/eventOutcomes" },
               "scenarios": {
                 "type": "array",
                 "items": {
@@ -746,7 +996,7 @@
           "properties": {
             "kind": { "const": "element" },
             "elementType": {
-              "enum": ["swimlane", "event", "command", "readModel", "screen", "automation", "chapter", "actorLane"]
+              "enum": ["swimlane", "event", "command", "readModel", "screen", "ingress", "automation", "chapter", "actorLane"]
             },
             "elementId": { "$ref": "#/$defs/id" }
           },

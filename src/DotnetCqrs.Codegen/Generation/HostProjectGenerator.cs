@@ -630,6 +630,11 @@ public static class HostProjectGenerator
             foreach (var readModel in domain.ReadModels)
             {
                 var typeName = GenerationSupport.ExportName(readModel.Collection);
+                // Schema 3.8.0 access rules fail closed: unlike requiredRole alone, such a route
+                // refuses every query until the operator wires both hooks.
+                if (readModel.HasAccessRules)
+                    b.AppendLine($"// {readModel.Collection}: declares who may read which rows (schema 3.8.0), so it refuses every query " +
+                        "until resolveOwnRole and resolveSubjectId are both wired.");
                 b.AppendLine($"app.Map{typeName}Route();");
             }
         }

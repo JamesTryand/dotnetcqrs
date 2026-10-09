@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace DotnetCqrs.Codegen.Model;
@@ -27,13 +28,24 @@ public sealed record CommandDef(
 public sealed record ReadModelDef(
     string Name, string? Description, string? Question, IReadOnlyList<string>? BuiltFromEventIds,
     IReadOnlyList<Field>? Fields, IReadOnlyList<ReadModelScopeDef>? Scopes, IReadOnlyList<ReadModelFilterDef>? Filters,
-    [property: JsonConverter(typeof(RoleOrRolesConverter))] IReadOnlyList<string>? RequiredRole);
+    [property: JsonConverter(typeof(RoleOrRolesConverter))] IReadOnlyList<string>? RequiredRole,
+    ReadModelSelfAccessDef? SelfAccess = null);
+
+/// <summary><c>readModel.selfAccess</c> (schema 3.2.0; <c>Param</c> 3.8.0): a caller without
+/// <c>requiredRole</c> sees only the rows whose <c>SubjectField</c> is their own subject id, and
+/// a request carrying <c>Param</c> narrows any caller to those rows. <c>Via</c> (a subject id
+/// that is not the login id) is not implemented here; the mapper refuses a document that
+/// declares it rather than silently reading the caller's id instead.</summary>
+public sealed record ReadModelSelfAccessDef(string SubjectField, JsonElement? Via, string? Param);
 
 /// <summary>One <c>readModel.scopes</c> entry: a query param that resolves through
 /// another read model rather than naming one of this model's own columns — the
 /// semi-join case (e.g. <c>pmStaffId</c> → <c>project-managers.staffId</c> →
 /// <c>project-managers.projectId</c> → this model's own <c>projectId</c>).</summary>
-public sealed record ReadModelScopeDef(string Param, ReadModelScopeVia Via);
+///
+/// <para><c>GrantsAccess</c> (schema 3.8.0): the param is bound to the caller's own subject id,
+/// and a caller without <c>requiredRole</c> may see the rows this scope admits for them.</para>
+public sealed record ReadModelScopeDef(string Param, ReadModelScopeVia Via, bool? GrantsAccess = null);
 
 public sealed record ReadModelScopeVia(string ReadModelId, string MatchParamTo, string SelectField, string FilterLocalField);
 

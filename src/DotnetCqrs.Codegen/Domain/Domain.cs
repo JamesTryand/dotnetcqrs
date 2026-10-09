@@ -206,7 +206,22 @@ public sealed class ReadModel
     /// (<see cref="Generation.ReadModelQueryGenerator"/>) — each route already only ever
     /// needs its OWN read model's fixed role list, so there's no runtime lookup to do.</summary>
     public IReadOnlyList<string>? RequiredRole { get; init; }
+
+    /// <summary><c>readModel.selfAccess</c> (schema 3.2.0, <c>Param</c> 3.8.0), resolved: the
+    /// column holding each row's subject id, and the optional param that asks for the caller's
+    /// own rows. See <see cref="Generation.ReadAccess"/> for the rule.</summary>
+    public ReadModelSelfAccess? SelfAccess { get; init; }
+
+    /// <summary>Whether this read model declares any access rule beyond
+    /// <see cref="RequiredRole"/>: <see cref="SelfAccess"/> or a scope with
+    /// <see cref="ReadModelScope.GrantsAccess"/> (schema 3.8.0).</summary>
+    public bool HasAccessRules => SelfAccess is not null || Scopes.Any(s => s.GrantsAccess);
 }
+
+/// <summary><c>readModel.selfAccess</c>, resolved: <c>SubjectField</c> is a field of this read
+/// model (sanitised; snake-cased at the use site like every column), <c>Param</c> the optional
+/// query param that narrows any caller to their own rows.</summary>
+public sealed record ReadModelSelfAccess(string SubjectField, string? Param);
 
 /// <summary>One <c>readModel.scopes</c> entry, fully resolved: <c>ViaCollection</c> is
 /// already the target physical collection/table name (resolved once, here, from the
@@ -214,7 +229,12 @@ public sealed class ReadModel
 /// and the field names are the via-model's and this model's own, unresolved beyond
 /// <see cref="Domain.Names.SanitizeName"/> since the generator snake-cases columns at
 /// its own use site the same way it already does for every other field.</summary>
-public sealed record ReadModelScope(string Param, string ViaCollection, string MatchParamToField, string SelectField, string FilterLocalField);
+///
+/// <para><c>GrantsAccess</c> (schema 3.8.0): the param is bound to the caller's own subject id
+/// (the request's value is ignored), and a caller without <c>requiredRole</c> may see the rows
+/// this scope admits for them.</para>
+public sealed record ReadModelScope(string Param, string ViaCollection, string MatchParamToField, string SelectField, string FilterLocalField,
+    bool GrantsAccess = false);
 
 /// <summary>One <c>readModel.filters</c> entry, fully resolved (schema 2.4.0): a
 /// single-field WHERE-range filter with named presets, sibling to

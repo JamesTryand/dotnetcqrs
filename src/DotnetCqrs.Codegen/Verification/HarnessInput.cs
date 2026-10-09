@@ -59,7 +59,17 @@ public sealed record ViewScenarioInput(
     IReadOnlyList<ViewFilterInput> Filters, // every readModel.filters entry -- the harness only acts on one whose param is actually present in QueryParams
     IReadOnlyList<string> PiiColumns, // snake_case columns holding the envelope; revealed through PiiColumnRevealer like a real query route
     string? SearchIndexTypeName = null, // the generated {Collection}SearchIndex, when the read model has pii contains filters
-    string? HashedIndexTypeName = null); // the generated {Collection}HashedIndex, when it has pii exact/prefix filters (D6)
+    string? HashedIndexTypeName = null, // the generated {Collection}HashedIndex, when it has pii exact/prefix filters (D6)
+    ViewAccessInput? Access = null, // schema 3.8.0: the read model's access rules, when it declares any
+    ViewCallerInput? Caller = null); // schema 3.8.0 when.caller; null reads as a caller holding requiredRole
+
+/// <summary>A read model's access declarations (schema 3.2.0/3.8.0), as columns: the harness
+/// builds the same <c>ReadAccess.Policy</c> the generated route bakes in. <c>GrantParams</c>
+/// names which entries of <see cref="ViewScenarioInput.Scopes"/> grant access.</summary>
+public sealed record ViewAccessInput(IReadOnlyList<string>? RequiredRole, string? SubjectColumn, string? SelfParam, IReadOnlyList<string> GrantParams);
+
+/// <summary>A stateView scenario's caller (schema 3.8.0).</summary>
+public sealed record ViewCallerInput(string SubjectId, string? Role);
 
 /// <summary>One active <c>readModel.scopes</c> entry for this scenario's query --
 /// resolved to the VIA read model's own generated projection, so the harness can seed

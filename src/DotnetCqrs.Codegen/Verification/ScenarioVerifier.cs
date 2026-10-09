@@ -148,7 +148,9 @@ public static class ScenarioVerifier
         var viaIdFieldNames = new Dictionary<string, string?>(); // via projection type name -> that read model's own idAttribute field name
         foreach (var scope in info.Scopes)
         {
-            if (!queryParamNames.Contains(scope.Param)) continue;
+            // A granting scope (schema 3.8.0) can widen what a restricted caller sees whether or
+            // not the scenario sends its param, so its via table is always seeded.
+            if (!queryParamNames.Contains(scope.Param) && !scope.GrantsAccess) continue;
             if (!index.ReadModelByCollection.TryGetValue(scope.ViaCollection, out var via))
             {
                 results.Add(new ScenarioResult(slice.Id, scenario.Id, scenario.Name, "stateView", Passed: false, Skipped: true,
@@ -200,12 +202,21 @@ public static class ScenarioVerifier
             ? $"Generated.{aggregatePascal}.{GenerationSupport.ExportName(info.Collection)}HashedIndex"
             : null;
 
+        var access = readModelDomain.HasAccessRules
+            ? new ViewAccessInput(readModelDomain.RequiredRole,
+                readModelDomain.SelfAccess is { } selfAccess ? ToSnakeCase(selfAccess.SubjectField) : null,
+                readModelDomain.SelfAccess?.Param,
+                readModelDomain.Scopes.Where(s => s.GrantsAccess).Select(s => s.Param).ToList())
+            : null;
+        var caller = scenario.When.Caller is { } c ? new ViewCallerInput(c.SubjectId, c.Role) : null;
+
         viewScenarios.Add(new ViewScenarioInput(
             slice.Id, scenario.Id, scenario.Name, projectionTypeName, info.Aggregate,
             info.Collection, given,
             scenario.When.QueryParams?.GetRawText(), scenario.When.AsOf,
             scenario.Then.Result.GetRawText(), scopes, filters,
-            index.ReadModelPiiColumns.GetValueOrDefault(readModelId) ?? [], searchIndexTypeName, hashedIndexTypeName));
+            index.ReadModelPiiColumns.GetValueOrDefault(readModelId) ?? [], searchIndexTypeName, hashedIndexTypeName,
+            access, caller));
     }
 
     private static readonly IReadOnlyDictionary<string, string> EmptyPiiFields = new Dictionary<string, string>();

@@ -668,7 +668,13 @@ public sealed class DocumentMapper
             if (keyNote is not null) _report.Warn(keyNote);
             CheckReadModelPii(id, rm, seedEventIds, key);
 
-            var readModel = new Domain.ReadModel { Collection = Names.SanitizeName(CollectionName(rm.Name, id)), Key = key, RequiredRole = rm.RequiredRole };
+            var readModel = new Domain.ReadModel
+            {
+                Collection = Names.SanitizeName(CollectionName(rm.Name, id)), Key = key, RequiredRole = rm.RequiredRole,
+                SelfAccess = rm.SelfAccess is { } selfAccess
+                    ? new Domain.ReadModelSelfAccess(Names.SanitizeName(selfAccess.SubjectField), selfAccess.Param)
+                    : null,
+            };
             readModel.Fields.AddRange(BuildFields($"read model \"{id}\"", rm.Fields ?? [], defaultRowKeyField: key));
             readModel.On.AddRange(onEventIds.Select(EventTypeName));
             readModel.SeedOn.AddRange(onEventIds.Where(seedEventIds.Contains).Select(EventTypeName));
@@ -685,7 +691,8 @@ public sealed class DocumentMapper
                     scopeDef.Param, viaCollection,
                     Names.SanitizeName(scopeDef.Via.MatchParamTo),
                     Names.SanitizeName(scopeDef.Via.SelectField),
-                    Names.SanitizeName(scopeDef.Via.FilterLocalField)));
+                    Names.SanitizeName(scopeDef.Via.FilterLocalField),
+                    scopeDef.GrantsAccess == true));
             }
             foreach (var filterDef in rm.Filters ?? [])
             {
@@ -726,8 +733,32 @@ public sealed class DocumentMapper
             foreach (var filter in readModel.Filters.Where(fl => !fl.IsMatch && piiColumns.Contains(fl.Field)))
                 _report.Error($"read model \"{id}\" filter on param \"{filter.Param}\" ranges over pii field \"{filter.Field}\" -- " +
                     "an encrypted column cannot be compared in SQL");
+            CheckReadAccess(id, readModel, piiColumns);
             GetOrCreateDomain(chosenOwner).ReadModels.Add(readModel);
         }
+    }
+
+    /// <summary>Schema 3.2.0/3.8.0 access declarations that could not be applied as written. Each
+    /// is an error rather than a warning: a rule about who may read what that silently does
+    /// something else is worse than no generated code at all.</summary>
+    private void CheckReadAccess(string id, Domain.ReadModel readModel, HashSet<string> piiColumns)
+    {
+        var columns = readModel.Fields.Select(f => f.Name).ToHashSet(StringComparer.Ordinal);
+        var filterParams = readModel.Filters.Select(f => f.Param).ToHashSet(StringComparer.Ordinal);
+        if (readModel.SelfAccess is { } selfAccess)
+        {
+            if (!columns.Contains(selfAccess.SubjectField))
+                _report.Error($"read model \"{id}\" selfAccess.subjectField \"{selfAccess.SubjectField}\" is not one of its fields");
+            else if (piiColumns.Contains(selfAccess.SubjectField))
+                _report.Error($"read model \"{id}\" selfAccess.subjectField \"{selfAccess.SubjectField}\" is pii -- " +
+                    "an encrypted column cannot be compared in SQL");
+            if (selfAccess.Param is { } param && (filterParams.Contains(param) || readModel.Scopes.Any(s => s.Param == param)))
+                _report.Error($"read model \"{id}\" selfAccess.param \"{param}\" is also a filter or scope param -- " +
+                    "one param cannot both name the caller and take a value from the request");
+        }
+        foreach (var grant in readModel.Scopes.Where(s => s.GrantsAccess))
+            if (filterParams.Contains(grant.Param))
+                _report.Error($"read model \"{id}\" granting scope param \"{grant.Param}\" is also a filter param");
     }
 
     private static readonly HashSet<string> MatchModes = ["exact", "prefix", "contains"];

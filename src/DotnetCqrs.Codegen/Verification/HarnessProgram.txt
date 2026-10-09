@@ -161,7 +161,8 @@ static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scen
             }
         }
 
-        var rows = await SelectRowsAsync(readModel.Connection, scenario.TableName, scenario.QueryParams, scenario.AsOf, scenario.Scopes, scenario.Filters, kms);
+        var rows = await SelectRowsAsync(readModel.Connection, scenario.TableName, scenario.QueryParams, scenario.AsOf, scenario.Scopes, scenario.Filters, kms,
+            scenario.Access, scenario.Caller);
         await DotnetCqrs.Crypto.PiiColumnRevealer.RevealAsync(rows, scenario.PiiColumns ?? [], kms);
         if (searchStore is not null)
         {
@@ -270,7 +271,7 @@ static async Task CallInitAsync(object projection)
 
 static async Task<List<Dictionary<string, object?>>> SelectRowsAsync(
     DbConnection db, string table, string? queryParamsJson, string? asOf, List<ViewScopeInput> scopes, List<ViewFilterInput> filters,
-    DotnetCqrs.Crypto.IKmsClient kms)
+    DotnetCqrs.Crypto.IKmsClient kms, ViewAccessInput? access = null, ViewCallerInput? caller = null)
 {
     // schema 2.6.0: a scenario-supplied asOf pins what "today" means for a dateRange
     // preset below, instead of always reading the live clock -- see ReadModelQuery's
@@ -278,20 +279,40 @@ static async Task<List<Dictionary<string, object?>>> SelectRowsAsync(
     var today = asOf is not null ? DateOnly.Parse(asOf) : DateOnly.FromDateTime(DateTime.UtcNow);
     string sql;
     var parameters = new Dictionary<string, object?>();
-    if (string.IsNullOrEmpty(queryParamsJson) || queryParamsJson == "{}")
-    {
-        // Unscoped: a manager-style "see everything" view. Each given event already
-        // carries its own resolved row key (see ScenarioVerifier), so the rows in the
-        // table already ARE exactly the fixture's distinct entities -- no WHERE needed.
-        sql = $"SELECT * FROM {table}";
-    }
-    else
+    var clauses = new List<string>();
+    var i = 0;
+
+    // schema 3.8.0: the same ReadAccess rule the generated route applies. A scenario without
+    // a caller reads as a role holder (what every scenario meant before 3.8.0), and its bound
+    // params take the value the scenario sends as the caller's subject id. With a caller, the
+    // caller's own subject id is used and the sent value is ignored, exactly as at runtime.
+    ReadAccess.Policy? policy = access is null ? null : new ReadAccess.Policy(
+        access.RequiredRole?.ToArray(), access.SubjectColumn, access.SelfParam,
+        scopes.Where(s => access.GrantParams.Contains(s.Param))
+            .Select(s => new ReadAccess.Grant(s.Param, s.ViaTableName, s.MatchParamToColumn, s.SelectColumn, s.FilterLocalColumn))
+            .ToArray());
+    var standing = policy is null || caller is null
+        ? ReadAccess.Standing.Unrestricted
+        : ReadAccess.Decide(policy, roleResolverWired: true, caller.Role);
+    // A refused caller gets nothing; the route answers 403, and a then.result of no rows is how
+    // a scenario says so.
+    if (standing == ReadAccess.Standing.Refused) return [];
+    if (standing == ReadAccess.Standing.Restricted)
+        i = ReadAccess.Restrict(policy!, caller!.SubjectId, clauses, parameters, i);
+
+    if (!string.IsNullOrEmpty(queryParamsJson) && queryParamsJson != "{}")
     {
         var query = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(queryParamsJson)!;
-        var clauses = new List<string>();
-        var i = 0;
         foreach (var (key, value) in query)
         {
+            if (policy is not null && policy.IsBound(key))
+            {
+                var subject = caller?.SubjectId ?? (value.ValueKind == JsonValueKind.String ? value.GetString() : value.GetRawText());
+                i = key == policy.SelfParam
+                    ? ReadAccess.BindSelf(policy, subject, clauses, parameters, i)
+                    : ReadAccess.BindGrant(policy.Grants.First(g => g.Param == key), subject, clauses, parameters, i);
+                continue;
+            }
             // A param this read model actually DECLARES as a dateRange filter (schema
             // 2.4.0) becomes a real `col >= @from AND col <= @to` predicate against
             // Filters[i].Field -- resolving the runtime `{kind, from?, to?}` value
@@ -361,8 +382,11 @@ static async Task<List<Dictionary<string, object?>>> SelectRowsAsync(
                 : $"{scope.FilterLocalColumn} IN (SELECT {scope.SelectColumn} FROM {scope.ViaTableName} WHERE {scope.MatchParamToColumn} = {paramName})");
             parameters[paramName] = paramValue;
         }
-        sql = clauses.Count == 0 ? $"SELECT * FROM {table}" : $"SELECT * FROM {table} WHERE {string.Join(" AND ", clauses)}";
     }
+    // With no clauses this is the unscoped, manager-style view. Each given event already
+    // carries its own resolved row key (see ScenarioVerifier), so the rows in the table
+    // already ARE exactly the fixture's distinct entities.
+    sql = clauses.Count == 0 ? $"SELECT * FROM {table}" : $"SELECT * FROM {table} WHERE {string.Join(" AND ", clauses)}";
 
     await using var command = db.CreateCommand();
     command.CommandText = sql;
@@ -375,8 +399,8 @@ static async Task<List<Dictionary<string, object?>>> SelectRowsAsync(
         while (await reader.ReadAsync())
         {
             var row = new Dictionary<string, object?>();
-            for (var i = 0; i < reader.FieldCount; i++)
-                row[reader.GetName(i)] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+            for (var c = 0; c < reader.FieldCount; c++)
+                row[reader.GetName(c)] = reader.IsDBNull(c) ? null : reader.GetValue(c);
             rows.Add(row);
         }
     }
@@ -577,7 +601,9 @@ record CommandScenarioInput(string SliceId, string ScenarioId, string Name, stri
 record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,
     string TableName, List<ViewGivenEventInput> Given, string? QueryParams, string? AsOf, string ExpectedResult,
     List<ViewScopeInput> Scopes, List<ViewFilterInput> Filters, List<string>? PiiColumns = null, string? SearchIndexTypeName = null,
-    string? HashedIndexTypeName = null);
+    string? HashedIndexTypeName = null, ViewAccessInput? Access = null, ViewCallerInput? Caller = null);
+record ViewAccessInput(List<string>? RequiredRole, string? SubjectColumn, string? SelfParam, List<string> GrantParams);
+record ViewCallerInput(string SubjectId, string? Role);
 record ViewScopeInput(string Param, string ViaProjectionTypeName, string ViaTableName, string MatchParamToColumn, string SelectColumn, string FilterLocalColumn);
 record ViewFilterInput(string Param, string Field, string Kind,
     string? Mode = null, string? Normalize = null, int? MinPrefixLength = null, string? MatchClause = null, bool Hashed = false);
