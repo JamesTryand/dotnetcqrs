@@ -381,12 +381,20 @@ public sealed class ConsumerEngine : IReadModelChangeFeed
     }
 
     /// <summary>Tells the live subscribers of <paramref name="consumer"/>'s tables that it applied events up to
-    /// <paramref name="position"/>. Only a projection changes a view, and only when its position moved past
+    /// <paramref name="position"/>. A projection changes its own tables; an <see cref="IChangesViews"/> consumer
+    /// says which tables it changed; anything else changes no view. Only when its position moved past
     /// <paramref name="from"/>. A subscriber that throws is logged and skipped.</summary>
     private void PublishChanged(IConsumer consumer, long from, long position)
     {
-        if (position <= from || consumer is not IProjection projection || _changeSubscribers.IsEmpty) return;
-        foreach (var table in projection.Tables)
+        if (position <= from) return;
+        IReadOnlyCollection<string> tables = consumer switch
+        {
+            IProjection projection => projection.Tables,
+            IChangesViews changer => changer.TakeChangedTables(),
+            _ => [],
+        };
+        if (tables.Count == 0 || _changeSubscribers.IsEmpty) return;
+        foreach (var table in tables)
         {
             var change = new ReadModelChanged(table, position);
             foreach (var subscriber in _changeSubscribers.Values)

@@ -26,3 +26,13 @@ public interface IReadModelChangeFeed
     /// <paramref name="tables"/>, until the returned subscription is disposed.</summary>
     IDisposable Subscribe(IReadOnlyCollection<string> tables, Action<ReadModelChanged> onChanged);
 }
+
+/// <summary>A consumer that is not a projection, but whose work still changes what a view shows. Erasing someone
+/// changes no table, yet once their key is gone (or this process has marked them erased) their personal data
+/// reads back redacted, so every view holding it has changed. After each batch the engine asks which tables
+/// changed and tells their live subscribers, as it does for a projection's own tables.</summary>
+public interface IChangesViews : IConsumer
+{
+    /// <summary>The tables whose result changed since the last call (empty when none did), and resets.</summary>
+    IReadOnlyCollection<string> TakeChangedTables();
+}

@@ -83,7 +83,11 @@ public static class InMemoryHost
             .Select(f => (f.Name, f.Source))
             .Append(("WebImplicitUsings.g.cs", WebImplicitUsings))
             .Append(("Program.cs", programCs));
-        var program = InProcessHarness.RunAsync(sources, [], CancellationToken.None, alsoReference: [typeof(InMemoryHost).Assembly]);
+        var program = InProcessHarness.RunAsync(sources, [], CancellationToken.None, alsoReference: [
+            typeof(InMemoryHost).Assembly,
+            // Generated query routes run on DotnetCqrs.Host's LiveView (D27); a generated host references it anyway.
+            typeof(DotnetCqrs.Host.LiveView).Assembly,
+        ]);
 
         var first = await Task.WhenAny(session.Started.Task, program, Task.Delay(TimeSpan.FromMinutes(2)));
         if (first == program)

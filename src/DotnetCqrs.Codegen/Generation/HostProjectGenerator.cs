@@ -445,6 +445,8 @@ public static class HostProjectGenerator
             }
             b.AppendLine("}");
         }
+        // D27: the live routes subscribe to the engine's read-model change feed.
+        b.AppendLine("builder.Services.AddSingleton<IReadModelChangeFeed>(engine);");
         var searchIndexed = mapped.Domains
             .SelectMany(d => d.ReadModels.Where(rm => GenerationSupport.IndexedMatchFilters(rm).Any()).Select(rm => (Domain: d, ReadModel: rm)))
             .ToList();
@@ -531,7 +533,10 @@ public static class HostProjectGenerator
             // starts; any position at or behind the destroyer's is safe.
             // Destroying a key is the writer's; every node empties its own reveal cache.
             b.AppendLine("if (!isReader) engine.Register(new SubjectKeyDestroyer(kms));");
-            b.AppendLine("await engine.RegisterPiiCacheEvictorAsync(piiCache, consumerState);");
+            // D27: the read models holding personal data, so their live viewers are pushed the redacted result.
+            var piiTables = mapped.Domains.SelectMany(d => d.ReadModels).Where(rm => rm.Fields.Any(f => f.Pii))
+                .Select(rm => rm.Collection).Distinct().ToList();
+            b.AppendLine($"await engine.RegisterPiiCacheEvictorAsync(piiCache, consumerState, viewTables: {GenerationSupport.QuotedArray(piiTables)});");
         }
         b.AppendLine();
 
@@ -636,6 +641,8 @@ public static class HostProjectGenerator
                     b.AppendLine($"// {readModel.Collection}: declares who may read which rows (schema 3.8.0), so it refuses every query " +
                         "until resolveOwnRole and resolveSubjectId are both wired.");
                 b.AppendLine($"app.Map{typeName}Route();");
+                // D27: the same query as a live view (SSE), wired with the same hooks.
+                b.AppendLine($"app.Map{typeName}LiveRoute();");
             }
         }
         b.AppendLine();

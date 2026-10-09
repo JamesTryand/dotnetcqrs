@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using DotnetCqrs.Consumers;
+using DotnetCqrs.Crypto;
 using DotnetCqrs.EventStore;
 using DotnetCqrs.Projections;
 
@@ -191,5 +192,34 @@ public class ReadModelChangeFeedTests
         await engine.StopAsync(TimeSpan.FromSeconds(5));
         cts.Cancel();
         await loop;
+    }
+
+    [Fact]
+    public async Task Erasing_someone_tells_the_viewers_of_personal_data_though_no_table_changed()
+    {
+        // The evictor marks the subject erased in this process's reveal cache, so the views holding personal data
+        // now read back redacted: a change their live viewers must be pushed.
+        await using var store = await SeededStoreAsync(0);
+        var cache = new PiiRevealCache();
+        var engine = new ConsumerEngine(store, store);
+        await engine.RegisterPiiCacheEvictorAsync(cache, store, viewTables: ["staff", "timeEntries"]);
+        var changes = new ConcurrentQueue<ReadModelChanged>();
+        using var _ = engine.Subscribe(["staff", "timeEntries", "projects"], changes.Enqueue);
+
+        // An ordinary event changes nothing the evictor knows about.
+        await store.AppendAsync("counter", "c1", 0, [new NewEvent("Ticked", """{"n":1}""")]);
+        await engine.RunOnceAsync();
+        Assert.Empty(changes);
+
+        await store.AppendAsync(DataSubject.Aggregate, "s1", 0, [new NewEvent(DataSubject.SubjectErasedEvent, "{}")]);
+        await engine.RunOnceAsync();
+
+        Assert.True(cache.IsErased("s1"));
+        Assert.Equal([new ReadModelChanged("staff", 2), new ReadModelChanged("timeEntries", 2)], changes.ToArray());
+
+        // Reported once: the next batch without an erasure says nothing.
+        await store.AppendAsync("counter", "c1", 1, [new NewEvent("Ticked", """{"n":2}""")]);
+        await engine.RunOnceAsync();
+        Assert.Equal(2, changes.Count);
     }
 }

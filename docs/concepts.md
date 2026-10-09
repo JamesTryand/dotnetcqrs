@@ -149,6 +149,19 @@ what "eventually consistent" means — the source of truth moved first, the
 read view catches up. It's the same gap a CRUD system gets from a read
 replica or a cache.
 
+Don't fight the gap; follow the flow. A screen that shows a view doesn't
+re-read it after a command, or poll until it changes. It opens the view's
+**live route** (`GET /api/query/{collection}/live`, generated next to every
+query route) and keeps it open while the view is on screen. The route sends
+the current result, then a new one each time a projection changes the
+view's tables. Those are its own table and its scopes' via-tables, so a
+changed grant counts too. Every result goes through the viewer's own access
+rules. Behind it is the engine's change feed (`IReadModelChangeFeed`): after
+a projection checkpoints a batch, the subscribers to its tables are called
+back. The stream is Server-Sent Events, and a burst of changes collapses
+into one re-run. After a command, show the command's own outcome; the view
+follows when its push arrives.
+
 ## Storage: SQLite, twice
 
 Both the event store and the read models are SQLite, but treat them as two

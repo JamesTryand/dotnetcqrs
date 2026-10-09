@@ -104,7 +104,9 @@ public static class ReadModelQueryGenerator
         b.AppendLine("using System.Security.Claims;");
         b.AppendLine("using System.Text.Json;");
         b.AppendLine("using DotnetCqrs.Codegen.Generation;");
+        b.AppendLine("using DotnetCqrs.Consumers;");
         if (hasPii) b.AppendLine("using DotnetCqrs.Crypto;");
+        b.AppendLine("using DotnetCqrs.Host;");
         b.AppendLine("using DotnetCqrs.ReadModels;");
         b.AppendLine("using Microsoft.AspNetCore.Builder;");
         b.AppendLine("using Microsoft.AspNetCore.Http;");
@@ -119,6 +121,13 @@ public static class ReadModelQueryGenerator
         b.AppendLine("{");
         b.AppendLine("    /// <summary>This table's own columns: the only names a plain query param may use.</summary>");
         b.AppendLine($"    private static readonly string[] Columns = {GenerationSupport.QuotedArray(columns)};");
+        b.AppendLine();
+        // D27 live views: the result changes when this table changes, and when a scope's via-table does (for a
+        // granting scope, a change there changes what the caller may see at all).
+        var liveTables = new[] { readModel.Collection }.Concat(readModel.Scopes.Select(s => s.ViaCollection))
+            .Distinct().ToList();
+        b.AppendLine("    /// <summary>The tables this view's result depends on: its own, and each scope's via-table (D27 live views).</summary>");
+        b.AppendLine($"    private static readonly string[] LiveTables = {GenerationSupport.QuotedArray(liveTables)};");
         b.AppendLine();
         if (columnKinds.Count > 0)
         {
@@ -156,31 +165,64 @@ public static class ReadModelQueryGenerator
         // resolveSubjectId (schema 3.8.0) only on a route with access rules, so every other route's
         // signature is unchanged.
         var subjectHook = hasAccessRules ? ", Func<ClaimsPrincipal, string?>? resolveSubjectId = null" : "";
-        b.AppendLine($"    public static RouteHandlerBuilder Map{typeName}Route(this IEndpointRouteBuilder endpoints, string prefix = \"/api/query\", Func<ClaimsPrincipal, string>? resolveOwnRole = null{subjectHook})");
-        b.AppendLine("    {");
+        var subjectDecl = hasAccessRules ? ", Func<ClaimsPrincipal, string?>? resolveSubjectId" : "";
+        var subjectArg = hasAccessRules ? ", resolveSubjectId" : "";
         // IKmsClient is required, so a host that has PII but no key service fails the
         // request instead of serving envelopes as if they were values. The cache is
         // optional ([FromServices] on a nullable parameter), so a host without one
         // still works; it just makes a round trip for every read.
         var piiParams = hasPii ? ", [FromServices] IKmsClient kms, [FromServices] PiiRevealCache? cache" : "";
+        var piiDecl = hasPii ? ", IKmsClient kms, PiiRevealCache? cache" : "";
+        var piiArgs = hasPii ? ", kms, cache" : "";
         // A hashed match filter (pii exact/prefix, D6) hashes its term with the application's
         // index key, at the version its index is currently built with.
         if (readModel.Filters.Any(f => GenerationSupport.IsHashedMatch(readModel, f)))
+        {
             piiParams += ", [FromServices] HashedIndexKey indexKey";
+            piiDecl += ", HashedIndexKey indexKey";
+            piiArgs += ", indexKey";
+        }
+        var hooks = $"Func<ClaimsPrincipal, string>? resolveOwnRole = null{subjectHook}";
+        b.AppendLine($"    public static RouteHandlerBuilder Map{typeName}Route(this IEndpointRouteBuilder endpoints, string prefix = \"/api/query\", {hooks})");
+        b.AppendLine("    {");
         b.AppendLine($"        return endpoints.MapGet($\"{{prefix}}/{readModel.Collection}\", async (HttpRequest request, IReadModelStore store{piiParams}, CancellationToken ct) =>");
         b.AppendLine("        {");
+        b.AppendLine($"            var outcome = await QueryAsync(request, store{piiArgs}, resolveOwnRole{subjectArg}, ct);");
+        b.AppendLine("            return outcome.Refusal ?? Results.Ok(outcome.Rows);");
+        b.AppendLine("        });");
+        b.AppendLine("    }");
+        b.AppendLine();
+        // D27: the same query, kept current for one viewer. Same hooks, so a host wires both routes alike, and
+        // it is a separate route builder so a host's .RequireAuthorization() is chained onto it explicitly too.
+        b.AppendLine("    /// <summary>The live view of this read model (D27): the same query, with the same access rules, as a");
+        b.AppendLine("    /// Server-Sent Events stream that pushes a new result whenever a projection changes one of its tables.");
+        b.AppendLine("    /// See LiveView. Wire it with the same hooks as the query route.</summary>");
+        b.AppendLine($"    public static RouteHandlerBuilder Map{typeName}LiveRoute(this IEndpointRouteBuilder endpoints, string prefix = \"/api/query\", {hooks})");
+        b.AppendLine("    {");
+        b.AppendLine($"        return endpoints.MapGet($\"{{prefix}}/{readModel.Collection}/live\", (HttpContext http, IReadModelStore store, IReadModelChangeFeed feed{piiParams}) =>");
+        b.AppendLine($"            LiveView.StreamAsync(http, feed, LiveTables, ct => QueryAsync(http.Request, store{piiArgs}, resolveOwnRole{subjectArg}, ct)));");
+        b.AppendLine("    }");
+        b.AppendLine();
+        b.AppendLine("    /// <summary>One run of this read model's query for the caller of <paramref name=\"request\"/>: its rows, or the");
+        b.AppendLine("    /// refusal to answer instead. Shared by the query route and the live route, so they can't drift apart.</summary>");
+        b.AppendLine($"    private static async Task<LiveView.Outcome> QueryAsync(HttpRequest request, IReadModelStore store{piiDecl}, Func<ClaimsPrincipal, string>? resolveOwnRole{subjectDecl}, CancellationToken ct)");
+        b.AppendLine("    {");
+        // The body below was the query route's handler; it is emitted one level deeper than a method body,
+        // so it is collected separately and outdented.
+        var routeFile = b;
+        b = new StringBuilder();
         if (hasAccessRules)
         {
             b.AppendLine("            var user = request.HttpContext.User;");
             b.AppendLine("            var standing = ReadAccess.Decide(AccessPolicy, resolveOwnRole is not null, resolveOwnRole?.Invoke(user));");
             b.AppendLine("            if (standing == ReadAccess.Standing.Refused)");
-            b.AppendLine("                return Results.Problem(\"not authorized\", statusCode: StatusCodes.Status403Forbidden);");
+            b.AppendLine("                return LiveView.Outcome.Refused(Results.Problem(\"not authorized\", statusCode: StatusCodes.Status403Forbidden));");
             b.AppendLine("            string? subjectId = null;");
             b.AppendLine("            if (standing == ReadAccess.Standing.Restricted || request.Query.Keys.Any(AccessPolicy.IsBound))");
             b.AppendLine("            {");
             b.AppendLine("                // Fail closed: without a way to know who is asking, the rule cannot be applied.");
             b.AppendLine("                if (resolveSubjectId is null)");
-            b.AppendLine("                    return Results.Problem(\"not authorized: this read model's access rules need the caller's subject id, and the host has not wired resolveSubjectId\", statusCode: StatusCodes.Status403Forbidden);");
+            b.AppendLine("                    return LiveView.Outcome.Refused(Results.Problem(\"not authorized: this read model's access rules need the caller's subject id, and the host has not wired resolveSubjectId\", statusCode: StatusCodes.Status403Forbidden));");
             b.AppendLine("                subjectId = resolveSubjectId(user);");
             b.AppendLine("            }");
             b.AppendLine();
@@ -196,7 +238,7 @@ public static class ReadModelQueryGenerator
             b.AppendLine($"                string[] requiredRole = {GenerationSupport.QuotedArray(requiredRole)};");
             b.AppendLine("                var ownRole = resolveOwnRole(request.HttpContext.User);");
             b.AppendLine("                if (!requiredRole.Contains(ownRole, StringComparer.OrdinalIgnoreCase))");
-            b.AppendLine("                    return Results.Problem(\"not authorized\", statusCode: StatusCodes.Status403Forbidden);");
+            b.AppendLine("                    return LiveView.Outcome.Refused(Results.Problem(\"not authorized\", statusCode: StatusCodes.Status403Forbidden));");
             b.AppendLine("            }");
             b.AppendLine();
         }
@@ -224,11 +266,11 @@ public static class ReadModelQueryGenerator
             b.AppendLine("                    {");
             b.AppendLine($"                        var term = MatchNormalizer.Normalize(\"{filter.Normalize}\", raw);");
             b.AppendLine("                        if (term.Length == 0)");
-            b.AppendLine($"                            return Results.Problem(\"'{filter.Param}' needs a non-empty search term\", statusCode: StatusCodes.Status400BadRequest);");
+            b.AppendLine($"                            return LiveView.Outcome.Refused(Results.Problem(\"'{filter.Param}' needs a non-empty search term\", statusCode: StatusCodes.Status400BadRequest));");
             if (filter.MinPrefixLength is { } minLength)
             {
                 b.AppendLine($"                        if (MatchNormalizer.CodePointLength(term) < {minLength})");
-                b.AppendLine($"                            return Results.Problem(\"'{filter.Param}' needs at least {minLength} characters\", statusCode: StatusCodes.Status400BadRequest);");
+                b.AppendLine($"                            return LiveView.Outcome.Refused(Results.Problem(\"'{filter.Param}' needs at least {minLength} characters\", statusCode: StatusCodes.Status400BadRequest));");
             }
             b.AppendLine("                        var matchParam = $\"@p{i++}\";");
             // The clause text lands inside a generated C# string literal, so its backslash
@@ -245,7 +287,7 @@ public static class ReadModelQueryGenerator
                 b.AppendLine("                        }");
                 b.AppendLine("                        catch (Exception ex) when (ex is HttpRequestException or KmsProtocolException)");
                 b.AppendLine("                        {");
-                b.AppendLine($"                            return Results.Problem(\"'{filter.Param}' search is unavailable: the key service could not hash the term\", statusCode: StatusCodes.Status503ServiceUnavailable);");
+                b.AppendLine($"                            return LiveView.Outcome.Refused(Results.Problem(\"'{filter.Param}' search is unavailable: the key service could not hash the term\", statusCode: StatusCodes.Status503ServiceUnavailable));");
                 b.AppendLine("                        }");
                 b.AppendLine($"                        clauses.Add($\"{clause}\");");
                 b.AppendLine("                        parameters[matchParam] = hash;");
@@ -302,11 +344,11 @@ public static class ReadModelQueryGenerator
         b.AppendLine("                        // The key becomes a column name in the SQL text, so it must be one of this");
         b.AppendLine("                        // table's own columns and nothing else.");
         b.AppendLine("                        if (!Columns.Contains(ToSnakeCase(key)))");
-        b.AppendLine("                            return Results.Problem($\"unknown query parameter '{key}'\", statusCode: StatusCodes.Status400BadRequest);");
+        b.AppendLine("                            return LiveView.Outcome.Refused(Results.Problem($\"unknown query parameter '{key}'\", statusCode: StatusCodes.Status400BadRequest));");
         if (hasPii)
         {
             b.AppendLine("                        if (PiiColumns.Contains(ToSnakeCase(key)))");
-            b.AppendLine("                            return Results.Problem($\"'{key}' is personal data and is stored encrypted, so it cannot be used as a query filter.\", statusCode: StatusCodes.Status400BadRequest);");
+            b.AppendLine("                            return LiveView.Outcome.Refused(Results.Problem($\"'{key}' is personal data and is stored encrypted, so it cannot be used as a query filter.\", statusCode: StatusCodes.Status400BadRequest));");
         }
         b.AppendLine("                        var plainParam = $\"@p{i++}\";");
         b.AppendLine("                        clauses.Add($\"{ToSnakeCase(key)} = {plainParam}\");");
@@ -314,7 +356,7 @@ public static class ReadModelQueryGenerator
         {
             b.AppendLine("                        object? plainValue = raw;");
             b.AppendLine("                        if (ColumnKinds.TryGetValue(ToSnakeCase(key), out var kind) && !QueryParamParser.TryParse(kind, raw, out plainValue))");
-            b.AppendLine("                            return Results.Problem($\"'{key}' must be a {kind}\", statusCode: StatusCodes.Status400BadRequest);");
+            b.AppendLine("                            return LiveView.Outcome.Refused(Results.Problem($\"'{key}' must be a {kind}\", statusCode: StatusCodes.Status400BadRequest));");
             b.AppendLine("                        parameters[plainParam] = plainValue;");
         }
         else
@@ -351,8 +393,10 @@ public static class ReadModelQueryGenerator
         b.AppendLine("            }, ct);");
         if (hasPii)
             b.AppendLine("            await PiiColumnRevealer.RevealAsync(rows, PiiColumns, kms, cache, ct);");
-        b.AppendLine("            return Results.Ok(rows);");
-        b.AppendLine("        });");
+        b.AppendLine("            return LiveView.Outcome.Of(rows);");
+        foreach (var line in b.ToString().Split('\n')[..^1])
+            routeFile.AppendLine(line.StartsWith("    ") ? line[4..].TrimEnd('\r') : line.TrimEnd('\r'));
+        b = routeFile;
         b.AppendLine("    }");
         b.AppendLine();
         // Runtime helper, unlike the private ToSnakeCase below (a GENERATOR-time
