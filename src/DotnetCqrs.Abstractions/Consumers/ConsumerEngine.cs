@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Threading.Channels;
 using DotnetCqrs.EventStore;
+using DotnetCqrs.Projections;
 
 namespace DotnetCqrs.Consumers;
 
@@ -11,7 +12,7 @@ namespace DotnetCqrs.Consumers;
 /// reactors both build on, per the concepts doc: "a durable consumer that
 /// tracks its own read position and catches up reliably after a restart."
 /// </summary>
-public sealed class ConsumerEngine
+public sealed class ConsumerEngine : IReadModelChangeFeed
 {
     private readonly IPollSource _source;
     private readonly ICheckpointStore _checkpoints;
@@ -24,6 +25,10 @@ public sealed class ConsumerEngine
 
     private readonly Lock _consumersLock = new();
     private readonly List<Registration> _consumers = [];
+
+    // Live views (IReadModelChangeFeed): who to tell when a projection changes a table.
+    private readonly ConcurrentDictionary<long, ChangeSubscriber> _changeSubscribers = new();
+    private long _nextChangeSubscriber;
 
     // Set by StopAsync (health/telemetry machine 1, Draining): the loop ends, and a pass stops after
     // the event in hand, rather than running on until it is caught up. _hardStop is what a passed
@@ -302,6 +307,8 @@ public sealed class ConsumerEngine
     private async Task<Exception?> RunOnceForAsync(IConsumer consumer, ICheckpointStore checkpoints, long? head, CancellationToken ct)
     {
         long pos = 0;
+        // Where the current batch started: events after it are applied and checkpointed but not yet published.
+        long batchStart = 0;
         Event? current = null;
         _progress.TryGetValue(consumer.Name, out var before);
         // A blocked consumer stays blocked while it retries, until an event applies.
@@ -310,10 +317,12 @@ public sealed class ConsumerEngine
         try
         {
             pos = await checkpoints.CheckpointAsync(consumer.Name, ct);
+            batchStart = pos;
             while (true)
             {
                 var batch = await _source.PollAsync(pos, 100, ct);
                 if (batch.Count == 0) break;
+                batchStart = pos;
                 foreach (var ev in batch)
                 {
                     current = ev;
@@ -329,9 +338,12 @@ public sealed class ConsumerEngine
                     {
                         // Draining: the event in hand is applied and checkpointed; leave the rest.
                         _progress[consumer.Name] = new Progress(pos, head, pendingSince, false);
+                        PublishChanged(consumer, batchStart, pos);
                         return null;
                     }
                 }
+                // One change per batch, not per event: a burst becomes one notification.
+                PublishChanged(consumer, batchStart, pos);
             }
             _progress[consumer.Name] = new Progress(pos, head, null, false);
             return null;
@@ -350,10 +362,53 @@ public sealed class ConsumerEngine
                 ? $"position={pos} (reading checkpoint or polling after it)"
                 : $"position={current.Position} event={current.Id} type={current.Type} stream={current.Aggregate}/{current.AggregateId}";
             _log($"consumer blocked, will retry: consumer={consumer.Name} {at} error={ex}");
+            // The events before the failing one are applied and checkpointed: their change is real.
+            PublishChanged(consumer, batchStart, pos);
             _progress[consumer.Name] = new Progress(pos, head, pendingSince ?? _time.GetUtcNow(), true);
             var where = current is null ? $"after position {pos}" : $"at position {current.Position}";
             return new InvalidOperationException($"consumer {consumer.Name} blocked {where}: {ex.Message}", ex);
         }
+    }
+
+    /// <inheritdoc />
+    public IDisposable Subscribe(IReadOnlyCollection<string> tables, Action<ReadModelChanged> onChanged)
+    {
+        ArgumentNullException.ThrowIfNull(tables);
+        ArgumentNullException.ThrowIfNull(onChanged);
+        var id = Interlocked.Increment(ref _nextChangeSubscriber);
+        _changeSubscribers[id] = new ChangeSubscriber(new HashSet<string>(tables, StringComparer.Ordinal), onChanged);
+        return new ChangeSubscription(this, id);
+    }
+
+    /// <summary>Tells the live subscribers of <paramref name="consumer"/>'s tables that it applied events up to
+    /// <paramref name="position"/>. Only a projection changes a view, and only when its position moved past
+    /// <paramref name="from"/>. A subscriber that throws is logged and skipped.</summary>
+    private void PublishChanged(IConsumer consumer, long from, long position)
+    {
+        if (position <= from || consumer is not IProjection projection || _changeSubscribers.IsEmpty) return;
+        foreach (var table in projection.Tables)
+        {
+            var change = new ReadModelChanged(table, position);
+            foreach (var subscriber in _changeSubscribers.Values)
+            {
+                if (!subscriber.Tables.Contains(table)) continue;
+                try
+                {
+                    subscriber.OnChanged(change);
+                }
+                catch (Exception ex)
+                {
+                    _log($"read-model change subscriber failed: table={table} position={position} error={ex.Message}");
+                }
+            }
+        }
+    }
+
+    private sealed record ChangeSubscriber(HashSet<string> Tables, Action<ReadModelChanged> OnChanged);
+
+    private sealed class ChangeSubscription(ConsumerEngine engine, long id) : IDisposable
+    {
+        public void Dispose() => engine._changeSubscribers.TryRemove(id, out _);
     }
 
     /// <summary>When <paramref name="ev"/> was committed. A timestamp that does not parse (a
