@@ -29,7 +29,8 @@ public sealed record ReadModelDef(
     string Name, string? Description, string? Question, IReadOnlyList<string>? BuiltFromEventIds,
     IReadOnlyList<Field>? Fields, IReadOnlyList<ReadModelScopeDef>? Scopes, IReadOnlyList<ReadModelFilterDef>? Filters,
     [property: JsonConverter(typeof(RoleOrRolesConverter))] IReadOnlyList<string>? RequiredRole,
-    ReadModelSelfAccessDef? SelfAccess = null);
+    ReadModelSelfAccessDef? SelfAccess = null,
+    IReadOnlyList<string>? RemovedByEventIds = null);
 
 /// <summary><c>readModel.selfAccess</c> (schema 3.2.0; <c>Param</c> 3.8.0): a caller without
 /// <c>requiredRole</c> sees only the rows whose <c>SubjectField</c> is their own subject id, and

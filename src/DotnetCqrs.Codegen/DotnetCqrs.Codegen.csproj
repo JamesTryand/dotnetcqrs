@@ -31,8 +31,8 @@
     <ProjectReference Include="..\DotnetCqrs.Crypto\DotnetCqrs.Crypto.csproj" />
   </ItemGroup>
 
-  <!-- Pinned copy of eventmodelschema's eventmodeling.schema.json (v3.8.0, eventmodelschema@62e9278,
-       copied 2026-10-09 from the local clone of lab/eventmodelschema; was v3.1.1 @f616eaf): vendored rather than
+  <!-- Pinned copy of eventmodelschema's eventmodeling.schema.json (v3.9.0, eventmodelschema@d6eb354,
+       copied 2026-10-09 from the local clone of lab/eventmodelschema): vendored rather than
        fetched at runtime, so validation works offline and deterministically. Update by
        re-fetching from that repo when a new schema version is needed. -->
   <ItemGroup>

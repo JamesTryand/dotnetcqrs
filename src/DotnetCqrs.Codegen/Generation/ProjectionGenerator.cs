@@ -119,6 +119,21 @@ internal static class ProjectionGenerator
         b.AppendLine("        // still fires unless a bypass scope is open, so this projection's own writes need one too.");
         b.AppendLine("        await using var bypass = await store.BeginBypassAsync(ct);");
 
+        if (readModel.RemovedOn.Count > 0)
+        {
+            // Schema 3.9.0 removedByEventIds: the row this event's own stream keys is deleted;
+            // a later seed event for that stream starts it afresh.
+            b.AppendLine();
+            b.AppendLine($"        if (ev.Type is ({Disjunction(readModel.RemovedOn)}))");
+            b.AppendLine("        {");
+            b.AppendLine("            await using var remove = store.Connection.CreateCommand();");
+            b.AppendLine($"            remove.CommandText = \"DELETE FROM {readModel.Collection} WHERE {keyColumn} = @id\";");
+            b.AppendLine("            remove.AddParam(\"@id\", ev.AggregateId);");
+            b.AppendLine("            await remove.ExecuteNonQueryAsync(ct);");
+            b.AppendLine("            return;");
+            b.AppendLine("        }");
+        }
+
         var seedIsUnconditional = seedOn.Count == on.Count;
         if (seedIsUnconditional)
         {

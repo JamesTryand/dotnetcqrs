@@ -100,7 +100,7 @@ public class ReadAccessTests
         var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
 
         var views = results.Where(r => r.Kind == "stateView").ToList();
-        Assert.Equal(5, views.Count);
+        Assert.Equal(6, views.Count);
         Assert.All(views, r => Assert.True(r.Passed, $"{r.ScenarioId}: {r.Detail}"));
     }
 
@@ -115,6 +115,32 @@ public class ReadAccessTests
 
         Assert.False(results.Single(r => r.ScenarioId == "project-manager-also-sees-managed-projects").Passed);
         Assert.True(results.Single(r => r.ScenarioId == "staff-sees-only-own-entries").Passed);
+    }
+
+    [Fact(Timeout = 120000)]
+    [Trait("Category", "Compiles")]
+    public async Task Removing_the_row_that_granted_access_takes_the_access_away_and_without_removedBy_it_would_not()
+    {
+        // Schema 3.9.0: project-managers declares removedByEventIds, so unassigning a project
+        // manager deletes their row, and the grant through it goes too.
+        var doc = DocumentLoader.Parse(ReadAccessJson);
+        var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
+        Assert.True(results.Single(r => r.ScenarioId == "an-unassigned-project-manager-loses-the-grant").Passed);
+
+        // Without the declaration the generated projection keeps the row (the bug D23 found in
+        // project/timesheets), so the same scenario must fail.
+        var keeps = DocumentLoader.Parse(ReadAccessJson.Replace("\"removedByEventIds\": [\"project-manager-unassigned\"],", ""));
+        var keepResults = await ScenarioVerifier.VerifyAsync(keeps, DocumentMapper.Map(keeps));
+        Assert.False(keepResults.Single(r => r.ScenarioId == "an-unassigned-project-manager-loses-the-grant").Passed);
+    }
+
+    [Theory]
+    [InlineData("\"removedByEventIds\": [\"project-manager-unassigned\"]", "\"removedByEventIds\": [\"time-logged\"]", "not in its builtFromEventIds")]
+    public void The_mapper_refuses_a_removal_it_cannot_apply_as_written(string from, string to, string message)
+    {
+        var doc = DocumentLoader.Parse(ReadAccessJson.Replace(from, to));
+        var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(doc));
+        Assert.Contains(ex.Report.Errors, e => e.Contains("project-managers") && e.Contains(message));
     }
 
     // The generated routes for both read models, served for real. X-Test-Role and X-Test-Subject

@@ -678,6 +678,28 @@ public sealed class DocumentMapper
             readModel.Fields.AddRange(BuildFields($"read model \"{id}\"", rm.Fields ?? [], defaultRowKeyField: key));
             readModel.On.AddRange(onEventIds.Select(EventTypeName));
             readModel.SeedOn.AddRange(onEventIds.Where(seedEventIds.Contains).Select(EventTypeName));
+            // Schema 3.9.0: an event that removes the row it targets. "Targets" is the seed rule
+            // (the event's own stream id is the row key), so it must be one of this read
+            // model's builtFromEventIds, and not also a count/sum event here, whose row is a
+            // different one.
+            foreach (var eventId in rm.RemovedByEventIds ?? [])
+            {
+                if (!(rm.BuiltFromEventIds ?? []).Contains(eventId))
+                {
+                    _report.Error($"read model \"{id}\" removedByEventIds names \"{eventId}\", which is not in its builtFromEventIds -- " +
+                        "a removal targets the row the event's own stream keys, as a seed event does");
+                    continue;
+                }
+                var typeName = EventTypeName(eventId);
+                if (readModel.Fields.Any(fl => fl.Derivation is Domain.CountDerivation c && (c.IncrementOnEvents.Contains(typeName) || c.DecrementOnEvents.Contains(typeName))
+                    || fl.Derivation is Domain.SumDerivation s && (s.AddOnEvents.Contains(typeName) || s.SubtractOnEvents.Contains(typeName))))
+                {
+                    _report.Error($"read model \"{id}\" removedByEventIds names \"{eventId}\", which also drives a count/sum here -- " +
+                        "one event cannot both remove its own row and update another");
+                    continue;
+                }
+                readModel.RemovedOn.Add(typeName);
+            }
             foreach (var scopeDef in rm.Scopes ?? [])
             {
                 var viaCollection = ResolveReadModelCollection(scopeDef.Via.ReadModelId);
@@ -734,6 +756,9 @@ public sealed class DocumentMapper
                 _report.Error($"read model \"{id}\" filter on param \"{filter.Param}\" ranges over pii field \"{filter.Field}\" -- " +
                     "an encrypted column cannot be compared in SQL");
             CheckReadAccess(id, readModel, piiColumns);
+            if (readModel.RemovedOn.Count > 0 && Generation.GenerationSupport.IndexedMatchFilters(readModel).Any())
+                _report.Error($"read model \"{id}\" declares removedByEventIds and a search-indexed pii match filter -- " +
+                    "removing a row does not yet remove its search-index entries, so this is refused rather than left stale");
             GetOrCreateDomain(chosenOwner).ReadModels.Add(readModel);
         }
     }

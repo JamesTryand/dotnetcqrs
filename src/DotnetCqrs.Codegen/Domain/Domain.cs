@@ -177,6 +177,10 @@ public sealed class ReadModel
     /// <summary>Event names that update the row.</summary>
     public List<string> On { get; } = [];
 
+    /// <summary>Event names that delete the row they target, the row keyed by the event's own
+    /// stream id (schema 3.9.0 <c>removedByEventIds</c>). Always a subset of <see cref="SeedOn"/>.</summary>
+    public List<string> RemovedOn { get; } = [];
+
     /// <summary>The subset of <see cref="On"/> whose OWN stream is this row — i.e.
     /// <c>ev.AggregateId</c> is a valid key for it, so these (and only these) get the
     /// generic row-seed insert and the plain-column/toggle copy. A <c>count</c>/<c>sum</c>

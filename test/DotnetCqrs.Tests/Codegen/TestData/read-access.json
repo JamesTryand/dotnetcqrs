@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/jamestryand/eventmodelschema/main/schema/eventmodeling.schema.json",
-  "eventModelingSchemaVersion": "3.8.0",
+  "eventModelingSchemaVersion": "3.9.0",
   "id": "read-access-example",
   "name": "Read Access Example",
   "description": "Who may read which rows of a read model (3.8.0). A manager holds requiredRole and sees every time entry. Anyone else sees their own entries (selfAccess) and the entries on projects they manage (a scope with grantsAccess), and nothing else. The selfAccess param lets a manager ask for only their own entries too. Each stateView scenario names its caller.",
@@ -10,6 +10,16 @@
   "events": {
     "project-manager-assigned": {
       "name": "Project Manager Assigned",
+      "swimlaneId": "work",
+      "aggregate": "project",
+      "fields": [
+        { "name": "assignmentId", "type": "string", "idAttribute": true },
+        { "name": "projectId", "type": "string" },
+        { "name": "staffId", "type": "string" }
+      ]
+    },
+    "project-manager-unassigned": {
+      "name": "Project Manager Unassigned",
       "swimlaneId": "work",
       "aggregate": "project",
       "fields": [
@@ -32,13 +42,15 @@
   },
   "commands": {
     "log-time": { "name": "Log Time", "aggregate": "timeEntry" },
-    "assign-project-manager": { "name": "Assign Project Manager", "aggregate": "project" }
+    "assign-project-manager": { "name": "Assign Project Manager", "aggregate": "project" },
+    "unassign-project-manager": { "name": "Unassign Project Manager", "aggregate": "project" }
   },
   "readModels": {
     "project-managers": {
       "name": "Project Managers",
       "question": "Who manages which project?",
-      "builtFromEventIds": ["project-manager-assigned"],
+      "builtFromEventIds": ["project-manager-assigned", "project-manager-unassigned"],
+      "removedByEventIds": ["project-manager-unassigned"],
       "fields": [
         { "name": "assignmentId", "type": "string", "idAttribute": true },
         { "name": "projectId", "type": "string" },
@@ -87,6 +99,17 @@
       "screenId": "projects-screen",
       "commandId": "assign-project-manager",
       "eventIds": ["project-manager-assigned"],
+      "scenarios": []
+    },
+    {
+      "id": "unassign-project-manager-slice",
+      "name": "Unassign Project Manager",
+      "pattern": "stateChange",
+      "swimlaneId": "work",
+      "status": "created",
+      "screenId": "projects-screen",
+      "commandId": "unassign-project-manager",
+      "eventIds": ["project-manager-unassigned"],
       "scenarios": []
     },
     {
@@ -157,6 +180,18 @@
               ]
             }
           }
+        },
+        {
+          "id": "an-unassigned-project-manager-loses-the-grant",
+          "name": "Unassigning removes the project-managers row, and with it the access it granted",
+          "kind": "stateView",
+          "given": [
+            { "eventId": "project-manager-assigned", "data": { "assignmentId": "p2:s1", "projectId": "p2", "staffId": "s1" } },
+            { "eventId": "project-manager-unassigned", "data": { "assignmentId": "p2:s1", "projectId": "p2", "staffId": "s1" } },
+            { "eventId": "time-logged", "data": { "entryId": "e2", "projectId": "p2", "staffId": "s2", "hours": 3 } }
+          ],
+          "when": { "readModelId": "time-entries", "caller": { "subjectId": "s1", "role": "staff" } },
+          "then": { "result": { "entries": [] } }
         },
         {
           "id": "a-param-cannot-widen-access",

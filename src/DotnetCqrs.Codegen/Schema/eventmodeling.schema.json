@@ -10,7 +10,7 @@
     "eventModelingSchemaVersion": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+$",
-      "default": "3.8.0"
+      "default": "3.9.0"
     },
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
@@ -425,6 +425,11 @@
         "builtFromEventIds": {
           "type": "array",
           "items": { "$ref": "#/$defs/id" }
+        },
+        "removedByEventIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" },
+          "minItems": 1
         },
         "fields": {
           "type": "array",
