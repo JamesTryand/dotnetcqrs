@@ -240,7 +240,12 @@ internal static class DeciderGenerator
     };
 
     /// <summary>A C# string literal: JSON's string escapes are all valid C# escapes.</summary>
-    private static string StringLiteral(string text) => System.Text.Json.JsonSerializer.Serialize(text);
+    private static string StringLiteral(string text) => System.Text.Json.JsonSerializer.Serialize(text, LiteralOptions);
+
+    // Relaxed, so an apostrophe or a non-ASCII letter stays readable in the generated code;
+    // quotes, backslashes and control characters are still escaped.
+    private static readonly System.Text.Json.JsonSerializerOptions LiteralOptions =
+        new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     private static void AppendRefusalHelpers(StringBuilder b)
     {

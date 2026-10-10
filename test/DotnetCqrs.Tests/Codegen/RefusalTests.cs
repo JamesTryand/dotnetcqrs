@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using DotnetCqrs.Codegen;
+using DotnetCqrs.Codegen.Generation;
 using DotnetCqrs.Codegen.Mapping;
 using DotnetCqrs.Codegen.Verification;
 
@@ -149,6 +150,20 @@ public class RefusalTests
         var errors = results.Where(r => r.Kind == "error").ToList();
         Assert.Equal(6, errors.Count);
         Assert.All(errors, r => Assert.False(r.Passed, $"{r.ScenarioId}: {r.Detail}"));
+    }
+
+    [Fact]
+    public void A_message_is_generated_as_written()
+    {
+        // The generated decider is merged by hand into hosts, so its messages must read as
+        // the model wrote them, not as '-escaped JSON.
+        var node = JsonNode.Parse(OperatorsJson)!;
+        node["commands"]!["touch-gate"]!["refuseWhen"]![0]!["message"] = "the gate's locked";
+        var domain = Assert.Single(DocumentMapper.Map(DocumentLoader.Parse(node.ToJsonString())).Domains);
+
+        var decider = CSharpGenerator.Generate(domain).Single(f => f.Name.EndsWith("Decider.cs"));
+
+        Assert.Contains("throw new InvalidOperationException(\"the gate's locked\");", decider.Source);
     }
 
     [Theory]
