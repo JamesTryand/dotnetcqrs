@@ -72,6 +72,33 @@ public static class ScenarioVerifier
         return results;
     }
 
+    /// <summary>Verifies a document against a host's own deciders (D30, T3): command scenarios
+    /// run in-process against what <paramref name="host"/> registers, so the values a scenario
+    /// declares check the host's real arithmetic and rules, not a generated stand-in that only
+    /// copies the command's payload. View scenarios still run against the generated projections.</summary>
+    public static async Task<IReadOnlyList<ScenarioResult>> VerifyAsync(
+        Document document, MappingResult mapped, HostDeciders host, CancellationToken ct = default)
+    {
+        var index = GeneratedIndex.Build(document, mapped.Domains);
+        var results = new List<ScenarioResult>();
+        var commandScenarios = new List<CommandScenarioInput>();
+        var viewScenarios = new List<ViewScenarioInput>();
+        foreach (var slice in document.Slices)
+            foreach (var scenario in slice.Scenarios)
+            {
+                if (scenario is StateChangeScenario or ErrorScenario)
+                    BuildCommandScenario(document, index, slice, scenario, results, commandScenarios);
+                else if (scenario is StateViewScenario viewScenario)
+                    BuildViewScenario(document, index, slice, viewScenario, results, viewScenarios);
+            }
+
+        foreach (var scenario in commandScenarios)
+            results.Add(await HostScenarioRunner.RunAsync(scenario, host, ct));
+        if (viewScenarios.Count > 0)
+            results.AddRange(await RunHarnessAsync([], viewScenarios, mapped.Domains, ct));
+        return results;
+    }
+
     private static string KindOf(Scenario s) => s switch
     {
         StateChangeScenario => "stateChange",
@@ -84,12 +111,13 @@ public static class ScenarioVerifier
         Document document, GeneratedIndex index, Slice slice, Scenario scenario,
         List<ScenarioResult> results, List<CommandScenarioInput> commandScenarios)
     {
-        var (commandId, payload) = scenario switch
+        var when = scenario switch
         {
-            StateChangeScenario s => (s.When.CommandId, s.When.Data),
-            ErrorScenario s => (s.When.CommandId, s.When.Data),
+            StateChangeScenario s => s.When,
+            ErrorScenario s => s.When,
             _ => throw new InvalidOperationException("unreachable"),
         };
+        var (commandId, payload) = (when.CommandId, when.Data);
 
         if (!index.CommandAggregate.TryGetValue(commandId, out var aggregate) || !index.CommandName.TryGetValue(commandId, out var generatedName))
         {
@@ -118,7 +146,9 @@ public static class ScenarioVerifier
             slice.Id, scenario.Id, scenario.Name, KindOf(scenario),
             deciderTypeName, aggregate, streamId, own,
             generatedName, payload?.GetRawText() ?? "{}", expectedEventTypes,
-            scenario is ErrorScenario error ? error.Then.Error.Message : null));
+            scenario is ErrorScenario error ? error.Then.Error.Message : null,
+            scenario is StateChangeScenario values ? values.Then.Events.Select(e => e.Data?.GetRawText()).ToList() : null,
+            when.Actor, when.At));
     }
 
     private static void BuildViewScenario(

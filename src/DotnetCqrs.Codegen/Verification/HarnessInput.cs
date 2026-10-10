@@ -41,7 +41,10 @@ public sealed record CommandScenarioInput(
     string CommandName,
     string CommandPayload,
     IReadOnlyList<string> ExpectedEventTypes, // empty/unused for "error" kind
-    string? ExpectedErrorMessage = null); // "error" kind only: the refusal must say exactly this
+    string? ExpectedErrorMessage = null, // "error" kind only: the refusal must say exactly this
+    IReadOnlyList<string?>? ExpectedEventData = null, // "stateChange" only: each then.events[i].data (raw JSON, null when absent), checked against a host's deciders
+    string? Actor = null, // when.actor / when.at (schema 3.10.0): who sends the command, and when,
+    string? At = null); // for a host's deciders, which stamp both
 
 /// <summary>A stateView scenario, ready for the harness to run without consulting the
 /// document again.</summary>
