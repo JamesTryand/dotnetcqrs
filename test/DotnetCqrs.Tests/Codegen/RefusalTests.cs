@@ -59,21 +59,24 @@ public class RefusalTests
               {"name": "gateId", "type": "string"}, {"name": "owner", "type": "string"},
               {"name": "locked", "type": "boolean"}]},
             "gate-touched": {"name": "Gate Touched", "swimlaneId": "s", "aggregate": "Gate", "fields": [
-              {"name": "gateId", "type": "string"}, {"name": "level", "type": "decimal"}]}
+              {"name": "gateId", "type": "string"}, {"name": "level", "type": "decimal"},
+              {"name": "usedTags", "type": "string", "cardinality": "list"}]}
           },
           "commands": {
             "open-gate": {"name": "Open Gate", "aggregate": "Gate", "fields": [
               {"name": "owner", "type": "string"}, {"name": "locked", "type": "boolean"}]},
             "touch-gate": {"name": "Touch Gate", "aggregate": "Gate", "fields": [
                 {"name": "owner", "type": "string"}, {"name": "level", "type": "decimal"},
-                {"name": "tags", "type": "string", "cardinality": "list"}, {"name": "note", "type": "string"}],
+                {"name": "tags", "type": "string", "cardinality": "list"}, {"name": "note", "type": "string"},
+                {"name": "tag", "type": "string"}],
               "refuseWhen": [
                 {"message": "gate is locked", "all": [{"state": "locked", "equals": true}]},
                 {"message": "not your gate", "all": [{"state": "owner", "notEquals": {"command": "owner"}}]},
                 {"message": "level must not be zero", "all": [{"command": "level", "equals": 0}]},
                 {"message": "forbidden tag", "all": [{"command": "tags", "contains": "forbidden"}]},
                 {"message": "a note is required", "all": [{"command": "note", "is": "notSet"}]},
-                {"message": "already touched", "all": [{"state": "level", "is": "set"}, {"command": "level", "notEquals": {"state": "level"}}]}
+                {"message": "already touched", "all": [{"state": "level", "is": "set"}, {"command": "level", "notEquals": {"state": "level"}}]},
+                {"message": "tag already used", "all": [{"state": "usedTags", "contains": {"command": "tag"}}]}
               ]}
           },
           "screens": {"scr": {"name": "Screen"}},
@@ -88,13 +91,18 @@ public class RefusalTests
              "scenarios": [
                {"id": "touch-ok", "name": "No rule holds", "kind": "stateChange",
                 "given": [{"eventId": "gate-opened", "data": {"gateId": "g1", "owner": "ann", "locked": false}}],
-                "when": {"commandId": "touch-gate", "data": {"owner": "ann", "level": 2, "tags": ["fine"], "note": "n"}},
+                "when": {"commandId": "touch-gate", "data": {"owner": "ann", "level": 2, "tags": ["fine"], "note": "n", "usedTags": []}},
                 "then": {"events": [{"eventId": "gate-touched"}]}},
                {"id": "touch-same-level-again", "name": "The same level again is not a change", "kind": "stateChange",
                 "given": [{"eventId": "gate-opened", "data": {"gateId": "g1", "owner": "ann", "locked": false}},
-                          {"eventId": "gate-touched", "data": {"gateId": "g1", "level": 2}}],
-                "when": {"commandId": "touch-gate", "data": {"owner": "ann", "level": 2, "tags": [], "note": "n"}},
+                          {"eventId": "gate-touched", "data": {"gateId": "g1", "level": 2, "usedTags": ["a"]}}],
+                "when": {"commandId": "touch-gate", "data": {"owner": "ann", "level": 2, "tags": [], "note": "n", "tag": "b", "usedTags": ["a"]}},
                 "then": {"events": [{"eventId": "gate-touched"}]}},
+               {"id": "tag-reused", "name": "state list contains a command field", "kind": "error",
+                "given": [{"eventId": "gate-opened", "data": {"gateId": "g1", "owner": "ann", "locked": false}},
+                          {"eventId": "gate-touched", "data": {"gateId": "g1", "level": 2, "usedTags": ["a"]}}],
+                "when": {"commandId": "touch-gate", "data": {"owner": "ann", "level": 2, "tags": [], "note": "n", "tag": "a"}},
+                "then": {"error": {"message": "tag already used"}}},
                {"id": "locked", "name": "state equals literal", "kind": "error",
                 "given": [{"eventId": "gate-opened", "data": {"gateId": "g1", "owner": "ann", "locked": true}}],
                 "when": {"commandId": "touch-gate", "data": {"owner": "ann", "level": 2, "tags": [], "note": "n"}},
@@ -132,7 +140,7 @@ public class RefusalTests
 
         var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
 
-        Assert.Equal(9, results.Count);
+        Assert.Equal(10, results.Count);
         Assert.All(results, r => Assert.True(r.Passed, $"{r.ScenarioId}: {r.Detail}"));
     }
 
@@ -148,7 +156,7 @@ public class RefusalTests
         var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
 
         var errors = results.Where(r => r.Kind == "error").ToList();
-        Assert.Equal(6, errors.Count);
+        Assert.Equal(7, errors.Count);
         Assert.All(errors, r => Assert.False(r.Passed, $"{r.ScenarioId}: {r.Detail}"));
     }
 
@@ -171,6 +179,8 @@ public class RefusalTests
     [InlineData("""{"command": "nosuch", "is": "set"}""", "command field \"nosuch\"")]
     [InlineData("""{"command": "note", "contains": "x"}""", "contains")]
     [InlineData("""{"state": "owner", "notEquals": {"command": "nosuch"}}""", "command field \"nosuch\"")]
+    [InlineData("""{"state": "usedTags", "contains": {"command": "nosuch"}}""", "command field \"nosuch\"")]
+    [InlineData("""{"state": "usedTags", "contains": {"command": "tags"}}""", "contains looks for")]
     public void A_rule_naming_a_field_that_does_not_exist_or_cannot_be_compared_is_refused(string condition, string expected)
     {
         var node = JsonNode.Parse(OperatorsJson)!;

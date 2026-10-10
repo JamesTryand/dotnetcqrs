@@ -213,7 +213,7 @@ internal static class DeciderGenerator
             "notSet" => $"{raw} is null",
             "equals" => $"RefusalEquals({Value(c.Side, c.Field)}, {Operand(c.Operand!)})",
             "notEquals" => $"!RefusalEquals({Value(c.Side, c.Field)}, {Operand(c.Operand!)})",
-            "contains" => $"RefusalContains({raw}, {Literal(c.Operand!.Literal)})",
+            "contains" => $"RefusalContains({raw}, {Operand(c.Operand!)})",
             _ => throw new InvalidOperationException($"unknown refusal operator \"{c.Operator}\""),
         };
     }

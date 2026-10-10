@@ -310,7 +310,7 @@
         "is": { "enum": ["set", "notSet"] },
         "equals": { "$ref": "#/$defs/refusalOperand" },
         "notEquals": { "$ref": "#/$defs/refusalOperand" },
-        "contains": { "type": ["string", "number", "boolean"] }
+        "contains": { "$ref": "#/$defs/refusalOperand" }
       },
       "allOf": [
         {

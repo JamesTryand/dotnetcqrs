@@ -500,6 +500,15 @@ public sealed class DocumentMapper
                         {
                             if (left.Type != "json")
                                 _report.Error($"{owner}: {where}: contains needs a list, but \"{condition.Field}\" is {left.Type}");
+                            // What it looks for is one value: a literal, or a text, number or bool field. A
+                            // list's element type is folded away, so a mismatch there is not caught here.
+                            if (condition.Operand!.Side is { } itemSide && Lookup(itemSide, condition.Operand.Field!, where) is { } item)
+                            {
+                                if (item.Pii)
+                                    _report.Error($"{owner}: {where} compares pii field \"{condition.Operand.Field}\"; a rule may only test pii for set or notSet");
+                                else if (item.Type is not ("text" or "number" or "bool"))
+                                    _report.Error($"{owner}: {where}: contains looks for one text, number or bool value, but \"{condition.Operand.Field}\" is {item.Type}");
+                            }
                             continue;
                         }
                         if (left.Type is not ("text" or "number" or "bool"))
