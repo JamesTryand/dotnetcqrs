@@ -20,7 +20,24 @@ public sealed record CommandDef(
     [property: JsonConverter(typeof(RoleOrRolesConverter))] IReadOnlyList<string>? RequiredRole,
     CommandFieldGatedRoleDef? FieldGatedRole,
     CommandOwnershipDef? RequiredOwnership,
-    CommandScopeDef? Scope);
+    CommandScopeDef? Scope,
+    IReadOnlyList<CommandRefusalDef>? RefuseWhen = null);
+
+/// <summary>Schema 3.10.0 <c>command.refuseWhen</c>: one rule. It refuses the command, with
+/// <c>Message</c>, when every condition in <c>All</c> holds.</summary>
+public sealed record CommandRefusalDef(string Message, IReadOnlyList<RefusalConditionDef> All);
+
+/// <summary>One condition of a <see cref="CommandRefusalDef"/>: exactly one of
+/// <c>State</c>/<c>Command</c> names the field, and exactly one operator applies. The
+/// operand of <c>equals</c>/<c>notEquals</c> is a literal or a <c>{state|command: field}</c>
+/// object, kept as raw JSON for the mapper to resolve.</summary>
+public sealed record RefusalConditionDef(
+    string? State,
+    string? Command,
+    string? Is,
+    [property: JsonPropertyName("equals")] JsonElement? EqualTo,
+    [property: JsonPropertyName("notEquals")] JsonElement? NotEqualTo,
+    JsonElement? Contains);
 
 /// <summary><c>RequiredRole</c> is schema 2.7.0's <c>readModel.requiredRole</c> -- the
 /// read-side mirror of <see cref="CommandDef.RequiredRole"/>, same shape (a role id, or

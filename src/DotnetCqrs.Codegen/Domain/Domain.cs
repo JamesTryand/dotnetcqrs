@@ -62,6 +62,11 @@ public sealed class Command
     /// <summary>Needs the aggregate to already exist.</summary>
     public bool RequiresExisting { get; init; }
 
+    /// <summary>Schema 3.10.0 <c>refuseWhen</c>, in declared order: after the existence
+    /// checks, the first rule whose conditions all hold refuses the command with its
+    /// message. Rules read only this aggregate's state and the command.</summary>
+    public List<Refusal> Refusals { get; } = [];
+
     /// <summary>The actor's own role must be one of these (schema 2.5.0
     /// <c>command.requiredRole</c>). Null when undeclared -- today's default, no role
     /// requirement at all.</summary>
@@ -110,6 +115,23 @@ public sealed record ScopePolicy(
     IReadOnlyList<string> BypassRoles,
     string ResolveViaCollection, string ResolveKeyField, string ResolveSelectField,
     string MemberOfViaCollection, string MemberOfMatchField);
+
+/// <summary>One declared refusal of a command: it refuses with <c>Message</c> when every
+/// condition in <c>All</c> holds.</summary>
+public sealed record Refusal(string Message, IReadOnlyList<RefusalCondition> All);
+
+/// <summary>Which side a refusal condition (or its operand) reads: the aggregate's state,
+/// folded from its own events, or the command's payload.</summary>
+public enum RefusalSide { State, Command }
+
+/// <summary>One condition. <c>Field</c> is the sanitised field name on <c>Side</c>.
+/// <c>Operator</c> is <c>set</c>, <c>notSet</c>, <c>equals</c>, <c>notEquals</c> or
+/// <c>contains</c>; the last three have an <c>Operand</c>.</summary>
+public sealed record RefusalCondition(RefusalSide Side, string Field, string Operator, RefusalOperand? Operand);
+
+/// <summary>What a condition compares with: a literal (<c>string</c>, <c>double</c> or
+/// <c>bool</c>), or another field.</summary>
+public sealed record RefusalOperand(object? Literal, RefusalSide? Side = null, string? Field = null);
 
 /// <summary>One event a command may record. Fields are never inherited implicitly from
 /// the command — "carries nothing" (<see cref="NoFields"/>) and "nobody said what it

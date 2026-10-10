@@ -70,6 +70,7 @@ public sealed class DocumentMapper
 
         MapSlices();
         MapReadModels();
+        CheckRefusals();
         if (_report.HasErrors) throw new DocumentMappingException(_report);
 
         var domains = new List<Domain.Domain>();
@@ -397,6 +398,7 @@ public sealed class DocumentMapper
             Scope = BuildScope(id, cmd.Scope),
         };
         command.Fields.AddRange(BuildFields($"command \"{id}\"", cmd.Fields ?? []));
+        command.Refusals.AddRange(BuildRefusals(cmd.RefuseWhen ?? []));
 
         foreach (var eventId in eventIds)
         {
@@ -419,6 +421,117 @@ public sealed class DocumentMapper
             command.Events.Add(domainEvent);
         }
         return command;
+    }
+
+    // ---- schema 3.10.0 refuseWhen ----
+
+    /// <summary>The declared refusals, structurally: field names sanitised the way state and
+    /// payload properties are, literals turned into <c>string</c>/<c>double</c>/<c>bool</c>.
+    /// Whether each named field exists, and can be compared that way, is checked once the
+    /// aggregate's state is known (<see cref="CheckRefusals"/>).</summary>
+    private static IEnumerable<Domain.Refusal> BuildRefusals(IReadOnlyList<CommandRefusalDef> rules) =>
+        rules.Select(rule => new Domain.Refusal(rule.Message, rule.All.Select(BuildCondition).ToList()));
+
+    private static Domain.RefusalCondition BuildCondition(RefusalConditionDef c)
+    {
+        var (side, field) = c.State is not null ? (Domain.RefusalSide.State, c.State) : (Domain.RefusalSide.Command, c.Command!);
+        var (op, operand) =
+            c.Is is not null ? (c.Is, (Domain.RefusalOperand?)null)
+            : c.EqualTo is { } eq ? ("equals", BuildOperand(eq))
+            : c.NotEqualTo is { } ne ? ("notEquals", BuildOperand(ne))
+            : ("contains", BuildOperand(c.Contains!.Value));
+        return new Domain.RefusalCondition(side, Names.SanitizeName(field), op, operand);
+    }
+
+    private static Domain.RefusalOperand BuildOperand(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.Object when value.TryGetProperty("state", out var s) =>
+            new Domain.RefusalOperand(null, Domain.RefusalSide.State, Names.SanitizeName(s.GetString()!)),
+        JsonValueKind.Object when value.TryGetProperty("command", out var c) =>
+            new Domain.RefusalOperand(null, Domain.RefusalSide.Command, Names.SanitizeName(c.GetString()!)),
+        JsonValueKind.String => new Domain.RefusalOperand(value.GetString()),
+        JsonValueKind.Number => new Domain.RefusalOperand(value.GetDouble()),
+        JsonValueKind.True => new Domain.RefusalOperand(true),
+        JsonValueKind.False => new Domain.RefusalOperand(false),
+        _ => new Domain.RefusalOperand(null),
+    };
+
+    /// <summary>Every field a refusal names must exist and be comparable the way the rule
+    /// compares it, or the document is refused: a rule the generated decider silently skipped
+    /// would let through exactly what the model says to refuse. A <c>state</c> field is one of
+    /// the aggregate's event fields (its state); a <c>command</c> field is one the command
+    /// declares. <c>equals</c>/<c>notEquals</c> compare text, numbers and bools of one type;
+    /// <c>contains</c> needs a list; a pii field may only be tested for <c>set</c>/<c>notSet</c>
+    /// (a rule never reads personal data).</summary>
+    private void CheckRefusals()
+    {
+        foreach (var (aggregate, domain) in _byAggregate)
+        {
+            var (stateFields, _) = Generation.GenerationSupport.CollectEventFields(domain);
+            var state = stateFields.ToDictionary(f => f.Name, f => (f.Type, f.Pii));
+            foreach (var command in domain.Commands)
+            {
+                var payload = command.Fields.ToDictionary(f => f.Name, f => (f.Type, f.Pii));
+                var owner = $"command \"{command.Name}\" ({aggregate})";
+
+                (string Type, bool Pii)? Lookup(Domain.RefusalSide side, string field, string where)
+                {
+                    var fields = side == Domain.RefusalSide.State ? state : payload;
+                    if (fields.TryGetValue(field, out var found)) return found;
+                    _report.Error(side == Domain.RefusalSide.State
+                        ? $"{owner}: {where} names state field \"{field}\", which no event of this aggregate carries"
+                        : $"{owner}: {where} names command field \"{field}\", which the command does not declare");
+                    return null;
+                }
+
+                foreach (var refusal in command.Refusals)
+                {
+                    var where = $"refusal \"{refusal.Message}\"";
+                    foreach (var condition in refusal.All)
+                    {
+                        if (Lookup(condition.Side, condition.Field, where) is not { } left) continue;
+                        if (condition.Operator is "set" or "notSet") continue;
+                        if (left.Pii)
+                        {
+                            _report.Error($"{owner}: {where} compares pii field \"{condition.Field}\"; a rule may only test pii for set or notSet");
+                            continue;
+                        }
+                        if (condition.Operator == "contains")
+                        {
+                            if (left.Type != "json")
+                                _report.Error($"{owner}: {where}: contains needs a list, but \"{condition.Field}\" is {left.Type}");
+                            continue;
+                        }
+                        if (left.Type is not ("text" or "number" or "bool"))
+                        {
+                            _report.Error($"{owner}: {where}: {condition.Operator} compares text, numbers or bools, but \"{condition.Field}\" is {left.Type}");
+                            continue;
+                        }
+                        var operand = condition.Operand!;
+                        string? rightType;
+                        if (operand.Side is { } rightSide)
+                        {
+                            if (Lookup(rightSide, operand.Field!, where) is not { } right) continue;
+                            if (right.Pii)
+                            {
+                                _report.Error($"{owner}: {where} compares pii field \"{operand.Field}\"; a rule may only test pii for set or notSet");
+                                continue;
+                            }
+                            rightType = right.Type;
+                        }
+                        else
+                        {
+                            rightType = operand.Literal switch { string => "text", double => "number", bool => "bool", _ => null };
+                        }
+                        if (rightType != left.Type)
+                        {
+                            var what = operand.Side is null ? "a literal" : $"\"{operand.Field}\"";
+                            _report.Error($"{owner}: {where}: {condition.Operator} compares \"{condition.Field}\" ({left.Type}) with {what} ({rightType ?? "null"})");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// <param name="defaultRowKeyField">The read model's own key field, used as

@@ -10,7 +10,7 @@
     "eventModelingSchemaVersion": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+$",
-      "default": "3.9.0"
+      "default": "3.10.0"
     },
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
@@ -261,6 +261,11 @@
         "fieldGatedRole": { "$ref": "#/$defs/commandFieldGatedRole" },
         "requiredOwnership": { "$ref": "#/$defs/commandOwnership" },
         "scope": { "$ref": "#/$defs/commandScope" },
+        "refuseWhen": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/commandRefusal" },
+          "minItems": 1
+        },
         "partitioned": { "type": "boolean", "default": true }
       },
       "additionalProperties": false
@@ -281,6 +286,67 @@
         "requiredRole": { "$ref": "#/$defs/roleRequirement" }
       },
       "additionalProperties": false
+    },
+
+    "commandRefusal": {
+      "type": "object",
+      "required": ["message", "all"],
+      "properties": {
+        "message": { "type": "string", "minLength": 1 },
+        "all": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/refusalCondition" },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "refusalCondition": {
+      "type": "object",
+      "properties": {
+        "state": { "type": "string", "minLength": 1 },
+        "command": { "type": "string", "minLength": 1 },
+        "is": { "enum": ["set", "notSet"] },
+        "equals": { "$ref": "#/$defs/refusalOperand" },
+        "notEquals": { "$ref": "#/$defs/refusalOperand" },
+        "contains": { "type": ["string", "number", "boolean"] }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            { "required": ["state"], "not": { "required": ["command"] } },
+            { "required": ["command"], "not": { "required": ["state"] } }
+          ]
+        },
+        {
+          "oneOf": [
+            { "required": ["is"] },
+            { "required": ["equals"] },
+            { "required": ["notEquals"] },
+            { "required": ["contains"] }
+          ]
+        }
+      ],
+      "additionalProperties": false
+    },
+
+    "refusalOperand": {
+      "oneOf": [
+        { "type": ["string", "number", "boolean"] },
+        {
+          "type": "object",
+          "properties": {
+            "state": { "type": "string", "minLength": 1 },
+            "command": { "type": "string", "minLength": 1 }
+          },
+          "oneOf": [
+            { "required": ["state"], "not": { "required": ["command"] } },
+            { "required": ["command"], "not": { "required": ["state"] } }
+          ],
+          "additionalProperties": false
+        }
+      ]
     },
 
     "commandOwnership": {

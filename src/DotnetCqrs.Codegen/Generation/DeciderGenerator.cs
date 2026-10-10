@@ -89,6 +89,7 @@ internal static class DeciderGenerator
                 b.AppendLine($"                    if (state.Ended) throw new InvalidOperationException(\"{domain.Aggregate} has ended and cannot begin again\");");
             if (command.RequiresExisting)
                 b.AppendLine($"                    if (!state.Exists) throw new InvalidOperationException(\"{domain.Aggregate} does not exist\");");
+            AppendRefusals(b, command);
             if (command.Events.Count > 1)
             {
                 b.AppendLine("                    // THIS COMMAND CAN RESULT IN MORE THAN ONE EVENT:");
@@ -177,10 +178,98 @@ internal static class DeciderGenerator
             }
         }
 
+        if (domain.Commands.Any(c => c.Refusals.Count > 0)) AppendRefusalHelpers(b);
         if (hasPii) AppendPiiProtector(b, aggregate, fields, piiEvents);
 
         b.AppendLine("}");
         return new GeneratedFile($"{aggregate}Decider.cs", b.ToString());
+    }
+
+    /// <summary>Schema 3.10.0 <c>refuseWhen</c>: one <c>if</c> per rule, in declared order,
+    /// after the existence checks, so the first rule that holds refuses with its own message.
+    /// A rule reads the folded state and the command's raw payload, nothing else; the mapper
+    /// has already checked every field it names.</summary>
+    private static void AppendRefusals(StringBuilder b, Domain.Command command)
+    {
+        if (command.Refusals.Count == 0) return;
+        b.AppendLine("                    // refuseWhen (schema 3.10.0), in order: the first rule that holds refuses.");
+        var readsCommand = command.Refusals.SelectMany(r => r.All).Any(c =>
+            c.Side == Domain.RefusalSide.Command || c.Operand?.Side == Domain.RefusalSide.Command);
+        if (readsCommand)
+            b.AppendLine("                    var refusalCommand = RefusalCommand(cmd.Payload);");
+        foreach (var refusal in command.Refusals)
+        {
+            var test = string.Join(" && ", refusal.All.Select(ConditionExpression));
+            b.AppendLine($"                    if ({test}) throw new InvalidOperationException({StringLiteral(refusal.Message)});");
+        }
+    }
+
+    private static string ConditionExpression(Domain.RefusalCondition c)
+    {
+        var raw = Raw(c.Side, c.Field);
+        return c.Operator switch
+        {
+            "set" => $"{raw} is not null",
+            "notSet" => $"{raw} is null",
+            "equals" => $"RefusalEquals({Value(c.Side, c.Field)}, {Operand(c.Operand!)})",
+            "notEquals" => $"!RefusalEquals({Value(c.Side, c.Field)}, {Operand(c.Operand!)})",
+            "contains" => $"RefusalContains({raw}, {Literal(c.Operand!.Literal)})",
+            _ => throw new InvalidOperationException($"unknown refusal operator \"{c.Operator}\""),
+        };
+    }
+
+    /// <summary>The field as it is held: a state property, or the command payload's JSON value.</summary>
+    private static string Raw(Domain.RefusalSide side, string field) => side == Domain.RefusalSide.State
+        ? $"state.{GenerationSupport.ExportName(field)}"
+        : $"RefusalField(refusalCommand, {StringLiteral(field)})";
+
+    /// <summary>The field as a comparable value: a string, double or bool, or null.</summary>
+    private static string Value(Domain.RefusalSide side, string field) => side == Domain.RefusalSide.State
+        ? $"(object?){Raw(side, field)}"
+        : $"RefusalValue({Raw(side, field)})";
+
+    private static string Operand(Domain.RefusalOperand operand) =>
+        operand.Side is { } side ? Value(side, operand.Field!) : Literal(operand.Literal);
+
+    private static string Literal(object? literal) => literal switch
+    {
+        string text => StringLiteral(text),
+        double number => $"(object){number.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}d",
+        bool flag => flag ? "(object)true" : "(object)false",
+        _ => "null",
+    };
+
+    /// <summary>A C# string literal: JSON's string escapes are all valid C# escapes.</summary>
+    private static string StringLiteral(string text) => System.Text.Json.JsonSerializer.Serialize(text);
+
+    private static void AppendRefusalHelpers(StringBuilder b)
+    {
+        b.AppendLine();
+        b.AppendLine("    // refuseWhen (schema 3.10.0): a command field is read from the raw payload, and a");
+        b.AppendLine("    // rule compares text, numbers and bools (a missing or null value is null).");
+        b.AppendLine("    private static JsonElement RefusalCommand(string payload)");
+        b.AppendLine("    {");
+        b.AppendLine("        using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(payload) ? \"{}\" : payload);");
+        b.AppendLine("        return document.RootElement.Clone();");
+        b.AppendLine("    }");
+        b.AppendLine();
+        b.AppendLine("    private static JsonElement? RefusalField(JsonElement command, string name) =>");
+        b.AppendLine("        command.ValueKind == JsonValueKind.Object && command.TryGetProperty(name, out var value)");
+        b.AppendLine("            && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined) ? value : null;");
+        b.AppendLine();
+        b.AppendLine("    private static object? RefusalValue(JsonElement? value) => value?.ValueKind switch");
+        b.AppendLine("    {");
+        b.AppendLine("        JsonValueKind.String => value.Value.GetString(),");
+        b.AppendLine("        JsonValueKind.Number => value.Value.GetDouble(),");
+        b.AppendLine("        JsonValueKind.True => true,");
+        b.AppendLine("        JsonValueKind.False => false,");
+        b.AppendLine("        _ => null,");
+        b.AppendLine("    };");
+        b.AppendLine();
+        b.AppendLine("    private static bool RefusalEquals(object? left, object? right) => left is null ? right is null : left.Equals(right);");
+        b.AppendLine();
+        b.AppendLine("    private static bool RefusalContains(JsonElement? list, object? item) =>");
+        b.AppendLine("        list is { ValueKind: JsonValueKind.Array } items && items.EnumerateArray().Any(e => RefusalEquals(RefusalValue(e), item));");
     }
 
     /// <summary>The per-aggregate <c>IPiiProtector</c>: I/O at the edges of the dispatch
