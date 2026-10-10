@@ -110,6 +110,45 @@ public class ScenarioVerifierTests
     }
 
     [Fact(Timeout = VerifyTimeoutMs)]
+    public async Task A_list_field_the_command_does_not_carry_is_recorded_as_null_not_a_crash()
+    {
+        // Timesheets: stage-invoice and finalise-invoice failed --verify with "Operation is not
+        // valid due to the current state of the object". The generated payload record held a list
+        // (json) field as a non-nullable JsonElement, so a field the command doesn't carry was a
+        // default JsonElement, and serialising it threw. It must be null instead.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "2.0.0", "id": "list-field-test", "name": "List Field Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {"order-placed": {"name": "Order Placed", "swimlaneId": "s", "fields": [
+                {"name": "orderId", "type": "string"}, {"name": "lines", "type": "custom", "cardinality": "list"}]}},
+              "commands": {"place-order": {"name": "Place Order", "fields": [{"name": "orderId", "type": "string"}]}},
+              "screens": {"scr": {"name": "Screen"}},
+              "slices": [{
+                "id": "place-order-slice", "name": "Place Order", "pattern": "stateChange",
+                "swimlaneId": "s", "status": "created",
+                "screenId": "scr", "commandId": "place-order", "eventIds": ["order-placed"],
+                "scenarios": [{
+                  "id": "place-without-lines", "name": "The command carries no lines", "kind": "stateChange",
+                  "given": [], "when": {"commandId": "place-order", "data": {"orderId": "o1"}},
+                  "then": {"events": [{"eventId": "order-placed"}]}
+                }]
+              }]
+            }
+            """;
+        var doc = DocumentLoader.Parse(json);
+        var mapped = DocumentMapper.Map(doc, new MappingOptions
+        {
+            AggregateOverrides = new Dictionary<string, string> { ["place-order"] = "Order" },
+        });
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped);
+
+        var result = Assert.Single(results);
+        Assert.True(result.Passed, result.Detail);
+    }
+
+    [Fact(Timeout = VerifyTimeoutMs)]
     public async Task An_error_scenario_refused_for_another_reason_fails_and_names_both_messages()
     {
         // Timesheets audit T2: the harness used to pass an error scenario on ANY refusal. Three
