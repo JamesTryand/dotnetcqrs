@@ -437,6 +437,65 @@ public class DocumentMapperTests
         var command = Assert.Single(result.Domains).Commands.Single(c => c.Name == "AssignStaff");
         Assert.True(command.Once, "still a create: a redundant assign of a currently-active pair must be refused");
         Assert.False(command.RequiresExisting);
+        Assert.True(command.CanBeginAgain, "the reassign scenario creates again after the stream's end");
+    }
+
+    [Fact]
+    public void A_create_with_no_scenario_after_the_end_cannot_begin_again()
+    {
+        // Timesheets W1: a deleted time entry ends its stream (endsStream), but no
+        // scenario logs it again afterwards. Unlike an unassign, the end is final, so the
+        // create must not be able to begin the stream again.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "2.2.0", "id": "final-end-test", "name": "Final End Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "entry-logged": {"name": "Entry Logged", "swimlaneId": "s", "aggregate": "Entry"},
+                "entry-deleted": {"name": "Entry Deleted", "swimlaneId": "s", "aggregate": "Entry", "endsStream": true}
+              },
+              "commands": {
+                "log-entry": {"name": "Log Entry", "aggregate": "Entry"},
+                "delete-entry": {"name": "Delete Entry", "aggregate": "Entry"}
+              },
+              "screens": {"scr": {"name": "Screen"}},
+              "slices": [
+                {
+                  "id": "log-slice", "name": "Log", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr", "commandId": "log-entry", "eventIds": ["entry-logged"],
+                  "scenarios": [
+                    {
+                      "id": "log-scenario", "name": "Log an entry", "kind": "stateChange",
+                      "given": [], "when": {"commandId": "log-entry"}, "then": {"events": [{"eventId": "entry-logged"}]}
+                    },
+                    {
+                      "id": "relog-refused", "name": "A deleted entry cannot be logged again", "kind": "error",
+                      "given": [{"eventId": "entry-logged"}, {"eventId": "entry-deleted"}],
+                      "when": {"commandId": "log-entry"}, "then": {"error": {"message": "Entry has ended and cannot begin again"}}
+                    }
+                  ]
+                },
+                {
+                  "id": "delete-slice", "name": "Delete", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr", "commandId": "delete-entry", "eventIds": ["entry-deleted"],
+                  "scenarios": [{
+                    "id": "delete-scenario", "name": "Delete an entry", "kind": "stateChange",
+                    "given": [{"eventId": "entry-logged"}], "when": {"commandId": "delete-entry"},
+                    "then": {"events": [{"eventId": "entry-deleted"}]}
+                  }]
+                }
+              ]
+            }
+            """;
+        var doc = DocumentLoader.Parse(json);
+
+        var result = DocumentMapper.Map(doc);
+
+        var command = Assert.Single(result.Domains).Commands.Single(c => c.Name == "LogEntry");
+        Assert.True(command.Once);
+        Assert.False(command.CanBeginAgain, "an error scenario after the end is not evidence of beginning again");
     }
 
     [Fact]

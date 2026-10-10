@@ -21,6 +21,12 @@ internal static class DeciderGenerator
         var events = domain.Events();
         var (fields, _) = GenerationSupport.CollectEventFields(domain);
         var hasPii = fields.Any(f => f.Pii);
+        // An ended stream that no create may begin again needs its own flag: Exists alone
+        // reads the same after the end as before the start. Only such aggregates carry it,
+        // so every other decider generates exactly as before.
+        var endsForGood = domain.Commands.SelectMany(c => c.Events).Any(e => e.EndsStream)
+            && domain.Commands.Any(c => c.Once && !c.CanBeginAgain);
+        var stateFlags = endsForGood ? "bool Exists, bool Ended" : "bool Exists";
 
         var b = new StringBuilder();
         b.AppendLine("using System.Text.Json;");
@@ -45,8 +51,8 @@ internal static class DeciderGenerator
         b.AppendLine("/// </summary>");
         var stateFields = string.Join(", ", fields.Select(f => $"{GenerationSupport.FieldCSharpType(f.Type, f.Pii)}? {GenerationSupport.ExportName(f.Name)}"));
         b.AppendLine(fields.Count == 0
-            ? $"public sealed record {aggregate}State(bool Exists);"
-            : $"public sealed record {aggregate}State(bool Exists, {stateFields});");
+            ? $"public sealed record {aggregate}State({stateFlags});"
+            : $"public sealed record {aggregate}State({stateFlags}, {stateFields});");
         b.AppendLine();
         b.AppendLine($"public static class {aggregate}Decider");
         b.AppendLine("{");
@@ -67,7 +73,7 @@ internal static class DeciderGenerator
         }
         b.AppendLine($"    public static Decider<{aggregate}State> Create() => new()");
         b.AppendLine("    {");
-        var initArgs = string.Join(", ", Enumerable.Repeat("false", 1).Concat(fields.Select(_ => "null")));
+        var initArgs = string.Join(", ", Enumerable.Repeat("false", endsForGood ? 2 : 1).Concat(fields.Select(_ => "null")));
         b.AppendLine($"        InitialState = () => new {aggregate}State({initArgs}),");
         b.AppendLine("        Decide = (state, cmd) =>");
         b.AppendLine("        {");
@@ -79,6 +85,8 @@ internal static class DeciderGenerator
             b.AppendLine("                {");
             if (command.Once)
                 b.AppendLine($"                    if (state.Exists) throw new InvalidOperationException(\"{domain.Aggregate} already exists\");");
+            if (command.Once && !command.CanBeginAgain && endsForGood)
+                b.AppendLine($"                    if (state.Ended) throw new InvalidOperationException(\"{domain.Aggregate} has ended and cannot begin again\");");
             if (command.RequiresExisting)
                 b.AppendLine($"                    if (!state.Exists) throw new InvalidOperationException(\"{domain.Aggregate} does not exist\");");
             if (command.Events.Count > 1)
@@ -125,8 +133,11 @@ internal static class DeciderGenerator
             // A terminal event (endsStream) resets Exists to false instead of setting
             // it true, so Once/RequiresExisting keep working across a full
             // assign -> unassign -> re-assign lifecycle -- see DocumentMapper's
-            // ScenarioNetExists, which folds the same rule at mapping time.
-            var existsLiteral = EventEndsStream(domain, eventName) ? "false" : "true";
+            // ScenarioNetExists, which folds the same rule at mapping time. Where a
+            // create may not begin again, it also sets Ended, which that create refuses.
+            var ends = EventEndsStream(domain, eventName);
+            var existsLiteral = ends ? "false" : "true";
+            if (ends && endsForGood) existsLiteral += ", Ended = true";
             b.AppendLine($"                case {aggregate}Events.{eventName}:");
             if (eventFields.Count == 0)
             {

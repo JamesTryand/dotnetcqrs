@@ -53,6 +53,12 @@ public sealed class Command
     /// generated code refuses a repeat.</summary>
     public bool Once { get; init; }
 
+    /// <summary>A <see cref="Once"/> command that may begin its stream again after an
+    /// <c>endsStream</c> event: a scenario of its slice creates again after the end (a
+    /// re-assign after an unassign). Without that evidence, an ended stream stays ended
+    /// and the create refuses it (a deleted entry is never logged again).</summary>
+    public bool CanBeginAgain { get; init; }
+
     /// <summary>Needs the aggregate to already exist.</summary>
     public bool RequiresExisting { get; init; }
 
@@ -116,10 +122,11 @@ public sealed class Event
     public bool NoFields { get; init; }
 
     /// <summary>When folded, resets the aggregate's synthesized <c>Exists</c> to
-    /// <c>false</c> instead of <c>true</c> — the terminal event of a lifecycle that can
-    /// legitimately begin again (unassign before a re-assign). Generator-synthesized
-    /// state, not a schema concept of its own; see <c>eventmodelschema</c>'s
-    /// <c>event.endsStream</c>.</summary>
+    /// <c>false</c> instead of <c>true</c> — the terminal event of a lifecycle. It may
+    /// begin again only through a create with <see cref="Command.CanBeginAgain"/>
+    /// (unassign before a re-assign); otherwise the end is final (a delete).
+    /// Generator-synthesized state, not a schema concept of its own; see
+    /// <c>eventmodelschema</c>'s <c>event.endsStream</c>.</summary>
     public bool EndsStream { get; init; }
 }
 

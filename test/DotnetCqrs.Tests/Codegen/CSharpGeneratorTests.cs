@@ -396,5 +396,114 @@ public class CSharpGeneratorTests
         var (success, output) = await BuildAsync(files, programCs);
         Assert.True(success, $"generated decider did not build/run correctly:\n{output}");
         Assert.Contains("PASS", output);
+
+        // Every create here can begin again, so the state carries no Ended flag: a
+        // decider that never needs it generates exactly as it did before.
+        Assert.DoesNotContain("Ended", files.Single(f => f.Name.EndsWith("Decider.cs")).Source);
+    }
+
+    [Fact]
+    public async Task An_endsStream_event_with_no_scenario_beginning_again_ends_the_stream_for_good()
+    {
+        // Timesheets W1: deleting a time entry ends its stream, and nothing may follow --
+        // not an update, and not a create on the same id either. No scenario logs the
+        // entry again after a delete, so the create stays once per stream for good.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "2.2.0", "id": "final-end-runtime-test", "name": "Final End Runtime Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "entry-logged": {"name": "Entry Logged", "swimlaneId": "s", "aggregate": "Entry"},
+                "entry-updated": {"name": "Entry Updated", "swimlaneId": "s", "aggregate": "Entry"},
+                "entry-deleted": {"name": "Entry Deleted", "swimlaneId": "s", "aggregate": "Entry", "endsStream": true}
+              },
+              "commands": {
+                "log-entry": {"name": "Log Entry", "aggregate": "Entry"},
+                "update-entry": {"name": "Update Entry", "aggregate": "Entry"},
+                "delete-entry": {"name": "Delete Entry", "aggregate": "Entry"}
+              },
+              "screens": {"scr": {"name": "Screen"}},
+              "slices": [
+                {
+                  "id": "log-slice", "name": "Log", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr", "commandId": "log-entry", "eventIds": ["entry-logged"],
+                  "scenarios": [{
+                    "id": "log-scenario", "name": "Log an entry", "kind": "stateChange",
+                    "given": [], "when": {"commandId": "log-entry"}, "then": {"events": [{"eventId": "entry-logged"}]}
+                  }]
+                },
+                {
+                  "id": "update-slice", "name": "Update", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr", "commandId": "update-entry", "eventIds": ["entry-updated"],
+                  "scenarios": [{
+                    "id": "update-scenario", "name": "Update an entry", "kind": "stateChange",
+                    "given": [{"eventId": "entry-logged"}], "when": {"commandId": "update-entry"},
+                    "then": {"events": [{"eventId": "entry-updated"}]}
+                  }]
+                },
+                {
+                  "id": "delete-slice", "name": "Delete", "pattern": "stateChange",
+                  "swimlaneId": "s", "status": "created",
+                  "screenId": "scr", "commandId": "delete-entry", "eventIds": ["entry-deleted"],
+                  "scenarios": [{
+                    "id": "delete-scenario", "name": "Delete an entry", "kind": "stateChange",
+                    "given": [{"eventId": "entry-logged"}], "when": {"commandId": "delete-entry"},
+                    "then": {"events": [{"eventId": "entry-deleted"}]}
+                  }]
+                }
+              ]
+            }
+            """;
+        var domain = Assert.Single(DocumentMapper.Map(DocumentLoader.Parse(json)).Domains);
+        var files = CSharpGenerator.Generate(domain);
+
+        const string programCs = """
+            using DotnetCqrs.Deciders;
+            using DotnetCqrs.EventStore;
+            using Generated.Entry;
+
+            var store = await SqliteEventStore.OpenAsync(":memory:");
+            var registry = new DeciderRegistry(store);
+            registry.Register(EntryDecider.Aggregate, EntryDecider.Create());
+
+            await registry.HandleAsync("entry", "e1", new Command("LogEntry", "{}"));
+            await registry.HandleAsync("entry", "e1", new Command("DeleteEntry", "{}"));
+
+            foreach (var name in new[] { "LogEntry", "UpdateEntry", "DeleteEntry" })
+            {
+                try
+                {
+                    await registry.HandleAsync("entry", "e1", new Command(name, "{}"));
+                    Console.WriteLine($"FAIL: {name} was accepted after the delete");
+                    return 1;
+                }
+                catch (InvalidOperationException ex)
+                {
+                    Console.WriteLine($"{name}: {ex.Message}");
+                }
+            }
+
+            // Another stream is unaffected: the create still opens a fresh one.
+            await registry.HandleAsync("entry", "e2", new Command("LogEntry", "{}"));
+
+            var stream = await store.LoadStreamAsync("entry", "e1");
+            var types = string.Join(",", stream.Select(e => e.Type));
+            if (types != "EntryLogged,EntryDeleted")
+            {
+                Console.WriteLine($"FAIL: stream = [{types}]");
+                return 1;
+            }
+
+            Console.WriteLine("PASS");
+            return 0;
+            """;
+
+        var (success, output) = await BuildAsync(files, programCs);
+        Assert.True(success, $"generated decider did not build/run correctly:\n{output}");
+        Assert.Contains("PASS", output);
+        Assert.Contains("LogEntry: entry has ended and cannot begin again", output);
+        Assert.Contains("UpdateEntry: entry does not exist", output);
     }
 }

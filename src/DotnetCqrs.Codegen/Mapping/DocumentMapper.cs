@@ -318,7 +318,8 @@ public sealed class DocumentMapper
         var hasUpdate = HasUpdateEvidence(slice, aggregate);
         var once = hasCreate && !hasUpdate;
         var requiresExisting = !hasCreate;
-        GetOrCreateDomain(aggregate).Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.EventIds, once, requiresExisting));
+        GetOrCreateDomain(aggregate).Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.EventIds, once, requiresExisting,
+            canBeginAgain: once && HasBeginAgainEvidence(slice, aggregate)));
     }
 
     /// <summary>Turns an automation slice into a reactor plus the command it
@@ -357,7 +358,8 @@ public sealed class DocumentMapper
         var crossAggregate = source != aggregate;
         var target = GetOrCreateDomain(aggregate);
         var isCreate = crossAggregate && HasCreateEvidence(slice, aggregate);
-        target.Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.ResultEventIds, isCreate, requiresExisting: !isCreate));
+        target.Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.ResultEventIds, isCreate, requiresExisting: !isCreate,
+            canBeginAgain: isCreate && HasBeginAgainEvidence(slice, aggregate)));
 
         var triggers = slice.TriggerEventIds.Select(EventTypeName).ToList();
         if (!string.IsNullOrEmpty(slice.ReadModelId))
@@ -380,12 +382,14 @@ public sealed class DocumentMapper
         GetOrCreateDomain(source).Reactors.Add(reactor);
     }
 
-    private Domain.Command BuildCommand(string aggregate, string id, CommandDef cmd, IReadOnlyList<string> eventIds, bool once, bool requiresExisting)
+    private Domain.Command BuildCommand(string aggregate, string id, CommandDef cmd, IReadOnlyList<string> eventIds, bool once, bool requiresExisting,
+        bool canBeginAgain = false)
     {
         var command = new Domain.Command
         {
             Name = CommandName(id),
             Once = once,
+            CanBeginAgain = canBeginAgain,
             RequiresExisting = requiresExisting,
             RequiredRole = cmd.RequiredRole,
             FieldGatedRole = BuildFieldGatedRole(id, cmd.FieldGatedRole),
@@ -1104,6 +1108,18 @@ public sealed class DocumentMapper
     /// create-only or strictly update-only, so neither guard applies.</summary>
     private bool HasUpdateEvidence(Slice slice, string aggregate) =>
         slice.Scenarios.OfType<StateChangeScenario>().Any(s => ScenarioNetExists(s, aggregate));
+
+    /// <summary>A create may begin its stream again after an <c>endsStream</c> event only
+    /// when one of its slice's scenarios does exactly that: its `given` ends the stream
+    /// (an own-stream endsStream event, netting to not-exists) and the command still
+    /// succeeds -- a re-assign after an unassign. Error scenarios are not evidence. With no
+    /// such scenario the end is final: the generated create refuses an ended stream, so a
+    /// deleted entry's id can never be logged again (timesheets W1).</summary>
+    private bool HasBeginAgainEvidence(Slice slice, string aggregate) =>
+        slice.Scenarios.OfType<StateChangeScenario>().Any(s =>
+            !ScenarioNetExists(s, aggregate)
+            && s.Given.Any(g => _endsStreamEvents.Contains(g.EventId)
+                && _eventOwners.TryGetValue(g.EventId, out var owner) && owner == aggregate));
 
     // ---- lossy notes ----
 
