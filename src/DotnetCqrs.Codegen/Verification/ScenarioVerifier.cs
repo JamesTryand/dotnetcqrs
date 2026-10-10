@@ -117,7 +117,8 @@ public static class ScenarioVerifier
         commandScenarios.Add(new CommandScenarioInput(
             slice.Id, scenario.Id, scenario.Name, KindOf(scenario),
             deciderTypeName, aggregate, streamId, own,
-            generatedName, payload?.GetRawText() ?? "{}", expectedEventTypes));
+            generatedName, payload?.GetRawText() ?? "{}", expectedEventTypes,
+            scenario is ErrorScenario error ? error.Then.Error.Message : null));
     }
 
     private static void BuildViewScenario(

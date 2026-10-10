@@ -40,7 +40,8 @@ public sealed record CommandScenarioInput(
     IReadOnlyList<GivenEventInput> Given, // this aggregate's own events only -- see ScenarioVerifier's SplitGiven
     string CommandName,
     string CommandPayload,
-    IReadOnlyList<string> ExpectedEventTypes); // empty/unused for "error" kind
+    IReadOnlyList<string> ExpectedEventTypes, // empty/unused for "error" kind
+    string? ExpectedErrorMessage = null); // "error" kind only: the refusal must say exactly this
 
 /// <summary>A stateView scenario, ready for the harness to run without consulting the
 /// document again.</summary>

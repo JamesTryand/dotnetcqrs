@@ -64,8 +64,13 @@ static async Task<ScenarioResultDto> RunCommandScenarioAsync(CommandScenarioInpu
         }
         catch (Exception ex)
         {
+            // An error scenario passes only on ITS refusal: the decider's message must be the
+            // scenario's then.error.message. Any refusal used to pass, so a payload the PII
+            // protector rejected, or a crash, passed for a rule that was never checked.
             if (scenario.Kind == "error")
-                return Result(scenario, passed: true, "refused: " + ex.Message);
+                return ex.Message == scenario.ExpectedErrorMessage
+                    ? Result(scenario, passed: true, "refused: " + ex.Message)
+                    : Result(scenario, passed: false, $"refused for another reason: expected \"{scenario.ExpectedErrorMessage}\", got \"{ex.Message}\"");
             return Result(scenario, passed: false, "the decider refused the command: " + ex.Message);
         }
     }
@@ -597,7 +602,8 @@ record HarnessInput(List<CommandScenarioInput> CommandScenarios, List<ViewScenar
 record GivenEventInput(string Type, string Data);
 record ViewGivenEventInput(string Type, string Data, string MainKey, Dictionary<string, string> ViaKeys, Dictionary<string, string>? PiiFields = null);
 record CommandScenarioInput(string SliceId, string ScenarioId, string Name, string Kind, string DeciderTypeName,
-    string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes);
+    string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes,
+    string? ExpectedErrorMessage = null);
 record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,
     string TableName, List<ViewGivenEventInput> Given, string? QueryParams, string? AsOf, string ExpectedResult,
     List<ViewScopeInput> Scopes, List<ViewFilterInput> Filters, List<string>? PiiColumns = null, string? SearchIndexTypeName = null,

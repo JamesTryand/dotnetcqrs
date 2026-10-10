@@ -110,6 +110,52 @@ public class ScenarioVerifierTests
     }
 
     [Fact(Timeout = VerifyTimeoutMs)]
+    public async Task An_error_scenario_refused_for_another_reason_fails_and_names_both_messages()
+    {
+        // Timesheets audit T2: the harness used to pass an error scenario on ANY refusal. Three
+        // timesheets scenarios passed because the PII protector refused a payload, not because
+        // of the rule they describe, and stage-non-invoiceable-project-rejected passed on a
+        // crash. The decider's message must be the scenario's then.error.message.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "2.0.0", "id": "error-reason-test", "name": "Error Reason Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {"order-placed": {"name": "Order Placed", "swimlaneId": "s"}},
+              "commands": {"place-order": {"name": "Place Order"}},
+              "screens": {"scr": {"name": "Screen"}},
+              "slices": [{
+                "id": "place-order-slice", "name": "Place Order", "pattern": "stateChange",
+                "swimlaneId": "s", "status": "created",
+                "screenId": "scr", "commandId": "place-order", "eventIds": ["order-placed"],
+                "scenarios": [
+                  {
+                    "id": "create-scenario", "name": "Creates the order", "kind": "stateChange",
+                    "given": [], "when": {"commandId": "place-order"}, "then": {"events": [{"eventId": "order-placed"}]}
+                  },
+                  {
+                    "id": "closed-rejected", "name": "A closed order refuses a PlaceOrder", "kind": "error",
+                    "given": [{"eventId": "order-placed"}], "when": {"commandId": "place-order"},
+                    "then": {"error": {"message": "order is closed"}}
+                  }
+                ]
+              }]
+            }
+            """;
+        var doc = DocumentLoader.Parse(json);
+        var mapped = DocumentMapper.Map(doc, new MappingOptions
+        {
+            AggregateOverrides = new Dictionary<string, string> { ["place-order"] = "Order" },
+        });
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped);
+
+        var errorScenario = results.Single(r => r.ScenarioId == "closed-rejected");
+        Assert.False(errorScenario.Passed, errorScenario.Detail);
+        Assert.Contains("order is closed", errorScenario.Detail);
+        Assert.Contains("order already exists", errorScenario.Detail);
+    }
+
+    [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_scenario_whose_read_model_was_skipped_during_mapping_is_reported_skipped_not_failed()
     {
         // A read model with no builtFromEventIds is a WARNING during mapping (the
