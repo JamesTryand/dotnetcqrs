@@ -1,15 +1,17 @@
 namespace DotnetCqrs.Codegen.Domain;
 
-/// <summary>Folds the schema's ten <c>fieldType</c> values onto the domain's five —
+/// <summary>Folds the schema's ten <c>fieldType</c> values onto the domain's six —
 /// ports pocketcqrs's <c>emschema.FoldType</c>/<c>FoldNote</c>. Takes a
 /// <see cref="Model.Field"/> (the schema-shaped field, with cardinality/subfields) and
 /// produces the folded type string a <see cref="Field"/> (the domain-shaped field)
 /// carries.</summary>
 public static class FieldTypeFolding
 {
-    /// <summary>Ten values fold onto five, deliberately and deliberately documented
+    /// <summary>Ten values fold onto six, deliberately and deliberately documented
     /// (see <see cref="Note"/>). A list of anything, or a field with subfields, both
-    /// become <c>json</c> — a column can hold neither.</summary>
+    /// become <c>json</c> — a column can hold neither. <c>decimal</c> stays exact (a C#
+    /// <c>decimal</c>): money declared decimal must not lose a half-penny to a double
+    /// (timesheets D30.21). pocketcqrs folds it to <c>number</c>, as JavaScript has one.</summary>
     public static string Fold(Model.Field field)
     {
         if (field.Cardinality == "list" || field.Subfields is { Count: > 0 })
@@ -19,7 +21,8 @@ public static class FieldTypeFolding
         {
             "string" or "uuid" => "text",
             "boolean" => "bool",
-            "integer" or "long" or "decimal" or "double" => "number",
+            "decimal" => "decimal",
+            "integer" or "long" or "double" => "number",
             "date" or "dateTime" => "date",
             "custom" => "json",
             // an unknown type is not guessed at: text is the safe carrier, and the
@@ -38,7 +41,7 @@ public static class FieldTypeFolding
             return $"{owner}.{field.Name} has subfields and becomes a json column";
         if (field.Type == "uuid")
             return $"{owner}.{field.Name} is a uuid and becomes text (no uuid column type here)";
-        if (field.Type is "long" or "decimal" or "double" or "integer")
+        if (field.Type is "long" or "double" or "integer")
             return $"{owner}.{field.Name} is {field.Type} and becomes number (one numeric column type here)";
         if (field.Type == "dateTime")
             return $"{owner}.{field.Name} is dateTime and becomes date";

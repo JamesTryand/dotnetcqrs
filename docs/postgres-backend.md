@@ -163,6 +163,8 @@ parity"):
    number or sum is `DOUBLE PRECISION` rather than `REAL`, which is only 4 bytes on
    Postgres (`1234567.89` read back as `1234567.875`); a count is `BIGINT`. Both names keep
    SQLite's REAL/INTEGER affinities, so SQLite output is unchanged.
+   A `decimal` field (0.26.0) is `NUMERIC`: exact on Postgres; on SQLite a float, which the
+   query routes read back as a decimal, so a 2 dp value (and a sum of them) comes back exactly.
 2. **Typed query params.** A generated route parses a plain query-string value for a
    numeric or bool column before binding it (`QueryParamParser`); Postgres has no implicit
    `integer = text`. An unparseable value is a `400`. A `scopes` param is still bound as

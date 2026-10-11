@@ -268,7 +268,7 @@ internal static class DeciderGenerator
         if (@event.Fields.Count == 0) return $"new NewEvent({type}, \"{{}}\")";
         var payload = $"JsonSerializer.Deserialize<{GenerationSupport.ExportName(@event.Name)}Payload>(cmd.Payload, JsonOptions)!";
         if (set is { Count: > 0 })
-            payload = $"({payload} with {{ {string.Join(", ", set.Select(v => $"{GenerationSupport.ExportName(v.Key)} = {SetLiteral(v.Value)}"))} }})";
+            payload = $"({payload} with {{ {string.Join(", ", set.Select(v => $"{GenerationSupport.ExportName(v.Key)} = {SetLiteral(v.Value, @event.Fields.First(f => f.Name == v.Key).Type)}"))} }})";
         return @event.Fields.Any(f => f.Pii)
             ? $"NewEvent.Of({type}, {payload})"
             : $"new NewEvent({type}, JsonSerializer.Serialize({payload}, JsonOptions))";
@@ -288,10 +288,10 @@ internal static class DeciderGenerator
     private static string RepeatedHookName(Domain.Command command, int index, string eventName) =>
         $"{command.Name}Outcome{index}{eventName}";
 
-    private static string SetLiteral(object? value) => value switch
+    private static string SetLiteral(object? value, string fieldType) => value switch
     {
         string text => StringLiteral(text),
-        double number => number.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + "d",
+        double number => number.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + (fieldType == "decimal" ? "m" : "d"),
         bool flag => flag ? "true" : "false",
         _ => "null",
     };
@@ -351,7 +351,8 @@ internal static class DeciderGenerator
         ? $"state.{GenerationSupport.ExportName(field)}"
         : $"RefusalField(refusalCommand, {StringLiteral(field)})";
 
-    /// <summary>The field as a comparable value: a string, double or bool, or null.</summary>
+    /// <summary>The field as a comparable value: a string, number (double or decimal) or bool, or
+    /// null. The helpers compare numbers as decimals, whichever type each side has.</summary>
     private static string Value(Domain.RefusalSide side, string field) => side == Domain.RefusalSide.State
         ? $"(object?){Raw(side, field)}"
         : $"RefusalValue({Raw(side, field)})";
@@ -402,7 +403,17 @@ internal static class DeciderGenerator
         b.AppendLine("    // A date (a state DateTime, or a command's text) equals another on the same calendar day.");
         b.AppendLine("    private static bool RefusalEquals(object? left, object? right) =>");
         b.AppendLine("        left is DateTime || right is DateTime ? RefusalDay(left) is { } day && RefusalDay(right) == day");
+        b.AppendLine("        : RefusalNumber(left) is { } l ? Equals(l, RefusalNumber(right) ?? right)");
         b.AppendLine("        : left is null ? right is null : left.Equals(right);");
+        b.AppendLine();
+        b.AppendLine("    // A number on either side, a double (a number field, a literal, a command's JSON) or a decimal");
+        b.AppendLine("    // (a decimal field), compares as a decimal: 56.7 equals 56.7m.");
+        b.AppendLine("    private static decimal? RefusalNumber(object? value) => value switch");
+        b.AppendLine("    {");
+        b.AppendLine("        decimal m => m,");
+        b.AppendLine("        double d when double.IsFinite(d) && Math.Abs(d) < 7.9e28 => (decimal)d,");
+        b.AppendLine("        _ => null,");
+        b.AppendLine("    };");
         b.AppendLine();
         b.AppendLine("    private static DateOnly? RefusalDay(object? value) => value switch");
         b.AppendLine("    {");
@@ -414,7 +425,7 @@ internal static class DeciderGenerator
         b.AppendLine();
         b.AppendLine("    // Schema 3.11.0: numbers compare; anything else (an unset value) compares as null, so no rule holds.");
         b.AppendLine("    private static int? RefusalCompare(object? left, object? right) =>");
-        b.AppendLine("        left is double l && right is double r ? l.CompareTo(r) : null;");
+        b.AppendLine("        RefusalNumber(left) is { } l && RefusalNumber(right) is { } r ? l.CompareTo(r) : null;");
         b.AppendLine();
         b.AppendLine("    private static bool RefusalContains(JsonElement? list, object? item) =>");
         b.AppendLine("        list is { ValueKind: JsonValueKind.Array } items && items.EnumerateArray().Any(e => RefusalEquals(RefusalValue(e), item));");

@@ -77,7 +77,7 @@ internal static class ProjectionGenerator
             var sqlType = field.Derivation switch
             {
                 Domain.CountDerivation => "BIGINT",
-                Domain.SumDerivation => "DOUBLE PRECISION",
+                Domain.SumDerivation => field.Type == "decimal" ? "NUMERIC" : "DOUBLE PRECISION",
                 // a pii column holds the {"$pii":…} envelope's raw JSON whatever the
                 // field's own type -- see EmitSeedBlock.
                 _ when field.Pii => "TEXT",
@@ -167,9 +167,9 @@ internal static class ProjectionGenerator
                     break;
                 case Domain.SumDerivation sum:
                     if (sum.AddOnEvents.Count > 0)
-                        EmitRollup(b, readModel, keyColumn, column, sum.RowKeyField, sum.AddOnEvents, $"{column} + @amount", sum.AmountField);
+                        EmitRollup(b, readModel, keyColumn, column, sum.RowKeyField, sum.AddOnEvents, $"{column} + @amount", sum.AmountField, field.Type);
                     if (sum.SubtractOnEvents.Count > 0)
-                        EmitRollup(b, readModel, keyColumn, column, sum.RowKeyField, sum.SubtractOnEvents, $"{column} - @amount", sum.AmountField);
+                        EmitRollup(b, readModel, keyColumn, column, sum.RowKeyField, sum.SubtractOnEvents, $"{column} - @amount", sum.AmountField, field.Type);
                     break;
             }
         }
@@ -320,7 +320,7 @@ internal static class ProjectionGenerator
     /// row that doesn't exist yet is simply a no-op, same as a plain-copy field's WHERE
     /// would be.</summary>
     private static void EmitRollup(StringBuilder b, Domain.ReadModel readModel, string keyColumn, string column,
-        string rowKeyField, IReadOnlyList<string> eventTypes, string setExpression, string? amountField = null)
+        string rowKeyField, IReadOnlyList<string> eventTypes, string setExpression, string? amountField = null, string amountType = "number")
     {
         b.AppendLine();
         b.AppendLine($"        if (ev.Type is ({Disjunction(eventTypes)}))");
@@ -330,7 +330,7 @@ internal static class ProjectionGenerator
         b.AppendLine($"            rollup.CommandText = \"UPDATE {readModel.Collection} SET {column} = {setExpression} WHERE {keyColumn} = @rowKey\";");
         b.AppendLine($"            rollup.AddParam(\"@rowKey\", rollupData[\"{rowKeyField}\"].GetString());");
         if (amountField is not null)
-            b.AppendLine($"            rollup.AddParam(\"@amount\", rollupData[\"{amountField}\"].GetDouble());");
+            b.AppendLine($"            rollup.AddParam(\"@amount\", {JsonElementAccessor(amountType, $"rollupData[\"{amountField}\"]")});");
         b.AppendLine("            await rollup.ExecuteNonQueryAsync(ct);");
         b.AppendLine("        }");
     }
@@ -408,6 +408,7 @@ internal static class ProjectionGenerator
     private static string JsonElementAccessor(string domainType, string variable) => domainType switch
     {
         "number" => $"{variable}.GetDouble()",
+        "decimal" => $"{variable}.GetDecimal()",
         // 0/1 into the INTEGER column (GenerationSupport.ColumnType): SQLite stored a bound
         // bool as 1/0 anyway, but Postgres rejects a boolean parameter for an integer column.
         "bool" => $"({variable}.GetBoolean() ? 1L : 0L)",

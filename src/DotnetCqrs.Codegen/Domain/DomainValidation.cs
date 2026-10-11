@@ -18,7 +18,7 @@ public sealed class DomainValidationException(IReadOnlyList<string> problems)
 /// </summary>
 public static class DomainValidation
 {
-    private static readonly HashSet<string> SchemaTypes = ["text", "number", "bool", "date", "json"];
+    private static readonly HashSet<string> SchemaTypes = ["text", "number", "decimal", "bool", "date", "json"];
 
     public static void Validate(this Domain domain)
     {
@@ -99,7 +99,7 @@ public static class DomainValidation
         if (!Names.IsValidIdentifier(field.Name))
             add($"{owner}: field name \"{field.Name}\" is not a valid identifier");
         if (!SchemaTypes.Contains(field.Type))
-            add($"{owner}: field \"{field.Name}\" has type \"{field.Type}\"; use text, number, bool, date or json");
+            add($"{owner}: field \"{field.Name}\" has type \"{field.Type}\"; use text, number, decimal, bool, date or json");
     }
 
     public static IReadOnlyList<string> Warnings(this Domain domain)

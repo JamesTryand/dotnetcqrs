@@ -177,7 +177,7 @@ public class RepeatedOutcomeTests
             public static partial class Pay_runDecider
             {
                 private static partial IEnumerable<PersonPaidPayload> ReleasePayRunOutcome0PersonPaid(Pay_runState state, Command cmd) =>
-                    [new PersonPaidPayload("r1", "p1", "r1:p1", null, Pii<double>.Fresh(120)), new PersonPaidPayload("r1", "p2", "r1:p2", null, Pii<double>.Fresh(80))];
+                    [new PersonPaidPayload("r1", "p1", "r1:p1", null, Pii<decimal>.Fresh(120m)), new PersonPaidPayload("r1", "p2", "r1:p2", null, Pii<decimal>.Fresh(80m))];
             }
             """);
         const string programCs = """

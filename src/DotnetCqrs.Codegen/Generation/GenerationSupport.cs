@@ -18,6 +18,7 @@ internal static class GenerationSupport
     {
         "text" => "string",
         "number" => "double",
+        "decimal" => "decimal",
         "bool" => "bool",
         "date" => "DateTime",
         "json" => "JsonElement",
@@ -30,10 +31,13 @@ internal static class GenerationSupport
     /// generated projection runs on either: <c>DOUBLE PRECISION</c> is SQLite REAL affinity and
     /// Postgres's 8-byte float (plain <c>REAL</c> is only 4 bytes on Postgres), and a bool is an
     /// <c>INTEGER</c> 0/1 on both, written as 0/1 (see <c>ProjectionGenerator</c>), so a query
-    /// returns the same value whichever database answers it.</summary>
+    /// returns the same value whichever database answers it. A <c>decimal</c> is <c>NUMERIC</c>:
+    /// exact on Postgres; on SQLite (NUMERIC affinity) a float, which the query routes read back
+    /// as a decimal (15 significant digits), so a 2 dp value comes back exactly.</summary>
     public static string ColumnType(string domainType) => domainType switch
     {
         "number" => "DOUBLE PRECISION",
+        "decimal" => "NUMERIC",
         "bool" => "INTEGER",
         _ => "TEXT", // text, date (ISO 8601 string), json (raw text)
     };
@@ -49,7 +53,7 @@ internal static class GenerationSupport
         Domain.ToggleDerivation => "bool",
         Domain.GroupByDerivation => null,
         _ when field.Pii => null,
-        _ => field.Type switch { "number" => "number", "bool" => "bool", _ => null },
+        _ => field.Type switch { "number" or "decimal" => "number", "bool" => "bool", _ => null },
     };
 
     /// <summary>Unions every field every event this domain's commands declare, in
@@ -103,6 +107,10 @@ internal static class GenerationSupport
     /// <c>field.pii</c>. The wrapper's JSON converter reads a command's bare value as
     /// fresh plaintext and a stored envelope as pending ciphertext, so the generated
     /// <c>Decide</c>/<c>Evolve</c> bodies need no PII-specific code at all.</summary>
+    /// <summary>True for the two numeric domain types: <c>number</c> (a double) and <c>decimal</c>.
+    /// Rules compare them with each other.</summary>
+    public static bool IsNumeric(string domainType) => domainType is "number" or "decimal";
+
     public static string FieldCSharpType(string domainType, bool pii) =>
         pii ? $"Pii<{CSharpType(domainType)}>" : CSharpType(domainType);
 

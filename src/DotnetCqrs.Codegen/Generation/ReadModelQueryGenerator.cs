@@ -386,7 +386,17 @@ public static class ReadModelQueryGenerator
         b.AppendLine("                {");
         b.AppendLine("                    var row = new Dictionary<string, object?>();");
         b.AppendLine("                    for (var c = 0; c < reader.FieldCount; c++)");
-        b.AppendLine("                        row[reader.GetName(c)] = reader.IsDBNull(c) ? null : reader.GetValue(c);");
+        // A decimal column is read as a decimal: SQLite holds it as a float, and its sums carry
+        // float noise (565.1500000000001); read back to 15 significant digits, 2 dp is exact.
+        var decimalColumns = readModel.Fields.Where(f => f.Type == "decimal" && !f.Pii && f.Derivation is null or Domain.SumDerivation)
+            .Select(f => ToSnakeCase(f.Name)).ToList();
+        if (decimalColumns.Count == 0)
+            b.AppendLine("                        row[reader.GetName(c)] = reader.IsDBNull(c) ? null : reader.GetValue(c);");
+        else
+        {
+            b.AppendLine($"                        row[reader.GetName(c)] = reader.IsDBNull(c) ? null");
+            b.AppendLine($"                            : reader.GetName(c) is {string.Join(" or ", decimalColumns.Select(c => $"\"{c}\""))} ? reader.GetDecimal(c) : reader.GetValue(c);");
+        }
         b.AppendLine("                    found.Add(row);");
         b.AppendLine("                }");
         b.AppendLine("                return found;");

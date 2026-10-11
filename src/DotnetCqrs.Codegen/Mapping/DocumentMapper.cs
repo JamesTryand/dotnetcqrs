@@ -514,7 +514,7 @@ public sealed class DocumentMapper
                     var literalType = literal switch { string => "text", double => "number", bool => "bool", _ => null };
                     if (field.Pii)
                         _report.Error($"{where}: set fixes pii field \"{fieldName}\" of event \"{eventId}\"; a model never holds personal data");
-                    else if (literalType != field.Type)
+                    else if (literalType != field.Type && !(literalType == "number" && field.Type == "decimal"))
                         _report.Error($"{where}: set gives field \"{fieldName}\" ({field.Type}) of event \"{eventId}\" a {literalType ?? "null"} value");
                     else
                         fields[name] = literal;
@@ -619,7 +619,7 @@ public sealed class DocumentMapper
                         }
                         if (condition.Operator is "lessThan" or "atMost" or "greaterThan" or "atLeast")
                         {
-                            if (left.Type != "number")
+                            if (!Generation.GenerationSupport.IsNumeric(left.Type))
                             {
                                 _report.Error($"{owner}: {where}: {condition.Operator} compares numbers, but \"{condition.Field}\" is {left.Type}");
                                 continue;
@@ -630,7 +630,7 @@ public sealed class DocumentMapper
                                 if (Lookup(boundSide, bound.Field!, where) is not { } boundField) continue;
                                 if (boundField.Pii)
                                     _report.Error($"{owner}: {where} compares pii field \"{bound.Field}\"; a rule may only test pii for set or notSet");
-                                else if (boundField.Type != "number")
+                                else if (!Generation.GenerationSupport.IsNumeric(boundField.Type))
                                     _report.Error($"{owner}: {where}: {condition.Operator} compares numbers, but \"{bound.Field}\" is {boundField.Type}");
                             }
                             else if (bound.Literal is not double)
@@ -649,13 +649,13 @@ public sealed class DocumentMapper
                             {
                                 if (item.Pii)
                                     _report.Error($"{owner}: {where} compares pii field \"{condition.Operand.Field}\"; a rule may only test pii for set or notSet");
-                                else if (item.Type is not ("text" or "number" or "bool"))
+                                else if (item.Type is not ("text" or "number" or "decimal" or "bool"))
                                     _report.Error($"{owner}: {where}: contains looks for one text, number or bool value, but \"{condition.Operand.Field}\" is {item.Type}");
                             }
                             continue;
                         }
                         // A date compares for equality with another date field, by calendar day.
-                        if (left.Type is not ("text" or "number" or "bool" or "date"))
+                        if (left.Type is not ("text" or "number" or "decimal" or "bool" or "date"))
                         {
                             _report.Error($"{owner}: {where}: {condition.Operator} compares text, numbers, bools or dates, but \"{condition.Field}\" is {left.Type}");
                             continue;
@@ -676,7 +676,7 @@ public sealed class DocumentMapper
                         {
                             rightType = operand.Literal switch { string => "text", double => "number", bool => "bool", _ => null };
                         }
-                        if (rightType != left.Type)
+                        if (rightType != left.Type && !(rightType is { } r && Generation.GenerationSupport.IsNumeric(r) && Generation.GenerationSupport.IsNumeric(left.Type)))
                         {
                             var what = operand.Side is null ? "a literal" : $"\"{operand.Field}\"";
                             _report.Error($"{owner}: {where}: {condition.Operator} compares \"{condition.Field}\" ({left.Type}) with {what} ({rightType ?? "null"})");
