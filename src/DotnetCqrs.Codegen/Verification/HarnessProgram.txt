@@ -62,6 +62,18 @@ static async Task<ScenarioResultDto> RunCommandScenarioAsync(CommandScenarioInpu
 
             return Result(scenario, passed: true, $"would append {string.Join(", ", got)}");
         }
+        catch (ChoiceByHandException)
+        {
+            // Schema 3.12.0: the decision reached an outcome whose condition is hand-written. The
+            // stand-in can't choose, so this is not a pass: what is checked is that no declared rule
+            // refused, and that the expected events are one of the declared alternatives.
+            if (scenario.Kind == "error")
+                return Result(scenario, passed: false, "expected a refusal, but no declared rule refused: the decision reached a hand-written choice of outcome");
+            var want = scenario.ExpectedEventTypes;
+            if (scenario.HandOutcomes is null || !scenario.HandOutcomes.Any(o => o.SequenceEqual(want)))
+                return Result(scenario, passed: false, $"expected [{string.Join(", ", want)}], which is not a declared outcome");
+            return HandResult(scenario, $"accepted; [{string.Join(", ", want)}] is a declared outcome, chosen by a hand-written condition (checked against a host's own deciders, not here)");
+        }
         catch (Exception ex)
         {
             // An error scenario passes only on ITS refusal: the decider's message must be the
@@ -598,6 +610,9 @@ static string ToSnakeCase(string name)
 static ScenarioResultDto Result(CommandScenarioInput s, bool passed, string detail) =>
     new(s.SliceId, s.ScenarioId, s.Name, s.Kind, passed, Skipped: false, detail);
 
+static ScenarioResultDto HandResult(CommandScenarioInput s, string detail) =>
+    new(s.SliceId, s.ScenarioId, s.Name, s.Kind, false, Skipped: false, detail, ByHand: true);
+
 static ScenarioResultDto ViewResult(ViewScenarioInput s, bool passed, string detail) =>
     new(s.SliceId, s.ScenarioId, s.Name, "stateView", passed, Skipped: false, detail);
 
@@ -606,7 +621,7 @@ record GivenEventInput(string Type, string Data);
 record ViewGivenEventInput(string Type, string Data, string MainKey, Dictionary<string, string> ViaKeys, Dictionary<string, string>? PiiFields = null);
 record CommandScenarioInput(string SliceId, string ScenarioId, string Name, string Kind, string DeciderTypeName,
     string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes,
-    string? ExpectedErrorMessage = null);
+    string? ExpectedErrorMessage = null, List<List<string>>? HandOutcomes = null);
 record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,
     string TableName, List<ViewGivenEventInput> Given, string? QueryParams, string? AsOf, string ExpectedResult,
     List<ViewScopeInput> Scopes, List<ViewFilterInput> Filters, List<string>? PiiColumns = null, string? SearchIndexTypeName = null,
@@ -616,4 +631,7 @@ record ViewCallerInput(string SubjectId, string? Role);
 record ViewScopeInput(string Param, string ViaProjectionTypeName, string ViaTableName, string MatchParamToColumn, string SelectColumn, string FilterLocalColumn);
 record ViewFilterInput(string Param, string Field, string Kind,
     string? Mode = null, string? Normalize = null, int? MinPrefixLength = null, string? MatchClause = null, bool Hashed = false);
-record ScenarioResultDto(string SliceId, string ScenarioId, string Name, string Kind, bool Passed, bool Skipped, string Detail);
+record ScenarioResultDto(string SliceId, string ScenarioId, string Name, string Kind, bool Passed, bool Skipped, string Detail, bool ByHand = false);
+
+// Thrown by the stand-in for a hand-written outcome condition (schema 3.12.0 when: "hand").
+sealed class ChoiceByHandException() : Exception("the choice of outcome is hand-written");

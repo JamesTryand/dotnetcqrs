@@ -116,7 +116,8 @@ public static class DomainValidation
                     warnings.Add($"event \"{@event.Name}\" of command \"{command.Name}\" does not say what its payload is: " +
                                  "declare fields, or mark it as carrying none");
             }
-            if (command.Events.Count > 1)
+            // Declared outcomes (schema 3.12.0) say which events apply, so there is nothing to warn about.
+            if (command.Events.Count > 1 && command.Outcomes.Count == 0)
             {
                 var names = string.Join(", ", command.Events.Select(e => e.Name));
                 warnings.Add($"command \"{command.Name}\" can result in {command.Events.Count} different events " +

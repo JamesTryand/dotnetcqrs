@@ -54,7 +54,10 @@ internal static class DeciderGenerator
             ? $"public sealed record {aggregate}State({stateFlags});"
             : $"public sealed record {aggregate}State({stateFlags}, {stateFields});");
         b.AppendLine();
-        b.AppendLine($"public static class {aggregate}Decider");
+        // A hand-written outcome condition (schema 3.12.0 when: "hand") is a partial method the
+        // host must implement, so the class is partial only when one exists.
+        var hasHandOutcomes = domain.Commands.Any(c => c.Outcomes.Any(o => o.ByHand));
+        b.AppendLine(hasHandOutcomes ? $"public static partial class {aggregate}Decider" : $"public static class {aggregate}Decider");
         b.AppendLine("{");
         b.AppendLine($"    public const string Aggregate = \"{domain.Aggregate}\";");
         b.AppendLine();
@@ -90,6 +93,12 @@ internal static class DeciderGenerator
             if (command.RequiresExisting)
                 b.AppendLine($"                    if (!state.Exists) throw new InvalidOperationException(\"{domain.Aggregate} does not exist\");");
             AppendRefusals(b, command);
+            if (command.Outcomes.Count > 0)
+            {
+                AppendOutcomes(b, aggregate, command);
+                b.AppendLine("                }");
+                continue;
+            }
             if (command.Events.Count > 1)
             {
                 b.AppendLine("                    // THIS COMMAND CAN RESULT IN MORE THAN ONE EVENT:");
@@ -182,7 +191,8 @@ internal static class DeciderGenerator
             }
         }
 
-        if (domain.Commands.Any(c => c.Refusals.Count > 0)) AppendRefusalHelpers(b);
+        AppendOutcomeHooks(b, aggregate, domain);
+        if (domain.Commands.Any(c => c.Refusals.Count > 0 || c.Outcomes.Any(o => o.When is not null))) AppendRefusalHelpers(b);
         if (hasPii) AppendPiiProtector(b, aggregate, fields, piiEvents);
 
         b.AppendLine("}");
@@ -197,15 +207,96 @@ internal static class DeciderGenerator
     {
         if (command.Refusals.Count == 0) return;
         b.AppendLine("                    // refuseWhen (schema 3.10.0), in order: the first rule that holds refuses.");
-        var readsCommand = command.Refusals.SelectMany(r => r.All).Any(c =>
-            c.Side == Domain.RefusalSide.Command || c.Operand?.Side == Domain.RefusalSide.Command);
-        if (readsCommand)
+        if (ReadsCommand(command.Refusals.SelectMany(r => r.All)))
             b.AppendLine("                    var refusalCommand = RefusalCommand(cmd.Payload);");
         foreach (var refusal in command.Refusals)
         {
             var test = string.Join(" && ", refusal.All.Select(ConditionExpression));
             b.AppendLine($"                    if ({test}) throw new InvalidOperationException({StringLiteral(refusal.Message)});");
         }
+    }
+
+    private static bool ReadsCommand(IEnumerable<Domain.RefusalCondition> conditions) => conditions.Any(c =>
+        c.Side == Domain.RefusalSide.Command || c.Operand?.Side == Domain.RefusalSide.Command);
+
+    /// <summary>Schema 3.12.0 outcomes: after the refusals, one <c>if</c> per alternative in
+    /// declared order, and the last (no condition) returned unconditionally, so the decision
+    /// always has exactly one answer. A declared condition is refusal conditions (any group, all
+    /// of its conditions); a hand-written one calls the hook <see cref="AppendOutcomeHooks"/>
+    /// declares. Each event is filled from the command as any event is, then <c>set</c>'s
+    /// values are applied to it.</summary>
+    private static void AppendOutcomes(StringBuilder b, string aggregate, Domain.Command command)
+    {
+        b.AppendLine("                    // outcomes (schema 3.12.0), in order: the first whose condition holds is the result.");
+        var conditions = command.Outcomes.SelectMany(o => o.When ?? []).SelectMany(g => g);
+        if (ReadsCommand(conditions) && !ReadsCommand(command.Refusals.SelectMany(r => r.All)))
+            b.AppendLine("                    var refusalCommand = RefusalCommand(cmd.Payload);");
+        for (var i = 0; i < command.Outcomes.Count; i++)
+        {
+            var outcome = command.Outcomes[i];
+            var test = outcome.ByHand
+                ? $"{OutcomeHookName(command, i)}(state, cmd)"
+                : outcome.When is { } groups
+                    ? string.Join(" || ", groups.Select(g => "(" + string.Join(" && ", g.Select(ConditionExpression)) + ")"))
+                    : null;
+            var events = outcome.EventNames.Select(name => OutcomeEvent(aggregate, command.Events.First(e => e.Name == name),
+                outcome.Set.TryGetValue(name, out var values) ? values : null)).ToList();
+            var indent = test is null ? "                    " : "                        ";
+            var lines = events.Select(e => $"{indent}    {e},");
+            if (test is not null)
+                b.AppendLine($"                    if ({test})");
+            if (events.Count == 0)
+            {
+                b.AppendLine($"{indent}return [];");
+                continue;
+            }
+            b.AppendLine($"{indent}return");
+            b.AppendLine($"{indent}[");
+            foreach (var line in lines)
+                b.AppendLine(line);
+            b.AppendLine($"{indent}];");
+        }
+    }
+
+    /// <summary>One event of an alternative: the command's payload reshaped into the event's own
+    /// fields (as for a single event), with the alternative's fixed values on top.</summary>
+    private static string OutcomeEvent(string aggregate, Domain.Event @event, IReadOnlyDictionary<string, object?>? set)
+    {
+        var type = $"{aggregate}Events.{@event.Name}";
+        if (@event.Fields.Count == 0) return $"new NewEvent({type}, \"{{}}\")";
+        var payload = $"JsonSerializer.Deserialize<{GenerationSupport.ExportName(@event.Name)}Payload>(cmd.Payload, JsonOptions)!";
+        if (set is { Count: > 0 })
+            payload = $"({payload} with {{ {string.Join(", ", set.Select(v => $"{GenerationSupport.ExportName(v.Key)} = {SetLiteral(v.Value)}"))} }})";
+        return @event.Fields.Any(f => f.Pii)
+            ? $"NewEvent.Of({type}, {payload})"
+            : $"new NewEvent({type}, JsonSerializer.Serialize({payload}, JsonOptions))";
+    }
+
+    private static string SetLiteral(object? value) => value switch
+    {
+        string text => StringLiteral(text),
+        double number => number.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + "d",
+        bool flag => flag ? "true" : "false",
+        _ => "null",
+    };
+
+    private static string OutcomeHookName(Domain.Command command, int index) => $"{command.Name}Outcome{index}";
+
+    /// <summary>A hand-written outcome condition (<c>when: "hand"</c>) is a partial method with
+    /// no body here: the host must write it, or the decider does not compile. It sees what
+    /// Decide sees, the folded state and the command, and nothing else.</summary>
+    private static void AppendOutcomeHooks(StringBuilder b, string aggregate, Domain.Domain domain)
+    {
+        foreach (var command in domain.Commands)
+            for (var i = 0; i < command.Outcomes.Count; i++)
+            {
+                if (!command.Outcomes[i].ByHand) continue;
+                b.AppendLine();
+                b.AppendLine($"    /// <summary>Whether {command.Name} emits [{string.Join(", ", command.Outcomes[i].EventNames)}]:");
+                b.AppendLine("    /// a hand-written condition (schema 3.12.0 when: \"hand\"). Write it in a partial class beside");
+                b.AppendLine("    /// this one; it reads only the folded state and the command, like Decide.</summary>");
+                b.AppendLine($"    private static partial bool {OutcomeHookName(command, i)}({aggregate}State state, Command cmd);");
+            }
     }
 
     private static string ConditionExpression(Domain.RefusalCondition c)

@@ -10,7 +10,7 @@
     "eventModelingSchemaVersion": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+$",
-      "default": "3.11.0"
+      "default": "3.12.0"
     },
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
@@ -964,11 +964,67 @@
     "eventOutcomes": {
       "type": "array",
       "items": {
-        "type": "array",
-        "items": { "$ref": "#/$defs/id" },
-        "uniqueItems": true
+        "oneOf": [
+          {
+            "type": "array",
+            "items": { "$ref": "#/$defs/id" },
+            "uniqueItems": true
+          },
+          { "$ref": "#/$defs/eventOutcome" }
+        ]
       },
       "minItems": 1
+    },
+
+    "eventOutcome": {
+      "description": "3.12.0: one alternative, with when it applies. When any alternative has a `when`, the alternatives are tried in order after the command's refusals, the first whose `when` holds is the result, and the last has no `when` (the default), so the decision always has an answer.",
+      "type": "object",
+      "required": ["eventIds"],
+      "properties": {
+        "eventIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" },
+          "uniqueItems": true
+        },
+        "description": { "type": "string" },
+        "when": {
+          "oneOf": [
+            {
+              "description": "The condition is hand-written: a generator emits a hook for it rather than a rule.",
+              "const": "hand"
+            },
+            {
+              "description": "Holds when any group holds; a group holds when all its conditions do (the same conditions as refuseWhen).",
+              "type": "array",
+              "items": { "$ref": "#/$defs/outcomeCondition" },
+              "minItems": 1
+            }
+          ]
+        },
+        "set": {
+          "description": "Values this alternative fixes on its events, by event id then field name. Other fields are filled as for any event.",
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/id" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": { "type": ["string", "number", "boolean"] }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "outcomeCondition": {
+      "type": "object",
+      "required": ["all"],
+      "properties": {
+        "all": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/refusalCondition" },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false
     },
 
     "sliceBase": {

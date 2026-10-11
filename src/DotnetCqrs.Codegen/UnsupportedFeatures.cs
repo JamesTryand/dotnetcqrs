@@ -62,7 +62,6 @@ public static class UnsupportedFeatures
     private static readonly (string Property, string What)[] SliceFeatures =
     [
         ("ingressId", "a slice started by an ingress (schema 3.4.0)"),
-        ("outcomes", "outcomes (schema 3.3.0)"),
         ("delay", "an automation started by a delay (schema 3.5.0)"),
         ("schedule", "an automation started by a schedule (schema 3.5.0)"),
         ("effect", "an automation effect (schema 3.6.0)"),

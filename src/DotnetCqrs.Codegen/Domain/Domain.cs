@@ -67,6 +67,11 @@ public sealed class Command
     /// message. Rules read only this aggregate's state and the command.</summary>
     public List<Refusal> Refusals { get; } = [];
 
+    /// <summary>Schema 3.3.0/3.12.0 <c>outcomes</c>, in declared order: after the refusals, the
+    /// first whose condition holds is the result, and the last has none (the default). Empty
+    /// when the slice declares none, and the command emits its first event as before.</summary>
+    public List<Outcome> Outcomes { get; } = [];
+
     /// <summary>The actor's own role must be one of these (schema 2.5.0
     /// <c>command.requiredRole</c>). Null when undeclared -- today's default, no role
     /// requirement at all.</summary>
@@ -119,6 +124,18 @@ public sealed record ScopePolicy(
 /// <summary>One declared refusal of a command: it refuses with <c>Message</c> when every
 /// condition in <c>All</c> holds.</summary>
 public sealed record Refusal(string Message, IReadOnlyList<RefusalCondition> All);
+
+/// <summary>One alternative of a command's outcomes: the events it emits together, in order.
+/// <c>When</c> holds when any of its groups does, and a group when all its conditions do (they
+/// are refusal conditions, read the same way); null for the last alternative. <c>ByHand</c>: the
+/// condition is hand-written (<c>when: "hand"</c>), so the generator emits a hook for it.
+/// <c>Set</c> is event type name, then field name, then a literal (<c>string</c>, <c>double</c>
+/// or <c>bool</c>) the alternative fixes on that event.</summary>
+public sealed record Outcome(
+    IReadOnlyList<string> EventNames,
+    IReadOnlyList<IReadOnlyList<RefusalCondition>>? When,
+    bool ByHand,
+    IReadOnlyDictionary<string, IReadOnlyDictionary<string, object?>> Set);
 
 /// <summary>Which side a refusal condition (or its operand) reads: the aggregate's state,
 /// folded from its own events, or the command's payload.</summary>

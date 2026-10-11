@@ -15,7 +15,8 @@ public static class ScenarioReport
     /// least one scenario hard-failed. A hard failure is a scenario that ran and did
     /// not pass -- <see cref="ScenarioResult.Skipped"/> is a different condition (its
     /// command/read model was never generated, so it never got the chance to run) and
-    /// does not by itself fail the run. Deliberately does not try to distinguish
+    /// does not by itself fail the run, and neither does a choice made by hand
+    /// (<see cref="ScenarioResult.ByHand"/>, printed HAND), which is checked by a host. Deliberately does not try to distinguish
     /// "expected" failures (e.g. a scenario documenting behavior nobody has written
     /// yet) from real ones -- that judgment is the document author's, not this
     /// helper's; it reports, it doesn't editorialize.</summary>
@@ -24,9 +25,9 @@ public static class ScenarioReport
         var hardFailed = false;
         foreach (var r in results)
         {
-            var status = r.Skipped ? "SKIP" : r.Passed ? "PASS" : "FAIL";
+            var status = r.Skipped ? "SKIP" : r.ByHand ? "HAND" : r.Passed ? "PASS" : "FAIL";
             writer.WriteLine($"{status} [{r.Kind}] {r.SliceId}/{r.ScenarioId} \"{r.Name}\": {r.Detail}");
-            if (!r.Skipped && !r.Passed)
+            if (!r.Skipped && !r.ByHand && !r.Passed)
                 hardFailed = true;
         }
         return hardFailed ? 1 : 0;

@@ -43,6 +43,7 @@ public static class ScenarioVerifier
         Document document, MappingResult mapped, CancellationToken ct = default)
     {
         var index = GeneratedIndex.Build(document, mapped.Domains);
+        var handOutcomes = HandOutcomes(mapped.Domains);
 
         var results = new List<ScenarioResult>();
         var commandScenarios = new List<CommandScenarioInput>();
@@ -55,7 +56,7 @@ public static class ScenarioVerifier
                 switch (scenario)
                 {
                     case StateChangeScenario or ErrorScenario:
-                        BuildCommandScenario(document, index, slice, scenario, results, commandScenarios);
+                        BuildCommandScenario(document, index, slice, scenario, results, commandScenarios, handOutcomes);
                         break;
                     case StateViewScenario viewScenario:
                         BuildViewScenario(document, index, slice, viewScenario, results, viewScenarios);
@@ -107,9 +108,40 @@ public static class ScenarioVerifier
         _ => "unknown",
     };
 
+    /// <summary>Schema 3.12.0: for each command with a hand-written outcome condition, keyed by
+    /// (aggregate, generated command name), its alternatives as event types. A generated stand-in
+    /// can't make that choice; the harness reports a scenario reaching it as made by hand.</summary>
+    private static Dictionary<(string Aggregate, string Command), IReadOnlyList<IReadOnlyList<string>>> HandOutcomes(IReadOnlyList<Domain.Domain> domains) =>
+        domains.SelectMany(d => d.Commands.Where(c => c.Outcomes.Any(o => o.ByHand)).Select(c => (d.Aggregate, c)))
+            .ToDictionary(x => (x.Aggregate, x.c.Name), x => (IReadOnlyList<IReadOnlyList<string>>)x.c.Outcomes.Select(o => o.EventNames).ToList());
+
+    /// <summary>A stand-in for each hand-written outcome condition, so the generated deciders
+    /// compile in the harness: it throws, and the harness reports the scenario as a choice made by
+    /// hand rather than guessing.</summary>
+    private static string? HandOutcomeStandIns(IReadOnlyList<Domain.Domain> domains)
+    {
+        var b = new System.Text.StringBuilder();
+        foreach (var domain in domains)
+        {
+            var hooks = domain.Commands.SelectMany(c => c.Outcomes.Select((o, i) => (c, o, i))).Where(x => x.o.ByHand).ToList();
+            if (hooks.Count == 0) continue;
+            var aggregate = GenerationSupport.ExportName(domain.Aggregate);
+            b.AppendLine($"namespace Generated.{aggregate}");
+            b.AppendLine("{");
+            b.AppendLine($"    public static partial class {aggregate}Decider");
+            b.AppendLine("    {");
+            foreach (var (command, _, i) in hooks)
+                b.AppendLine($"        private static partial bool {command.Name}Outcome{i}({aggregate}State state, DotnetCqrs.Deciders.Command cmd) => throw new global::ChoiceByHandException();");
+            b.AppendLine("    }");
+            b.AppendLine("}");
+        }
+        return b.Length == 0 ? null : b.ToString();
+    }
+
     private static void BuildCommandScenario(
         Document document, GeneratedIndex index, Slice slice, Scenario scenario,
-        List<ScenarioResult> results, List<CommandScenarioInput> commandScenarios)
+        List<ScenarioResult> results, List<CommandScenarioInput> commandScenarios,
+        IReadOnlyDictionary<(string Aggregate, string Command), IReadOnlyList<IReadOnlyList<string>>>? handOutcomes = null)
     {
         var when = scenario switch
         {
@@ -148,7 +180,8 @@ public static class ScenarioVerifier
             generatedName, payload?.GetRawText() ?? "{}", expectedEventTypes,
             scenario is ErrorScenario error ? error.Then.Error.Message : null,
             scenario is StateChangeScenario values ? values.Then.Events.Select(e => e.Data?.GetRawText()).ToList() : null,
-            when.Actor, when.At));
+            when.Actor, when.At,
+            handOutcomes?.GetValueOrDefault((aggregate, generatedName))));
     }
 
     private static void BuildViewScenario(
@@ -335,12 +368,14 @@ public static class ScenarioVerifier
                 .SelectMany(CSharpGenerator.Generate)
                 .Select(file => (file.Name, file.Source))
                 .Append(("Program.cs", ReadEmbeddedHarness()));
+            if (HandOutcomeStandIns(domains) is { } standIns)
+                sources = sources.Append(("HandOutcomes.cs", standIns));
             await InProcessHarness.RunAsync(sources, [inputPath, outputPath], ct);
 
             if (!File.Exists(outputPath))
                 throw new InvalidOperationException("scenario verification harness wrote no results");
             var dtos = JsonSerializer.Deserialize<List<HarnessResultDto>>(await File.ReadAllTextAsync(outputPath, ct))!;
-            return dtos.Select(r => new ScenarioResult(r.SliceId, r.ScenarioId, r.Name, r.Kind, r.Passed, r.Skipped, r.Detail)).ToList();
+            return dtos.Select(r => new ScenarioResult(r.SliceId, r.ScenarioId, r.Name, r.Kind, r.Passed, r.Skipped, r.Detail, r.ByHand)).ToList();
         }
         finally
         {
@@ -349,7 +384,7 @@ public static class ScenarioVerifier
         }
     }
 
-    private sealed record HarnessResultDto(string SliceId, string ScenarioId, string Name, string Kind, bool Passed, bool Skipped, string Detail);
+    private sealed record HarnessResultDto(string SliceId, string ScenarioId, string Name, string Kind, bool Passed, bool Skipped, string Detail, bool ByHand = false);
 
     private static string ReadEmbeddedHarness()
     {

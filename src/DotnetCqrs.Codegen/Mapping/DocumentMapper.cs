@@ -155,6 +155,7 @@ public sealed class DocumentMapper
                 foreach (var id in s.EventIds)
                     if (!EventExists(id))
                         _report.Error($"slice \"{s.Id}\" references event \"{id}\" in eventIds, which does not exist");
+                CheckOutcomes(s.Id, "eventIds", s.EventIds, s.Outcomes);
                 break;
             case StateViewSlice s:
                 if (!ReadModelExists(s.ReadModelId))
@@ -171,6 +172,7 @@ public sealed class DocumentMapper
                 foreach (var id in s.ResultEventIds)
                     if (!EventExists(id))
                         _report.Error($"slice \"{s.Id}\" references event \"{id}\" in resultEventIds, which does not exist");
+                CheckOutcomes(s.Id, "resultEventIds", s.ResultEventIds, s.Outcomes);
                 if (!string.IsNullOrEmpty(s.ReadModelId) && !ReadModelExists(s.ReadModelId))
                     _report.Error($"slice \"{s.Id}\" references read model \"{s.ReadModelId}\", which does not exist");
                 break;
@@ -320,7 +322,7 @@ public sealed class DocumentMapper
         var once = hasCreate && !hasUpdate;
         var requiresExisting = !hasCreate;
         GetOrCreateDomain(aggregate).Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.EventIds, once, requiresExisting,
-            canBeginAgain: once && HasBeginAgainEvidence(slice, aggregate)));
+            canBeginAgain: once && HasBeginAgainEvidence(slice, aggregate), sliceId: slice.Id, outcomes: slice.Outcomes));
     }
 
     /// <summary>Turns an automation slice into a reactor plus the command it
@@ -360,7 +362,7 @@ public sealed class DocumentMapper
         var target = GetOrCreateDomain(aggregate);
         var isCreate = crossAggregate && HasCreateEvidence(slice, aggregate);
         target.Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.ResultEventIds, isCreate, requiresExisting: !isCreate,
-            canBeginAgain: isCreate && HasBeginAgainEvidence(slice, aggregate)));
+            canBeginAgain: isCreate && HasBeginAgainEvidence(slice, aggregate), sliceId: slice.Id, outcomes: slice.Outcomes));
 
         var triggers = slice.TriggerEventIds.Select(EventTypeName).ToList();
         if (!string.IsNullOrEmpty(slice.ReadModelId))
@@ -384,7 +386,7 @@ public sealed class DocumentMapper
     }
 
     private Domain.Command BuildCommand(string aggregate, string id, CommandDef cmd, IReadOnlyList<string> eventIds, bool once, bool requiresExisting,
-        bool canBeginAgain = false)
+        bool canBeginAgain = false, string? sliceId = null, IReadOnlyList<OutcomeDef>? outcomes = null)
     {
         var command = new Domain.Command
         {
@@ -420,7 +422,96 @@ public sealed class DocumentMapper
             }
             command.Events.Add(domainEvent);
         }
+        if (outcomes is { Count: > 0 })
+            command.Outcomes.AddRange(BuildOutcomes(sliceId!, command, outcomes));
         return command;
+    }
+
+    // ---- schema 3.3.0 / 3.12.0 outcomes ----
+
+    private static readonly JsonSerializerOptions ConditionOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+    /// <summary>Schema 3.12.0: the alternatives are tried in order, the first whose <c>when</c>
+    /// holds is the result, and the last has none, so a decision always has exactly one answer.
+    /// 3.3.0's alternatives without any <c>when</c> say what may happen but not which, so more
+    /// than one of them is refused: there is nothing to generate. One alternative alone needs no
+    /// condition: it is what the command emits.</summary>
+    private void CheckOutcomes(string sliceId, string listName, IReadOnlyList<string> eventIds, IReadOnlyList<OutcomeDef>? outcomes)
+    {
+        if (outcomes is not { Count: > 0 }) return;
+        for (var i = 0; i < outcomes.Count; i++)
+            foreach (var id in outcomes[i].EventIds)
+                if (!eventIds.Contains(id))
+                    _report.Error($"slice \"{sliceId}\" outcome {i} names event \"{id}\", which is not in its {listName}");
+
+        if (outcomes.Count > 1 && outcomes.All(o => o.When is null))
+        {
+            _report.Error($"slice \"{sliceId}\" lists {outcomes.Count} outcomes but not which applies (schema 3.3.0); " +
+                "say when each applies with when (schema 3.12.0), or \"hand\" for a hand-written condition");
+            return;
+        }
+        if (outcomes.All(o => o.When is null)) return;
+        if (outcomes[^1].When is not null)
+            _report.Error($"slice \"{sliceId}\": the last outcome is the default and must have no when");
+        for (var i = 0; i < outcomes.Count - 1; i++)
+            if (outcomes[i].When is null)
+                _report.Error($"slice \"{sliceId}\": outcome {i} needs a when: only the last outcome may have none");
+    }
+
+    private IEnumerable<Domain.Outcome> BuildOutcomes(string sliceId, Domain.Command command, IReadOnlyList<OutcomeDef> outcomes)
+    {
+        var built = new List<Domain.Outcome>();
+        for (var i = 0; i < outcomes.Count; i++)
+        {
+            var outcome = outcomes[i];
+            var byHand = outcome.When is { ValueKind: JsonValueKind.String } hand && hand.GetString() == "hand";
+            IReadOnlyList<IReadOnlyList<Domain.RefusalCondition>>? when = outcome.When is { ValueKind: JsonValueKind.Array } groups
+                ? JsonSerializer.Deserialize<List<OutcomeConditionDef>>(groups.GetRawText(), ConditionOptions)!
+                    .Select(g => (IReadOnlyList<Domain.RefusalCondition>)g.All.Select(BuildCondition).ToList()).ToList()
+                : null;
+
+            var set = new Dictionary<string, IReadOnlyDictionary<string, object?>>();
+            foreach (var (eventId, values) in outcome.Set ?? new Dictionary<string, IReadOnlyDictionary<string, JsonElement>>())
+            {
+                var where = $"slice \"{sliceId}\" outcome {i}";
+                if (!outcome.EventIds.Contains(eventId))
+                {
+                    _report.Error($"{where}: set names event \"{eventId}\", which is not one of this outcome's events");
+                    continue;
+                }
+                var @event = command.Events.Single(e => e.Name == EventTypeName(eventId));
+                var fields = new Dictionary<string, object?>();
+                foreach (var (fieldName, value) in values)
+                {
+                    var name = Names.SanitizeName(fieldName);
+                    var field = @event.Fields.FirstOrDefault(f => f.Name == name);
+                    if (field is null)
+                    {
+                        _report.Error($"{where}: set names field \"{fieldName}\", which event \"{eventId}\" does not carry");
+                        continue;
+                    }
+                    object? literal = value.ValueKind switch
+                    {
+                        JsonValueKind.String => value.GetString(),
+                        JsonValueKind.Number => value.GetDouble(),
+                        JsonValueKind.True => true,
+                        JsonValueKind.False => false,
+                        _ => null,
+                    };
+                    var literalType = literal switch { string => "text", double => "number", bool => "bool", _ => null };
+                    if (field.Pii)
+                        _report.Error($"{where}: set fixes pii field \"{fieldName}\" of event \"{eventId}\"; a model never holds personal data");
+                    else if (literalType != field.Type)
+                        _report.Error($"{where}: set gives field \"{fieldName}\" ({field.Type}) of event \"{eventId}\" a {literalType ?? "null"} value");
+                    else
+                        fields[name] = literal;
+                }
+                set[EventTypeName(eventId)] = fields;
+            }
+
+            built.Add(new Domain.Outcome(outcome.EventIds.Select(EventTypeName).ToList(), when, byHand, set));
+        }
+        return built;
     }
 
     // ---- schema 3.10.0 refuseWhen ----
@@ -489,10 +580,11 @@ public sealed class DocumentMapper
                     return null;
                 }
 
-                foreach (var refusal in command.Refusals)
+                var rules = command.Refusals.Select(r => ($"refusal \"{r.Message}\"", r.All))
+                    .Concat(command.Outcomes.SelectMany((o, i) => (o.When ?? []).Select(g => ($"outcome {i}", g))));
+                foreach (var (where, conditions) in rules)
                 {
-                    var where = $"refusal \"{refusal.Message}\"";
-                    foreach (var condition in refusal.All)
+                    foreach (var condition in conditions)
                     {
                         if (Lookup(condition.Side, condition.Field, where) is not { } left) continue;
                         if (condition.Operator is "set" or "notSet") continue;
