@@ -171,9 +171,11 @@ internal static class DeciderGenerator
                 if (!emittedPayloadTypes.Add(typeName)) continue;
                 // A PII payload property is nullable: an absent command field must land as null
                 // (skipped by PiiProtector) rather than a default the protector would encrypt.
-                // So is a json (list or nested) one: a default JsonElement cannot be serialised, so a
-                // field the command does not carry would crash the decision instead of landing as null.
-                var ctorFields = string.Join(", ", @event.Fields.Select(f => $"{GenerationSupport.FieldCSharpType(f.Type, f.Pii)}{(f.Pii || f.Type == "json" ? "?" : "")} {GenerationSupport.ExportName(f.Name)}"));
+                // So is every other field: a json one, since a default JsonElement cannot be serialised (a
+                // field the command does not carry would crash the decision), and a date, number or bool,
+                // since a default would fold into state as a value (0001-01-01, 0, false) and a refusal's
+                // "is set" would hold for an event that never carried it (timesheets F19). Absent is null.
+                var ctorFields = string.Join(", ", @event.Fields.Select(f => $"{GenerationSupport.FieldCSharpType(f.Type, f.Pii)}? {GenerationSupport.ExportName(f.Name)}"));
                 b.AppendLine();
                 b.AppendLine($"    private sealed record {typeName}({ctorFields});");
                 if (@event.Fields.Any(f => f.Pii)) piiEvents.Add((typeName, @event));

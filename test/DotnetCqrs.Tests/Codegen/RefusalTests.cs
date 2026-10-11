@@ -261,6 +261,59 @@ public class RefusalTests
         Assert.All(errors, r => Assert.False(r.Passed, $"{r.ScenarioId}: {r.Detail}"));
     }
 
+    [Fact(Timeout = VerifyTimeoutMs)]
+    public async Task A_date_or_number_an_event_does_not_carry_is_unset_not_a_default()
+    {
+        // timesheets F19: an entry logged without invoicedBeforeCutOver must not read as "invoiced". The
+        // generated payload record held a date (and a number, and a bool) as a non-nullable value, so a field
+        // the event did not carry folded into state as 0001-01-01 (or 0, or false) and "is set" held for it.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "3.11.0", "id": "unset-test", "name": "Unset Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "item-logged": {"name": "Item Logged", "swimlaneId": "s", "aggregate": "Item", "fields": [
+                  {"name": "itemId", "type": "string"}, {"name": "closedOn", "type": "date"},
+                  {"name": "weight", "type": "decimal"}, {"name": "sealed", "type": "boolean"}]},
+                "item-touched": {"name": "Item Touched", "swimlaneId": "s", "aggregate": "Item", "fields": [
+                  {"name": "itemId", "type": "string"}]}
+              },
+              "commands": {
+                "log-item": {"name": "Log Item", "aggregate": "Item", "fields": [
+                  {"name": "closedOn", "type": "date"}, {"name": "weight", "type": "decimal"}, {"name": "sealed", "type": "boolean"}]},
+                "touch-item": {"name": "Touch Item", "aggregate": "Item", "fields": [],
+                  "refuseWhen": [
+                    {"message": "item is closed", "all": [{"state": "closedOn", "is": "set"}]},
+                    {"message": "item is weighed", "all": [{"state": "weight", "is": "set"}]},
+                    {"message": "item is sealed", "all": [{"state": "sealed", "is": "set"}]}
+                  ]}
+              },
+              "screens": {"scr": {"name": "Screen"}},
+              "slices": [
+                {"id": "log-slice", "name": "Log", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
+                 "screenId": "scr", "commandId": "log-item", "eventIds": ["item-logged"],
+                 "scenarios": [{"id": "log", "name": "Log", "kind": "stateChange", "given": [],
+                   "when": {"commandId": "log-item", "data": {}}, "then": {"events": [{"eventId": "item-logged"}]}}]},
+                {"id": "touch-slice", "name": "Touch", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
+                 "screenId": "scr", "commandId": "touch-item", "eventIds": ["item-touched"],
+                 "scenarios": [
+                   {"id": "open-item", "name": "Logged without a date, a weight or a seal: none is set", "kind": "stateChange",
+                    "given": [{"eventId": "item-logged", "data": {"itemId": "i1"}}],
+                    "when": {"commandId": "touch-item", "data": {}}, "then": {"events": [{"eventId": "item-touched"}]}},
+                   {"id": "closed-item", "name": "Logged with a date: set", "kind": "error",
+                    "given": [{"eventId": "item-logged", "data": {"itemId": "i1", "closedOn": "2026-09-30"}}],
+                    "when": {"commandId": "touch-item", "data": {}}, "then": {"error": {"message": "item is closed"}}}
+                 ]}
+              ]
+            }
+            """;
+        var doc = DocumentLoader.Parse(json);
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
+
+        Assert.All(results, r => Assert.True(r.Passed, $"{r.ScenarioId}: {r.Detail}"));
+    }
+
     [Theory]
     [InlineData("""{"command": "note", "lessThan": 1}""", "compares numbers")]
     [InlineData("""{"command": "rate", "atLeast": {"command": "note"}}""", "compares numbers")]
