@@ -56,7 +56,7 @@ internal static class DeciderGenerator
         b.AppendLine();
         // A hand-written outcome condition (schema 3.12.0 when: "hand") is a partial method the
         // host must implement, so the class is partial only when one exists.
-        var hasHandOutcomes = domain.Commands.Any(c => c.Outcomes.Any(o => o.ByHand));
+        var hasHandOutcomes = domain.Commands.Any(c => c.Outcomes.Any(o => o.NeedsHand));
         b.AppendLine(hasHandOutcomes ? $"public static partial class {aggregate}Decider" : $"public static class {aggregate}Decider");
         b.AppendLine("{");
         b.AppendLine($"    public const string Aggregate = \"{domain.Aggregate}\";");
@@ -239,8 +239,10 @@ internal static class DeciderGenerator
                 : outcome.When is { } groups
                     ? string.Join(" || ", groups.Select(g => "(" + string.Join(" && ", g.Select(ConditionExpression)) + ")"))
                     : null;
-            var events = outcome.EventNames.Select(name => OutcomeEvent(aggregate, command.Events.First(e => e.Name == name),
-                outcome.Set.TryGetValue(name, out var values) ? values : null)).ToList();
+            var events = outcome.EventNames.Select(name => outcome.Repeated.Contains(name)
+                ? RepeatedEvents(aggregate, command, i, command.Events.First(e => e.Name == name))
+                : OutcomeEvent(aggregate, command.Events.First(e => e.Name == name),
+                    outcome.Set.TryGetValue(name, out var values) ? values : null)).ToList();
             var indent = test is null ? "                    " : "                        ";
             var lines = events.Select(e => $"{indent}    {e},");
             if (test is not null)
@@ -272,6 +274,20 @@ internal static class DeciderGenerator
             : $"new NewEvent({type}, JsonSerializer.Serialize({payload}, JsonOptions))";
     }
 
+    /// <summary>Schema 3.13.0: a repeated event, spread in its place: one per item the hook
+    /// <see cref="AppendOutcomeHooks"/> declares returns, zero included.</summary>
+    private static string RepeatedEvents(string aggregate, Domain.Command command, int index, Domain.Event @event)
+    {
+        var type = $"{aggregate}Events.{@event.Name}";
+        var item = @event.Fields.Any(f => f.Pii)
+            ? $"NewEvent.Of({type}, item)"
+            : $"new NewEvent({type}, JsonSerializer.Serialize(item, JsonOptions))";
+        return $".. {RepeatedHookName(command, index, @event.Name)}(state, cmd).Select(item => {item})";
+    }
+
+    private static string RepeatedHookName(Domain.Command command, int index, string eventName) =>
+        $"{command.Name}Outcome{index}{eventName}";
+
     private static string SetLiteral(object? value) => value switch
     {
         string text => StringLiteral(text),
@@ -282,20 +298,32 @@ internal static class DeciderGenerator
 
     private static string OutcomeHookName(Domain.Command command, int index) => $"{command.Name}Outcome{index}";
 
-    /// <summary>A hand-written outcome condition (<c>when: "hand"</c>) is a partial method with
-    /// no body here: the host must write it, or the decider does not compile. It sees what
-    /// Decide sees, the folded state and the command, and nothing else.</summary>
+    /// <summary>A hand-written outcome condition (<c>when: "hand"</c>), and a repeated event's
+    /// items (schema 3.13.0), are partial methods with no body here: the host must write them, or
+    /// the decider does not compile. They see what Decide sees, the folded state and the command,
+    /// and nothing else.</summary>
     private static void AppendOutcomeHooks(StringBuilder b, string aggregate, Domain.Domain domain)
     {
         foreach (var command in domain.Commands)
             for (var i = 0; i < command.Outcomes.Count; i++)
             {
-                if (!command.Outcomes[i].ByHand) continue;
-                b.AppendLine();
-                b.AppendLine($"    /// <summary>Whether {command.Name} emits [{string.Join(", ", command.Outcomes[i].EventNames)}]:");
-                b.AppendLine("    /// a hand-written condition (schema 3.12.0 when: \"hand\"). Write it in a partial class beside");
-                b.AppendLine("    /// this one; it reads only the folded state and the command, like Decide.</summary>");
-                b.AppendLine($"    private static partial bool {OutcomeHookName(command, i)}({aggregate}State state, Command cmd);");
+                var outcome = command.Outcomes[i];
+                if (outcome.ByHand)
+                {
+                    b.AppendLine();
+                    b.AppendLine($"    /// <summary>Whether {command.Name} emits [{string.Join(", ", outcome.EventNames)}]:");
+                    b.AppendLine("    /// a hand-written condition (schema 3.12.0 when: \"hand\"). Write it in a partial class beside");
+                    b.AppendLine("    /// this one; it reads only the folded state and the command, like Decide.</summary>");
+                    b.AppendLine($"    private static partial bool {OutcomeHookName(command, i)}({aggregate}State state, Command cmd);");
+                }
+                foreach (var name in outcome.Repeated)
+                {
+                    b.AppendLine();
+                    b.AppendLine($"    /// <summary>The {name} events {command.Name} emits in outcome {i}, one per item, in order");
+                    b.AppendLine("    /// (none is fine): repeated (schema 3.13.0), so hand-written. Write it in a partial class");
+                    b.AppendLine("    /// beside this one; it reads only the folded state and the command, like Decide.</summary>");
+                    b.AppendLine($"    private static partial IEnumerable<{GenerationSupport.ExportName(name)}Payload> {RepeatedHookName(command, i, name)}({aggregate}State state, Command cmd);");
+                }
             }
     }
 

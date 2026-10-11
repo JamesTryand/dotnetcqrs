@@ -45,7 +45,11 @@ public sealed record CommandScenarioInput(
     IReadOnlyList<string?>? ExpectedEventData = null, // "stateChange" only: each then.events[i].data (raw JSON, null when absent), checked against a host's deciders
     string? Actor = null, // when.actor / when.at (schema 3.10.0): who sends the command, and when,
     string? At = null, // for a host's deciders, which stamp both
-    IReadOnlyList<IReadOnlyList<string>>? HandOutcomes = null); // schema 3.12.0: the command's alternatives (event types), when one has a hand-written condition; generated stand-ins only
+    IReadOnlyList<IReadOnlyList<HandOutcomeEvent>>? HandOutcomes = null); // schema 3.12.0: the command's alternatives (event types), when one has a hand-written condition or (3.13.0) repeated events; generated stand-ins only
+
+/// <summary>One event of an alternative, for the harness: <c>Repeated</c> (schema 3.13.0) when it
+/// may occur any number of times, zero included, in its place.</summary>
+public sealed record HandOutcomeEvent(string Type, bool Repeated);
 
 /// <summary>A stateView scenario, ready for the harness to run without consulting the
 /// document again.</summary>

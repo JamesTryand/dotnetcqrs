@@ -130,12 +130,20 @@ public sealed record Refusal(string Message, IReadOnlyList<RefusalCondition> All
 /// are refusal conditions, read the same way); null for the last alternative. <c>ByHand</c>: the
 /// condition is hand-written (<c>when: "hand"</c>), so the generator emits a hook for it.
 /// <c>Set</c> is event type name, then field name, then a literal (<c>string</c>, <c>double</c>
-/// or <c>bool</c>) the alternative fixes on that event.</summary>
+/// or <c>bool</c>) the alternative fixes on that event. <c>Repeated</c> (schema 3.13.0): the
+/// event type names that occur zero or more times, one per item, which a hook returns.</summary>
 public sealed record Outcome(
     IReadOnlyList<string> EventNames,
     IReadOnlyList<IReadOnlyList<RefusalCondition>>? When,
     bool ByHand,
-    IReadOnlyDictionary<string, IReadOnlyDictionary<string, object?>> Set);
+    IReadOnlyDictionary<string, IReadOnlyDictionary<string, object?>> Set)
+{
+    public IReadOnlyList<string> Repeated { get; init; } = [];
+
+    /// <summary>Whether a generated stand-in can't produce this alternative's events by itself: its
+    /// condition, or its repeated items, are hand-written.</summary>
+    public bool NeedsHand => ByHand || Repeated.Count > 0;
+}
 
 /// <summary>Which side a refusal condition (or its operand) reads: the aggregate's state,
 /// folded from its own events, or the command's payload.</summary>

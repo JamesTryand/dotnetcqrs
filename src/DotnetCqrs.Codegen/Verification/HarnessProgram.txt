@@ -70,7 +70,7 @@ static async Task<ScenarioResultDto> RunCommandScenarioAsync(CommandScenarioInpu
             if (scenario.Kind == "error")
                 return Result(scenario, passed: false, "expected a refusal, but no declared rule refused: the decision reached a hand-written choice of outcome");
             var want = scenario.ExpectedEventTypes;
-            if (scenario.HandOutcomes is null || !scenario.HandOutcomes.Any(o => o.SequenceEqual(want)))
+            if (scenario.HandOutcomes is null || !scenario.HandOutcomes.Any(o => Fits(want, o)))
                 return Result(scenario, passed: false, $"expected [{string.Join(", ", want)}], which is not a declared outcome");
             return HandResult(scenario, $"accepted; [{string.Join(", ", want)}] is a declared outcome, chosen by a hand-written condition (checked against a host's own deciders, not here)");
         }
@@ -616,12 +616,31 @@ static ScenarioResultDto HandResult(CommandScenarioInput s, string detail) =>
 static ScenarioResultDto ViewResult(ViewScenarioInput s, bool passed, string detail) =>
     new(s.SliceId, s.ScenarioId, s.Name, "stateView", passed, Skipped: false, detail);
 
+// Whether the expected events are this alternative: its events in order, each exactly once, or
+// (schema 3.13.0) any number of times, zero included, where it repeats.
+static bool Fits(IReadOnlyList<string> want, IReadOnlyList<HandOutcomeEvent> alternative)
+{
+    var at = 0;
+    foreach (var step in alternative)
+    {
+        if (step.Repeated)
+        {
+            while (at < want.Count && want[at] == step.Type) at++;
+            continue;
+        }
+        if (at >= want.Count || want[at] != step.Type) return false;
+        at++;
+    }
+    return at == want.Count;
+}
+
 record HarnessInput(List<CommandScenarioInput> CommandScenarios, List<ViewScenarioInput> ViewScenarios);
 record GivenEventInput(string Type, string Data);
 record ViewGivenEventInput(string Type, string Data, string MainKey, Dictionary<string, string> ViaKeys, Dictionary<string, string>? PiiFields = null);
 record CommandScenarioInput(string SliceId, string ScenarioId, string Name, string Kind, string DeciderTypeName,
     string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes,
-    string? ExpectedErrorMessage = null, List<List<string>>? HandOutcomes = null);
+    string? ExpectedErrorMessage = null, List<List<HandOutcomeEvent>>? HandOutcomes = null);
+record HandOutcomeEvent(string Type, bool Repeated);
 record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,
     string TableName, List<ViewGivenEventInput> Given, string? QueryParams, string? AsOf, string ExpectedResult,
     List<ViewScopeInput> Scopes, List<ViewFilterInput> Filters, List<string>? PiiColumns = null, string? SearchIndexTypeName = null,

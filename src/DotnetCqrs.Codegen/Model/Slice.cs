@@ -51,13 +51,15 @@ public sealed class SliceConverter() : DiscriminatedUnionConverter<Slice>("patte
 /// (schema 3.12.0) when it applies and the values it fixes on them. 3.3.0's form, a bare list
 /// of ids, reads as an alternative with no <c>When</c>. <c>When</c> is kept as raw JSON (the
 /// string <c>"hand"</c>, or a list of <c>{ "all": [...] }</c> groups) for the mapper to
-/// resolve; <c>Set</c> is event id, then field name, then value.</summary>
+/// resolve; <c>Set</c> is event id, then field name, then value. <c>Repeated</c> (schema
+/// 3.13.0): those of its events that occur zero or more times, one per item.</summary>
 [JsonConverter(typeof(OutcomeDefConverter))]
 public sealed record OutcomeDef(
     IReadOnlyList<string> EventIds,
     string? Description = null,
     JsonElement? When = null,
-    IReadOnlyDictionary<string, IReadOnlyDictionary<string, JsonElement>>? Set = null);
+    IReadOnlyDictionary<string, IReadOnlyDictionary<string, JsonElement>>? Set = null,
+    IReadOnlyList<string>? Repeated = null);
 
 /// <summary>One <c>{ "all": [...] }</c> group of a declared <c>when</c>: it holds when every
 /// condition does. The conditions are <c>refuseWhen</c>'s.</summary>
@@ -69,16 +71,17 @@ public sealed class OutcomeDefConverter : JsonConverter<OutcomeDef>
 {
     private sealed record ObjectForm(
         IReadOnlyList<string> EventIds, string? Description, JsonElement? When,
-        IReadOnlyDictionary<string, IReadOnlyDictionary<string, JsonElement>>? Set);
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, JsonElement>>? Set,
+        IReadOnlyList<string>? Repeated);
 
     public override OutcomeDef? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         if (reader.TokenType == JsonTokenType.StartArray)
             return new OutcomeDef(JsonSerializer.Deserialize<List<string>>(ref reader, options)!);
         var form = JsonSerializer.Deserialize<ObjectForm>(ref reader, options)!;
-        return new OutcomeDef(form.EventIds, form.Description, form.When, form.Set);
+        return new OutcomeDef(form.EventIds, form.Description, form.When, form.Set, form.Repeated);
     }
 
     public override void Write(Utf8JsonWriter writer, OutcomeDef value, JsonSerializerOptions options) =>
-        JsonSerializer.Serialize(writer, new ObjectForm(value.EventIds, value.Description, value.When, value.Set), options);
+        JsonSerializer.Serialize(writer, new ObjectForm(value.EventIds, value.Description, value.When, value.Set, value.Repeated), options);
 }

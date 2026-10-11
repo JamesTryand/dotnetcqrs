@@ -108,12 +108,14 @@ public static class ScenarioVerifier
         _ => "unknown",
     };
 
-    /// <summary>Schema 3.12.0: for each command with a hand-written outcome condition, keyed by
-    /// (aggregate, generated command name), its alternatives as event types. A generated stand-in
-    /// can't make that choice; the harness reports a scenario reaching it as made by hand.</summary>
-    private static Dictionary<(string Aggregate, string Command), IReadOnlyList<IReadOnlyList<string>>> HandOutcomes(IReadOnlyList<Domain.Domain> domains) =>
-        domains.SelectMany(d => d.Commands.Where(c => c.Outcomes.Any(o => o.ByHand)).Select(c => (d.Aggregate, c)))
-            .ToDictionary(x => (x.Aggregate, x.c.Name), x => (IReadOnlyList<IReadOnlyList<string>>)x.c.Outcomes.Select(o => o.EventNames).ToList());
+    /// <summary>Schema 3.12.0: for each command with a hand-written outcome condition (or, 3.13.0,
+    /// repeated events), keyed by (aggregate, generated command name), its alternatives as event
+    /// types, each marked when it repeats. A generated stand-in can't make that choice; the harness
+    /// reports a scenario reaching it as made by hand.</summary>
+    private static Dictionary<(string Aggregate, string Command), IReadOnlyList<IReadOnlyList<HandOutcomeEvent>>> HandOutcomes(IReadOnlyList<Domain.Domain> domains) =>
+        domains.SelectMany(d => d.Commands.Where(c => c.Outcomes.Any(o => o.NeedsHand)).Select(c => (d.Aggregate, c)))
+            .ToDictionary(x => (x.Aggregate, x.c.Name), x => (IReadOnlyList<IReadOnlyList<HandOutcomeEvent>>)x.c.Outcomes
+                .Select(o => (IReadOnlyList<HandOutcomeEvent>)o.EventNames.Select(n => new HandOutcomeEvent(n, o.Repeated.Contains(n))).ToList()).ToList());
 
     /// <summary>A stand-in for each hand-written outcome condition, so the generated deciders
     /// compile in the harness: it throws, and the harness reports the scenario as a choice made by
@@ -123,15 +125,20 @@ public static class ScenarioVerifier
         var b = new System.Text.StringBuilder();
         foreach (var domain in domains)
         {
-            var hooks = domain.Commands.SelectMany(c => c.Outcomes.Select((o, i) => (c, o, i))).Where(x => x.o.ByHand).ToList();
+            var hooks = domain.Commands.SelectMany(c => c.Outcomes.Select((o, i) => (c, o, i))).Where(x => x.o.NeedsHand).ToList();
             if (hooks.Count == 0) continue;
             var aggregate = GenerationSupport.ExportName(domain.Aggregate);
             b.AppendLine($"namespace Generated.{aggregate}");
             b.AppendLine("{");
             b.AppendLine($"    public static partial class {aggregate}Decider");
             b.AppendLine("    {");
-            foreach (var (command, _, i) in hooks)
-                b.AppendLine($"        private static partial bool {command.Name}Outcome{i}({aggregate}State state, DotnetCqrs.Deciders.Command cmd) => throw new global::ChoiceByHandException();");
+            foreach (var (command, outcome, i) in hooks)
+            {
+                if (outcome.ByHand)
+                    b.AppendLine($"        private static partial bool {command.Name}Outcome{i}({aggregate}State state, DotnetCqrs.Deciders.Command cmd) => throw new global::ChoiceByHandException();");
+                foreach (var name in outcome.Repeated)
+                    b.AppendLine($"        private static partial System.Collections.Generic.IEnumerable<{GenerationSupport.ExportName(name)}Payload> {command.Name}Outcome{i}{name}({aggregate}State state, DotnetCqrs.Deciders.Command cmd) => throw new global::ChoiceByHandException();");
+            }
             b.AppendLine("    }");
             b.AppendLine("}");
         }
@@ -141,7 +148,7 @@ public static class ScenarioVerifier
     private static void BuildCommandScenario(
         Document document, GeneratedIndex index, Slice slice, Scenario scenario,
         List<ScenarioResult> results, List<CommandScenarioInput> commandScenarios,
-        IReadOnlyDictionary<(string Aggregate, string Command), IReadOnlyList<IReadOnlyList<string>>>? handOutcomes = null)
+        IReadOnlyDictionary<(string Aggregate, string Command), IReadOnlyList<IReadOnlyList<HandOutcomeEvent>>>? handOutcomes = null)
     {
         var when = scenario switch
         {

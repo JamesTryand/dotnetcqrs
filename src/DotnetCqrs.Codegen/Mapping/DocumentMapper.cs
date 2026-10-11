@@ -440,9 +440,14 @@ public sealed class DocumentMapper
     {
         if (outcomes is not { Count: > 0 }) return;
         for (var i = 0; i < outcomes.Count; i++)
+        {
             foreach (var id in outcomes[i].EventIds)
                 if (!eventIds.Contains(id))
                     _report.Error($"slice \"{sliceId}\" outcome {i} names event \"{id}\", which is not in its {listName}");
+            foreach (var id in outcomes[i].Repeated ?? [])
+                if (!outcomes[i].EventIds.Contains(id))
+                    _report.Error($"slice \"{sliceId}\" outcome {i}: repeated names event \"{id}\", which is not one of this outcome's events");
+        }
 
         if (outcomes.Count > 1 && outcomes.All(o => o.When is null))
         {
@@ -479,6 +484,11 @@ public sealed class DocumentMapper
                     _report.Error($"{where}: set names event \"{eventId}\", which is not one of this outcome's events");
                     continue;
                 }
+                if (outcome.Repeated?.Contains(eventId) == true)
+                {
+                    _report.Error($"{where}: set names event \"{eventId}\", which is repeated: its values are hand-written, one per item");
+                    continue;
+                }
                 var @event = command.Events.Single(e => e.Name == EventTypeName(eventId));
                 var fields = new Dictionary<string, object?>();
                 foreach (var (fieldName, value) in values)
@@ -509,7 +519,18 @@ public sealed class DocumentMapper
                 set[EventTypeName(eventId)] = fields;
             }
 
-            built.Add(new Domain.Outcome(outcome.EventIds.Select(EventTypeName).ToList(), when, byHand, set));
+            // Schema 3.13.0: a repeated event's items are what a hook returns, so it must carry
+            // fields (what tells one item from the next); an id the alternative doesn't list was
+            // reported by CheckOutcomes.
+            var repeated = (outcome.Repeated ?? []).Where(outcome.EventIds.Contains).ToList();
+            foreach (var eventId in repeated)
+                if (command.Events.Single(e => e.Name == EventTypeName(eventId)).Fields.Count == 0)
+                    _report.Error($"slice \"{sliceId}\" outcome {i}: repeated event \"{eventId}\" carries no fields, so nothing tells one item from the next");
+
+            built.Add(new Domain.Outcome(outcome.EventIds.Select(EventTypeName).ToList(), when, byHand, set)
+            {
+                Repeated = repeated.Select(EventTypeName).ToList(),
+            });
         }
         return built;
     }
