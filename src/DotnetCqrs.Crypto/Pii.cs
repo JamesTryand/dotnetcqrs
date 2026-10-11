@@ -33,8 +33,8 @@ public enum PiiState
 /// value, while reading accepts either that envelope (⇒ <see cref="PiiState.Pending"/>)
 /// or a bare scalar (⇒ <see cref="PiiState.Fresh"/>, how a command's plaintext arrives).
 ///
-/// <c>T</c> is always one of dotnetcqrs's five folded field CLR types
-/// (<c>string</c>/<c>double</c>/<c>bool</c>/<c>DateTime</c>/<c>JsonElement</c>); the
+/// <c>T</c> is always one of dotnetcqrs's six folded field CLR types
+/// (<c>string</c>/<c>double</c>/<c>decimal</c>/<c>bool</c>/<c>DateTime</c>/<c>JsonElement</c>); the
 /// encrypt/decrypt codec is plain <see cref="JsonSerializer"/> round-tripping of <c>T</c>.
 ///
 /// There is no code path in this type that produces a plaintext value the facade itself
