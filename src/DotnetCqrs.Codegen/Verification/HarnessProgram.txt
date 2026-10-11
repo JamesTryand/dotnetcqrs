@@ -541,7 +541,10 @@ static bool JsonStructurallyEqual(JsonElement actual, JsonElement expected)
             var actualProps = actual.EnumerateObject().ToDictionary(p => p.Name, p => p.Value);
             foreach (var prop in expected.EnumerateObject())
             {
-                if (!actualProps.TryGetValue(ToSnakeCase(prop.Name), out var actualValue)) return false;
+                // A custom field copied from an event keeps the event's own (camelCase) keys; only a
+                // groupBy row's objects are built with snake_case ones. The key as written wins.
+                if (!actualProps.TryGetValue(prop.Name, out var actualValue)
+                    && !actualProps.TryGetValue(ToSnakeCase(prop.Name), out actualValue)) return false;
                 if (!JsonStructurallyEqual(actualValue, prop.Value)) return false;
             }
             return true;

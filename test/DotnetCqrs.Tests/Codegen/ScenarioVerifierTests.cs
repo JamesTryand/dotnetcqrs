@@ -761,6 +761,51 @@ public class ScenarioVerifierTests
         Assert.True(view.Passed, view.Detail);
     }
 
+    [Theory(Timeout = VerifyTimeoutMs)]
+    [InlineData(50, true)]
+    [InlineData(51, false)]
+    public async Task A_custom_field_copied_from_an_event_is_compared_with_its_own_keys(int expectedRate, bool passes)
+    {
+        // timesheets D30.5: a rate's history is a custom list carried on its event and stored as the
+        // event wrote it, so its objects keep the event's camelCase keys. Only a groupBy row's objects
+        // are built with snake_case keys; comparing every nested key as snake_case meant a custom
+        // field's view scenario could never pass. A wrong value must still fail.
+        var json = """
+            {
+              "eventModelingSchemaVersion": "3.10.0", "id": "custom-verify-test", "name": "Custom Verify Test",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "rate-set": {"name": "Rate Set", "swimlaneId": "s", "aggregate": "Rate",
+                  "fields": [{"name": "rateId", "type": "string", "idAttribute": true}, {"name": "history", "type": "custom"}]}
+              },
+              "commands": {"set-rate": {"name": "Set Rate", "aggregate": "Rate"}},
+              "readModels": {
+                "rates": {"name": "Rates", "builtFromEventIds": ["rate-set"],
+                  "fields": [{"name": "rateId", "type": "string", "idAttribute": true}, {"name": "history", "type": "custom"}]}
+              },
+              "screens": {"scr1": {"name": "Set Screen"}, "scr2": {"name": "View Screen"}},
+              "slices": [
+                {"id": "set-rate-slice", "name": "Set Rate", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
+                  "screenId": "scr1", "commandId": "set-rate", "eventIds": ["rate-set"],
+                  "scenarios": [{"id":"set","name":"Set","kind":"stateChange","given":[],"when":{"commandId":"set-rate"},"then":{"events":[{"eventId":"rate-set"}]}}]},
+                {"id": "view-rates-slice", "name": "View Rates", "pattern": "stateView", "swimlaneId": "s", "status": "created",
+                  "screenId": "scr2", "readModelId": "rates",
+                  "scenarios": [{"id": "view-history", "name": "The history as the event carried it", "kind": "stateView",
+                    "given": [{"eventId": "rate-set", "data": {"rateId": "r1", "history": [{"effectiveFrom": "2026-09-01", "outOfHoursRate": 65, "rate": 50}]}}],
+                    "when": {"readModelId": "rates"},
+                    "then": {"result": {"entries": [{"rateId": "r1", "history": [{"effectiveFrom": "2026-09-01", "rate": EXPECTED_RATE}]}]}}}]}
+              ]
+            }
+            """.Replace("EXPECTED_RATE", expectedRate.ToString());
+        var doc = DocumentLoader.Parse(json);
+        var mapped = DocumentMapper.Map(doc);
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, mapped);
+
+        var view = results.Single(r => r.ScenarioId == "view-history");
+        Assert.True(view.Passed == passes, view.Detail);
+    }
+
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_dateRange_filter_narrows_a_view_query_to_the_declared_bounds()
     {
