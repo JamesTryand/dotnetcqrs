@@ -654,9 +654,10 @@ public sealed class DocumentMapper
                             }
                             continue;
                         }
-                        if (left.Type is not ("text" or "number" or "bool"))
+                        // A date compares for equality with another date field, by calendar day.
+                        if (left.Type is not ("text" or "number" or "bool" or "date"))
                         {
-                            _report.Error($"{owner}: {where}: {condition.Operator} compares text, numbers or bools, but \"{condition.Field}\" is {left.Type}");
+                            _report.Error($"{owner}: {where}: {condition.Operator} compares text, numbers, bools or dates, but \"{condition.Field}\" is {left.Type}");
                             continue;
                         }
                         var operand = condition.Operand!;

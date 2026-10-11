@@ -314,6 +314,72 @@ public class RefusalTests
         Assert.All(results, r => Assert.True(r.Passed, $"{r.ScenarioId}: {r.Detail}"));
     }
 
+    // Dates compare for equality by calendar day: a state date is held as a DateTime, a command's
+    // arrives as text, and either may carry a time of day. Raised by timesheets D30.20 (F16): a
+    // payroll period starts the day after the last one ended.
+    private const string DatesJson = """
+        {
+          "eventModelingSchemaVersion": "3.14.0", "id": "dates-test", "name": "Dates Test",
+          "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+          "events": {
+            "period-closed": {"name": "Period Closed", "swimlaneId": "s", "aggregate": "Ledger", "fields": [
+              {"name": "ledgerId", "type": "string"}, {"name": "start", "type": "date"}, {"name": "nextStart", "type": "date"}, {"name": "count", "type": "decimal"}]}
+          },
+          "commands": {
+            "close-period": {"name": "Close Period", "aggregate": "Ledger", "fields": [{"name": "start", "type": "date"}, {"name": "count", "type": "decimal"}],
+              "refuseWhen": [
+                {"message": "a period starts the day after the last", "all": [{"state": "nextStart", "is": "set"}, {"command": "start", "notEquals": {"state": "nextStart"}}]}
+              ]}
+          },
+          "screens": {"scr": {"name": "Screen"}},
+          "slices": [
+            {"id": "close-slice", "name": "Close", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
+             "screenId": "scr", "commandId": "close-period", "eventIds": ["period-closed"],
+             "scenarios": [
+               {"id": "first", "name": "The first period starts any day", "kind": "stateChange", "given": [],
+                "when": {"commandId": "close-period", "data": {"start": "2026-09-01"}}, "then": {"events": [{"eventId": "period-closed"}]}},
+               {"id": "next-day", "name": "The day after the last ended", "kind": "stateChange",
+                "given": [{"eventId": "period-closed", "data": {"ledgerId": "l1", "start": "2026-09-01", "nextStart": "2026-10-01"}}],
+                "when": {"commandId": "close-period", "data": {"start": "2026-10-01"}}, "then": {"events": [{"eventId": "period-closed"}]}},
+               {"id": "same-day-other-form", "name": "The same day, held with a time of day", "kind": "stateChange",
+                "given": [{"eventId": "period-closed", "data": {"ledgerId": "l1", "start": "2026-09-01", "nextStart": "2026-10-01T00:00:00Z"}}],
+                "when": {"commandId": "close-period", "data": {"start": "2026-10-01"}}, "then": {"events": [{"eventId": "period-closed"}]}},
+               {"id": "a-day-late", "name": "A day late is refused", "kind": "error",
+                "given": [{"eventId": "period-closed", "data": {"ledgerId": "l1", "start": "2026-09-01", "nextStart": "2026-10-01"}}],
+                "when": {"commandId": "close-period", "data": {"start": "2026-10-02"}}, "then": {"error": {"message": "a period starts the day after the last"}}},
+               {"id": "again", "name": "The last period again is refused", "kind": "error",
+                "given": [{"eventId": "period-closed", "data": {"ledgerId": "l1", "start": "2026-09-01", "nextStart": "2026-10-01"}}],
+                "when": {"commandId": "close-period", "data": {"start": "2026-09-01"}}, "then": {"error": {"message": "a period starts the day after the last"}}}
+             ]}
+          ]
+        }
+        """;
+
+    [Fact(Timeout = VerifyTimeoutMs)]
+    public async Task Dates_are_equal_when_they_are_the_same_day()
+    {
+        var doc = DocumentLoader.Parse(DatesJson);
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
+
+        Assert.Equal(5, results.Count);
+        Assert.All(results, r => Assert.True(r.Passed, $"{r.ScenarioId}: {r.Detail}"));
+    }
+
+    [Theory]
+    [InlineData("""{"command": "start", "equals": "2026-10-01"}""", "\"start\" (date) with a literal")]
+    [InlineData("""{"command": "start", "equals": {"state": "count"}}""", "\"start\" (date) with \"count\"")]
+    public void A_date_compares_only_with_another_date(string condition, string expected)
+    {
+        var node = JsonNode.Parse(DatesJson)!;
+        node["commands"]!["close-period"]!["refuseWhen"] = JsonNode.Parse($$"""[{"message": "m", "all": [{{condition}}]}]""");
+        var doc = DocumentLoader.Parse(node.ToJsonString());
+
+        var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(doc));
+
+        Assert.Contains(expected, ex.Message);
+    }
+
     [Theory]
     [InlineData("""{"command": "note", "lessThan": 1}""", "compares numbers")]
     [InlineData("""{"command": "rate", "atLeast": {"command": "note"}}""", "compares numbers")]
