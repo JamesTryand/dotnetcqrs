@@ -937,6 +937,7 @@ public sealed class DocumentMapper
             var readModel = new Domain.ReadModel
             {
                 Collection = Names.SanitizeName(CollectionName(rm.Name, id)), Key = key, RequiredRole = rm.RequiredRole,
+                RowKeyField = rm.RowKeyField is { } rowKeyField ? Names.SanitizeName(rowKeyField) : null,
                 SelfAccess = rm.SelfAccess is { } selfAccess
                     ? new Domain.ReadModelSelfAccess(Names.SanitizeName(selfAccess.SubjectField), selfAccess.Param)
                     : null,
@@ -1022,6 +1023,8 @@ public sealed class DocumentMapper
                 _report.Error($"read model \"{id}\" filter on param \"{filter.Param}\" ranges over pii field \"{filter.Field}\" -- " +
                     "an encrypted column cannot be compared in SQL");
             CheckReadAccess(id, readModel, piiColumns);
+            if (rm.RowKeyField is not null)
+                CheckRowKeyField(id, rm, seedEventIds.Concat(rm.RemovedByEventIds ?? []).Distinct(), readModel);
             if (readModel.RemovedOn.Count > 0 && Generation.GenerationSupport.IndexedMatchFilters(readModel).Any())
                 _report.Error($"read model \"{id}\" declares removedByEventIds and a search-indexed pii match filter -- " +
                     "removing a row does not yet remove its search-index entries, so this is refused rather than left stale");
@@ -1136,6 +1139,29 @@ public sealed class DocumentMapper
     /// (written from <c>ev.AggregateId</c>, never the payload). A derived field is never
     /// copied, so it can't itself be pii, and the payload fields a derivation reads as
     /// plaintext (row key, amount, group key) can't be pii on the events it folds.</summary>
+    /// <summary>Schema 3.14.0: a row named by a field of the event, so every event that seeds,
+    /// updates or removes a row must carry that field, always, as plain text: an event without it
+    /// would have no row to land on. A search index keys its entries by stream, so the two are
+    /// refused together rather than left to disagree.</summary>
+    private void CheckRowKeyField(string id, ReadModelDef rm, IEnumerable<string> eventIds, Domain.ReadModel readModel)
+    {
+        var owner = $"read model \"{id}\"";
+        foreach (var eventId in eventIds.OrderBy(e => e, StringComparer.Ordinal))
+        {
+            if (!TryGetEvent(eventId, out var ev)) continue;
+            var field = ev.Fields?.FirstOrDefault(f => Names.SanitizeName(f.Name) == readModel.RowKeyField);
+            if (field is null)
+                _report.Error($"{owner}: rowKeyField \"{rm.RowKeyField}\" is not carried by event \"{eventId}\", so it would name no row");
+            else if (field.Optional == true)
+                _report.Error($"{owner}: rowKeyField \"{rm.RowKeyField}\" is optional on event \"{eventId}\"; it must always name a row");
+            else if (field.Pii == true || FieldTypeFolding.Fold(field) != "text")
+                _report.Error($"{owner}: rowKeyField \"{rm.RowKeyField}\" on event \"{eventId}\" must be plain text, as a row key is");
+        }
+        if (Generation.GenerationSupport.IndexedMatchFilters(readModel).Any() || Generation.GenerationSupport.HashedMatchFilters(readModel).Any())
+            _report.Error($"{owner} declares rowKeyField and a search-indexed pii match filter -- the search and hashed indexes key " +
+                "their entries by stream, so this is refused rather than left to disagree");
+    }
+
     private void CheckReadModelPii(string id, ReadModelDef rm, IReadOnlyCollection<string> seedEventIds, string key)
     {
         var owner = $"read model \"{id}\"";

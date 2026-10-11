@@ -225,8 +225,12 @@ public sealed class ReadModel
     public required string Collection { get; init; }
 
     /// <summary>The field carrying row identity — the aggregate id, in the generated
-    /// projection, so one row per stream.</summary>
+    /// projection, so one row per stream, unless <see cref="RowKeyField"/> says otherwise.</summary>
     public required string Key { get; init; }
+
+    /// <summary>Schema 3.14.0 <c>rowKeyField</c> (sanitised): the field of each seed and removal
+    /// event that names its row, in place of the event's stream id. Null: a row is a stream.</summary>
+    public string? RowKeyField { get; init; }
 
     public List<Field> Fields { get; } = [];
 

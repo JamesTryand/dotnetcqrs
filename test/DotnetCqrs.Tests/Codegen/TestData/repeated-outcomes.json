@@ -1,9 +1,9 @@
 {
   "$schema": "https://raw.githubusercontent.com/jamestryand/eventmodelschema/main/schema/eventmodeling.schema.json",
-  "eventModelingSchemaVersion": "3.13.0",
+  "eventModelingSchemaVersion": "3.14.0",
   "id": "repeated-outcomes-example",
   "name": "Repeated Outcomes Example",
-  "description": "Repeated events in an outcome (3.13.0): releasing a pay run records the release and one payment per person paid, in one decision. Each payment is its own event, so each person's pay is encrypted under their own key. How many payments, and how much each, is worked out by hand from the run's own state.",
+  "description": "Repeated events in an outcome (3.13.0): releasing a pay run records the release and one payment per person paid, in one decision. Each payment is its own event, so each person's pay is encrypted under their own key. How many payments, and how much each, is worked out by hand from the run's own state. Each payment is a row of its own in the payments read model, keyed by the payment's id rather than the pay run's stream (3.14.0 rowKeyField).",
   "swimlanes": [
     {
       "id": "payroll",
@@ -65,6 +65,10 @@
           "type": "string"
         },
         {
+          "name": "paymentId",
+          "type": "string"
+        },
+        {
           "name": "periodEnd",
           "type": "date"
         },
@@ -85,6 +89,41 @@
         {
           "name": "periodEnd",
           "type": "date"
+        }
+      ]
+    }
+  },
+  "readModels": {
+    "payments": {
+      "name": "Payments",
+      "question": "What has each person been paid, run by run?",
+      "builtFromEventIds": [
+        "person-paid"
+      ],
+      "rowKeyField": "paymentId",
+      "fields": [
+        {
+          "name": "paymentId",
+          "type": "string",
+          "idAttribute": true
+        },
+        {
+          "name": "payRunId",
+          "type": "string"
+        },
+        {
+          "name": "personId",
+          "type": "string"
+        },
+        {
+          "name": "periodEnd",
+          "type": "date"
+        },
+        {
+          "name": "amount",
+          "type": "decimal",
+          "pii": true,
+          "piiSubject": "personId"
         }
       ]
     }
@@ -160,14 +199,16 @@
                 "eventId": "person-paid",
                 "data": {
                   "personId": "p1",
-                  "amount": 120
+                  "amount": 120,
+                  "paymentId": "r1:p1"
                 }
               },
               {
                 "eventId": "person-paid",
                 "data": {
                   "personId": "p2",
-                  "amount": 80
+                  "amount": 80,
+                  "paymentId": "r1:p2"
                 }
               }
             ]
@@ -193,6 +234,63 @@
                 }
               }
             ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "view-payments-slice",
+      "name": "View Payments",
+      "pattern": "stateView",
+      "swimlaneId": "payroll",
+      "status": "created",
+      "screenId": "payroll-screen",
+      "readModelId": "payments",
+      "scenarios": [
+        {
+          "id": "one-row-per-payment",
+          "name": "Two payments in one pay run are two rows",
+          "kind": "stateView",
+          "given": [
+            {
+              "eventId": "person-paid",
+              "data": {
+                "payRunId": "r1",
+                "personId": "p1",
+                "paymentId": "r1:p1",
+                "periodEnd": "2026-09-30",
+                "amount": 120
+              }
+            },
+            {
+              "eventId": "person-paid",
+              "data": {
+                "payRunId": "r1",
+                "personId": "p2",
+                "paymentId": "r1:p2",
+                "periodEnd": "2026-09-30",
+                "amount": 80
+              }
+            }
+          ],
+          "when": {
+            "readModelId": "payments"
+          },
+          "then": {
+            "result": {
+              "entries": [
+                {
+                  "paymentId": "r1:p1",
+                  "personId": "p1",
+                  "amount": 120
+                },
+                {
+                  "paymentId": "r1:p2",
+                  "personId": "p2",
+                  "amount": 80
+                }
+              ]
+            }
           }
         }
       ]

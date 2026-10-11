@@ -10,7 +10,7 @@
     "eventModelingSchemaVersion": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+$",
-      "default": "3.13.0"
+      "default": "3.14.0"
     },
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
@@ -523,6 +523,11 @@
           "type": "array",
           "items": { "$ref": "#/$defs/id" },
           "minItems": 1
+        },
+        "rowKeyField": {
+          "description": "3.14.0: the field of each event this read model is built from (and removed by) that names the row it updates, in place of the event's stream. For one stream that holds many rows' events, such as a ledger recording a payment per person. Every one of those events must carry it.",
+          "type": "string",
+          "minLength": 1
         },
         "fields": {
           "type": "array",

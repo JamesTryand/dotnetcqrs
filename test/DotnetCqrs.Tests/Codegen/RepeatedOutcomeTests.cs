@@ -36,8 +36,8 @@ public class RepeatedOutcomeTests
     private static string WithoutPii()
     {
         var node = JsonNode.Parse(Example)!;
-        foreach (var e in new[] { "work-recorded", "person-paid" })
-            foreach (var f in node["events"]![e]!["fields"]!.AsArray())
+        foreach (var fields in new[] { node["events"]!["work-recorded"]!, node["events"]!["person-paid"]!, node["readModels"]!["payments"]! })
+            foreach (var f in fields["fields"]!.AsArray())
             {
                 f!.AsObject().Remove("pii");
                 f.AsObject().Remove("piiSubject");
@@ -133,7 +133,7 @@ public class RepeatedOutcomeTests
             {
                 private static partial IEnumerable<PersonPaidPayload> ReleasePayRunOutcome0PersonPaid(Pay_runState state, Command cmd) =>
                     cmd.Payload.Contains("2026-09-30")
-                        ? [new PersonPaidPayload("r1", "p1", null, 120), new PersonPaidPayload("r1", "p2", null, 80)]
+                        ? [new PersonPaidPayload("r1", "p1", "r1:p1", null, 120), new PersonPaidPayload("r1", "p2", "r1:p2", null, 80)]
                         : [];
             }
             """);
@@ -158,8 +158,8 @@ public class RepeatedOutcomeTests
 
         Assert.True(success, output);
         Assert.Contains("r1 PayRunReleased", output);
-        Assert.Contains("r1 PersonPaid {\"payRunId\":\"r1\",\"personId\":\"p1\",\"periodEnd\":null,\"amount\":120}", output);
-        Assert.Contains("r1 PersonPaid {\"payRunId\":\"r1\",\"personId\":\"p2\",\"periodEnd\":null,\"amount\":80}", output);
+        Assert.Contains("r1 PersonPaid {\"payRunId\":\"r1\",\"personId\":\"p1\",\"paymentId\":\"r1:p1\",\"periodEnd\":null,\"amount\":120}", output);
+        Assert.Contains("r1 PersonPaid {\"payRunId\":\"r1\",\"personId\":\"p2\",\"paymentId\":\"r1:p2\",\"periodEnd\":null,\"amount\":80}", output);
         Assert.Contains("r2 PayRunReleased", output);
         Assert.DoesNotContain("r2 PersonPaid", output);
     }
@@ -177,7 +177,7 @@ public class RepeatedOutcomeTests
             public static partial class Pay_runDecider
             {
                 private static partial IEnumerable<PersonPaidPayload> ReleasePayRunOutcome0PersonPaid(Pay_runState state, Command cmd) =>
-                    [new PersonPaidPayload("r1", "p1", null, Pii<double>.Fresh(120)), new PersonPaidPayload("r1", "p2", null, Pii<double>.Fresh(80))];
+                    [new PersonPaidPayload("r1", "p1", "r1:p1", null, Pii<double>.Fresh(120)), new PersonPaidPayload("r1", "p2", "r1:p2", null, Pii<double>.Fresh(80))];
             }
             """);
         const string programCs = """
@@ -217,7 +217,7 @@ public class RepeatedOutcomeTests
                 Decide = (state, cmd) =>
                 [
                     new NewEvent("PayRunReleased", cmd.Payload),
-                    .. state.Select(w => new NewEvent("PersonPaid", JsonSerializer.Serialize(new { personId = w.Person, amount = w.Amount }))),
+                    .. state.Select(w => new NewEvent("PersonPaid", JsonSerializer.Serialize(new { personId = w.Person, paymentId = "r1:" + w.Person, amount = w.Amount }))),
                 ],
                 Evolve = (state, ev) =>
                 {

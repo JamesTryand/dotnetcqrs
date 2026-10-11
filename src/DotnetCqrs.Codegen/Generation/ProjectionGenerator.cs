@@ -32,6 +32,8 @@ internal static class ProjectionGenerator
         // pre-existing (derivation-free) generated code is byte-for-byte unaffected.
         var seedOn = readModel.SeedOn;
         var keyColumn = ToSnakeCase(readModel.Key);
+        // Schema 3.14.0: the row a seed or removal event names, by default its own stream.
+        var rowKey = readModel.RowKeyField is null ? "ev.AggregateId" : "RowKey(ev)";
         var allColumns = readModel.Fields.Where(f => f.Name != readModel.Key).ToList();
         var plainColumns = allColumns.Where(f => f.Derivation is null).ToList();
         var toggleColumns = allColumns.Where(f => f.Derivation is Domain.ToggleDerivation).ToList();
@@ -128,7 +130,7 @@ internal static class ProjectionGenerator
             b.AppendLine("        {");
             b.AppendLine("            await using var remove = store.Connection.CreateCommand();");
             b.AppendLine($"            remove.CommandText = \"DELETE FROM {readModel.Collection} WHERE {keyColumn} = @id\";");
-            b.AppendLine("            remove.AddParam(\"@id\", ev.AggregateId);");
+            b.AppendLine($"            remove.AddParam(\"@id\", {rowKey});");
             b.AppendLine("            await remove.ExecuteNonQueryAsync(ct);");
             b.AppendLine("            return;");
             b.AppendLine("        }");
@@ -138,14 +140,14 @@ internal static class ProjectionGenerator
         if (seedIsUnconditional)
         {
             b.AppendLine();
-            EmitSeedBlock(b, readModel, keyColumn, plainColumns, toggleColumns);
+            EmitSeedBlock(b, readModel, keyColumn, plainColumns, toggleColumns, rowKey);
         }
         else if (seedOn.Count > 0)
         {
             b.AppendLine();
             b.AppendLine($"        if (ev.Type is ({Disjunction(seedOn)}))");
             b.AppendLine("        {");
-            EmitSeedBlock(b, readModel, keyColumn, plainColumns, toggleColumns);
+            EmitSeedBlock(b, readModel, keyColumn, plainColumns, toggleColumns, rowKey);
             b.AppendLine("        }");
         }
         // seedOn.Count == 0: every reacted-to event is a foreign-stream roll-up driver
@@ -211,6 +213,14 @@ internal static class ProjectionGenerator
 
         if (groupByColumns.Count > 0)
             EmitApplyGroupByHelper(b);
+        if (readModel.RowKeyField is { } rowKeyField)
+        {
+            // The mapper requires every seed and removal event to carry the field as text.
+            b.AppendLine();
+            b.AppendLine($"    /// <summary>The row an event names (schema 3.14.0 rowKeyField \"{rowKeyField}\"), in place of its stream.</summary>");
+            b.AppendLine("    private static string RowKey(Event ev) =>");
+            b.AppendLine($"        (JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(ev.Data) ?? [])[\"{rowKeyField}\"].GetString()!;");
+        }
 
         b.AppendLine("}");
 
@@ -221,7 +231,7 @@ internal static class ProjectionGenerator
     /// valid key for it) and applies every plain-copy and toggle column -- exactly the
     /// generic field-merge this generator always did, before any derivation existed.</summary>
     private static void EmitSeedBlock(StringBuilder b, Domain.ReadModel readModel, string keyColumn,
-        IReadOnlyList<Domain.Field> plainColumns, IReadOnlyList<Domain.Field> toggleColumns)
+        IReadOnlyList<Domain.Field> plainColumns, IReadOnlyList<Domain.Field> toggleColumns, string rowKey)
     {
         if (plainColumns.Count > 0)
         {
@@ -239,7 +249,7 @@ internal static class ProjectionGenerator
         b.AppendLine($"                INSERT INTO {readModel.Collection} ({keyColumn}) VALUES (@id)");
         b.AppendLine($"                ON CONFLICT ({keyColumn}) DO NOTHING");
         b.AppendLine("                \"\"\";");
-        b.AppendLine("            insert.AddParam(\"@id\", ev.AggregateId);");
+        b.AppendLine($"            insert.AddParam(\"@id\", {rowKey});");
         b.AppendLine("            await insert.ExecuteNonQueryAsync(ct);");
         b.AppendLine("        }");
 
@@ -248,7 +258,7 @@ internal static class ProjectionGenerator
         b.AppendLine();
         b.AppendLine("        var setClauses = new List<string>();");
         b.AppendLine("        await using var update = store.Connection.CreateCommand();");
-        b.AppendLine("        update.AddParam(\"@id\", ev.AggregateId);");
+        b.AppendLine($"        update.AddParam(\"@id\", {rowKey});");
         foreach (var field in plainColumns)
         {
             var column = ToSnakeCase(field.Name);
