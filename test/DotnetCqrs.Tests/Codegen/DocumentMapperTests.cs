@@ -130,6 +130,50 @@ public class DocumentMapperTests
     }
 
     [Fact]
+    public void A_cross_aggregate_automation_with_evidence_of_both_a_new_and_an_existing_target_is_an_upsert()
+    {
+        // The same rule as a stateChange command: one scenario on a fresh target stream and one on an
+        // existing one means the command runs on either, so neither guard applies. Timesheets D30.20:
+        // the payroll ledger records every entry's pay, its first record and every later one alike.
+        const string json = """
+            {
+              "eventModelingSchemaVersion": "3.14.0", "id": "upsert-automation", "name": "Upsert Automation",
+              "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+              "events": {
+                "entry-logged": {"name": "Entry Logged", "swimlaneId": "s", "aggregate": "entry", "fields": [{"name": "entryId", "type": "string"}]},
+                "pay-recorded": {"name": "Pay Recorded", "swimlaneId": "s", "aggregate": "ledger", "fields": [{"name": "entryId", "type": "string"}]}
+              },
+              "commands": {
+                "log-entry": {"name": "Log Entry", "aggregate": "entry", "fields": [{"name": "entryId", "type": "string"}]},
+                "record-pay": {"name": "Record Pay", "aggregate": "ledger", "fields": [{"name": "entryId", "type": "string"}]}
+              },
+              "screens": {"scr": {"name": "Screen"}},
+              "automations": {"record-pay-automation": {"name": "Record Pay"}},
+              "slices": [
+                {"id": "log-entry-slice", "name": "Log Entry", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
+                 "screenId": "scr", "commandId": "log-entry", "eventIds": ["entry-logged"], "scenarios": []},
+                {
+                  "id": "record-pay-slice", "name": "Record Pay", "pattern": "automation", "swimlaneId": "s", "status": "created",
+                  "automationId": "record-pay-automation", "triggerEventIds": ["entry-logged"], "commandId": "record-pay", "resultEventIds": ["pay-recorded"],
+                  "scenarios": [
+                    {"id": "first", "name": "The first record", "kind": "stateChange",
+                     "given": [{"eventId": "entry-logged"}], "when": {"commandId": "record-pay"}, "then": {"events": [{"eventId": "pay-recorded"}]}},
+                    {"id": "later", "name": "A later record", "kind": "stateChange",
+                     "given": [{"eventId": "pay-recorded"}, {"eventId": "entry-logged"}], "when": {"commandId": "record-pay"}, "then": {"events": [{"eventId": "pay-recorded"}]}}
+                  ]
+                }
+              ]
+            }
+            """;
+
+        var result = DocumentMapper.Map(DocumentLoader.Parse(json));
+
+        var command = result.Domains.Single(d => d.Aggregate == "ledger").Commands.Single(c => c.Name == "RecordPay");
+        Assert.False(command.Once, "a later record must not be refused as 'already exists'");
+        Assert.False(command.RequiresExisting, "the first record must not be refused as 'does not exist'");
+    }
+
+    [Fact]
     public void Read_models_are_attached_to_their_owning_aggregate_with_a_derived_key()
     {
         var result = MapOrderFulfillment();

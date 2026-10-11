@@ -358,10 +358,13 @@ public sealed class DocumentMapper
         // single "has this aggregate got a create yet" flag would. An automation whose
         // target is its own trigger's aggregate (auto-ship an order) is never a create
         // either.
+        // Evidence of both a fresh and an existing target stream is an upsert, as for a stateChange
+        // command (MapStateChange): neither guard applies.
         var crossAggregate = source != aggregate;
         var target = GetOrCreateDomain(aggregate);
-        var isCreate = crossAggregate && HasCreateEvidence(slice, aggregate);
-        target.Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.ResultEventIds, isCreate, requiresExisting: !isCreate,
+        var hasCreate = crossAggregate && HasCreateEvidence(slice, aggregate);
+        var isCreate = hasCreate && !HasUpdateEvidence(slice, aggregate);
+        target.Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.ResultEventIds, isCreate, requiresExisting: !hasCreate,
             canBeginAgain: isCreate && HasBeginAgainEvidence(slice, aggregate), sliceId: slice.Id, outcomes: slice.Outcomes));
 
         var triggers = slice.TriggerEventIds.Select(EventTypeName).ToList();
