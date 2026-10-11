@@ -33,7 +33,7 @@ public class RefusalTests
         Assert.Equal(2, refusal.All.Count);
 
         var update = domain.Commands.Single(c => c.Name == "UpdateEntry");
-        Assert.Equal(["entry is on an invoice", "hours must be positive"], update.Refusals.Select(r => r.Message));
+        Assert.Equal(["entry is on an invoice", "hours must be positive", "a day has at most 24 hours"], update.Refusals.Select(r => r.Message));
     }
 
     [Fact(Timeout = VerifyTimeoutMs)]
@@ -43,7 +43,7 @@ public class RefusalTests
 
         var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
 
-        Assert.Equal(5, results.Count);
+        Assert.Equal(7, results.Count);
         Assert.All(results, r => Assert.True(r.Passed, $"{r.ScenarioId}: {r.Detail}"));
     }
 
@@ -172,6 +172,108 @@ public class RefusalTests
         var decider = CSharpGenerator.Generate(domain).Single(f => f.Name.EndsWith("Decider.cs"));
 
         Assert.Contains("throw new InvalidOperationException(\"the gate's locked\");", decider.Source);
+    }
+
+    // Schema 3.11.0: the four numeric comparisons, against a literal and against a state field,
+    // each with its boundary. Raised by timesheets D30 (F10-F12): a conversion rate must be more
+    // than 0, a VAT percentage from 0 to 100.
+    private const string ComparisonsJson = """
+        {
+          "eventModelingSchemaVersion": "3.11.0", "id": "comparisons-test", "name": "Comparisons Test",
+          "swimlanes": [{"id":"s","name":"S","kind":"team"}],
+          "events": {
+            "band-set": {"name": "Band Set", "swimlaneId": "s", "aggregate": "Band", "fields": [
+              {"name": "bandId", "type": "string"}, {"name": "floor", "type": "decimal"}, {"name": "cap", "type": "decimal"}]},
+            "rate-quoted": {"name": "Rate Quoted", "swimlaneId": "s", "aggregate": "Band", "fields": [
+              {"name": "bandId", "type": "string"}, {"name": "rate", "type": "decimal"}]}
+          },
+          "commands": {
+            "set-band": {"name": "Set Band", "aggregate": "Band", "fields": [
+              {"name": "floor", "type": "decimal"}, {"name": "cap", "type": "decimal"}]},
+            "quote-rate": {"name": "Quote Rate", "aggregate": "Band", "fields": [{"name": "rate", "type": "decimal"}, {"name": "note", "type": "string"}],
+              "refuseWhen": [
+                {"message": "the rate must be more than 0", "all": [{"command": "rate", "atMost": 0}]},
+                {"message": "the rate is at most 100", "all": [{"command": "rate", "greaterThan": 100}]},
+                {"message": "below the band's floor", "all": [{"command": "rate", "lessThan": {"state": "floor"}}]},
+                {"message": "at or over the band's cap", "all": [{"command": "rate", "atLeast": {"state": "cap"}}]}
+              ]}
+          },
+          "screens": {"scr": {"name": "Screen"}},
+          "slices": [
+            {"id": "set-slice", "name": "Set", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
+             "screenId": "scr", "commandId": "set-band", "eventIds": ["band-set"],
+             "scenarios": [{"id": "set", "name": "Set", "kind": "stateChange", "given": [],
+               "when": {"commandId": "set-band", "data": {"floor": 1, "cap": 50}}, "then": {"events": [{"eventId": "band-set"}]}}]},
+            {"id": "quote-slice", "name": "Quote", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
+             "screenId": "scr", "commandId": "quote-rate", "eventIds": ["rate-quoted"],
+             "scenarios": [
+               {"id": "in-band", "name": "No rule holds", "kind": "stateChange",
+                "given": [{"eventId": "band-set", "data": {"bandId": "b1", "floor": 1, "cap": 50}}],
+                "when": {"commandId": "quote-rate", "data": {"rate": 49.99}}, "then": {"events": [{"eventId": "rate-quoted"}]}},
+               {"id": "at-the-floor", "name": "lessThan: the floor itself is allowed", "kind": "stateChange",
+                "given": [{"eventId": "band-set", "data": {"bandId": "b1", "floor": 1, "cap": 50}}],
+                "when": {"commandId": "quote-rate", "data": {"rate": 1}}, "then": {"events": [{"eventId": "rate-quoted"}]}},
+               {"id": "no-rate", "name": "A comparison with an unset value never holds", "kind": "stateChange",
+                "given": [{"eventId": "band-set", "data": {"bandId": "b1", "floor": 1, "cap": 50}}],
+                "when": {"commandId": "quote-rate", "data": {"note": "n"}}, "then": {"events": [{"eventId": "rate-quoted"}]}},
+               {"id": "zero", "name": "atMost: the boundary refuses", "kind": "error",
+                "given": [{"eventId": "band-set", "data": {"bandId": "b1", "floor": 1, "cap": 50}}],
+                "when": {"commandId": "quote-rate", "data": {"rate": 0}}, "then": {"error": {"message": "the rate must be more than 0"}}},
+               {"id": "negative", "name": "atMost: below it refuses", "kind": "error",
+                "given": [{"eventId": "band-set", "data": {"bandId": "b1", "floor": 1, "cap": 50}}],
+                "when": {"commandId": "quote-rate", "data": {"rate": -2}}, "then": {"error": {"message": "the rate must be more than 0"}}},
+               {"id": "over-100", "name": "greaterThan a literal", "kind": "error",
+                "given": [{"eventId": "band-set", "data": {"bandId": "b1", "floor": 1, "cap": 500}}],
+                "when": {"commandId": "quote-rate", "data": {"rate": 100.5}}, "then": {"error": {"message": "the rate is at most 100"}}},
+               {"id": "below-floor", "name": "lessThan a state field", "kind": "error",
+                "given": [{"eventId": "band-set", "data": {"bandId": "b1", "floor": 1, "cap": 50}}],
+                "when": {"commandId": "quote-rate", "data": {"rate": 0.5}}, "then": {"error": {"message": "below the band's floor"}}},
+               {"id": "at-cap", "name": "atLeast a state field: the boundary refuses", "kind": "error",
+                "given": [{"eventId": "band-set", "data": {"bandId": "b1", "floor": 1, "cap": 50}}],
+                "when": {"commandId": "quote-rate", "data": {"rate": 50}}, "then": {"error": {"message": "at or over the band's cap"}}}
+             ]}
+          ]
+        }
+        """;
+
+    [Fact(Timeout = VerifyTimeoutMs)]
+    public async Task Each_comparison_refuses_at_and_past_its_boundary_and_never_on_an_unset_value()
+    {
+        var doc = DocumentLoader.Parse(ComparisonsJson);
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
+
+        Assert.Equal(9, results.Count);
+        Assert.All(results, r => Assert.True(r.Passed, $"{r.ScenarioId}: {r.Detail}"));
+    }
+
+    [Fact(Timeout = VerifyTimeoutMs)]
+    public async Task Without_the_comparisons_their_error_scenarios_fail()
+    {
+        var node = JsonNode.Parse(ComparisonsJson)!;
+        node["commands"]!["quote-rate"]!.AsObject().Remove("refuseWhen");
+        var doc = DocumentLoader.Parse(node.ToJsonString());
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
+
+        var errors = results.Where(r => r.Kind == "error").ToList();
+        Assert.Equal(5, errors.Count);
+        Assert.All(errors, r => Assert.False(r.Passed, $"{r.ScenarioId}: {r.Detail}"));
+    }
+
+    [Theory]
+    [InlineData("""{"command": "note", "lessThan": 1}""", "compares numbers")]
+    [InlineData("""{"command": "rate", "atLeast": {"command": "note"}}""", "compares numbers")]
+    [InlineData("""{"command": "rate", "atMost": {"state": "nosuch"}}""", "state field \"nosuch\"")]
+    public void A_comparison_of_something_that_is_not_a_number_is_refused(string condition, string expected)
+    {
+        var node = JsonNode.Parse(ComparisonsJson)!;
+        node["commands"]!["quote-rate"]!["refuseWhen"] = JsonNode.Parse($$"""[{"message": "m", "all": [{{condition}}]}]""");
+        var doc = DocumentLoader.Parse(node.ToJsonString());
+
+        var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(doc));
+
+        Assert.Contains(expected, ex.Message);
     }
 
     [Theory]

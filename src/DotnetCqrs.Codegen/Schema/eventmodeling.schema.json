@@ -10,7 +10,7 @@
     "eventModelingSchemaVersion": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+$",
-      "default": "3.10.0"
+      "default": "3.11.0"
     },
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
@@ -310,7 +310,11 @@
         "is": { "enum": ["set", "notSet"] },
         "equals": { "$ref": "#/$defs/refusalOperand" },
         "notEquals": { "$ref": "#/$defs/refusalOperand" },
-        "contains": { "$ref": "#/$defs/refusalOperand" }
+        "contains": { "$ref": "#/$defs/refusalOperand" },
+        "lessThan": { "$ref": "#/$defs/refusalNumericOperand" },
+        "atMost": { "$ref": "#/$defs/refusalNumericOperand" },
+        "greaterThan": { "$ref": "#/$defs/refusalNumericOperand" },
+        "atLeast": { "$ref": "#/$defs/refusalNumericOperand" }
       },
       "allOf": [
         {
@@ -324,11 +328,34 @@
             { "required": ["is"] },
             { "required": ["equals"] },
             { "required": ["notEquals"] },
-            { "required": ["contains"] }
+            { "required": ["contains"] },
+            { "required": ["lessThan"] },
+            { "required": ["atMost"] },
+            { "required": ["greaterThan"] },
+            { "required": ["atLeast"] }
           ]
         }
       ],
       "additionalProperties": false
+    },
+
+    "refusalNumericOperand": {
+      "description": "3.11.0: what a numeric comparison compares with: a number, or the value of a numeric state or command field. A comparison with an unset value never holds; say that with `is`.",
+      "oneOf": [
+        { "type": "number" },
+        {
+          "type": "object",
+          "properties": {
+            "state": { "type": "string", "minLength": 1 },
+            "command": { "type": "string", "minLength": 1 }
+          },
+          "oneOf": [
+            { "required": ["state"], "not": { "required": ["command"] } },
+            { "required": ["command"], "not": { "required": ["state"] } }
+          ],
+          "additionalProperties": false
+        }
+      ]
     },
 
     "refusalOperand": {

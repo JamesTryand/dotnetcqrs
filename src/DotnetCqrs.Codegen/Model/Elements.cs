@@ -37,7 +37,12 @@ public sealed record RefusalConditionDef(
     string? Is,
     [property: JsonPropertyName("equals")] JsonElement? EqualTo,
     [property: JsonPropertyName("notEquals")] JsonElement? NotEqualTo,
-    JsonElement? Contains);
+    JsonElement? Contains,
+    // Schema 3.11.0: numeric comparisons, each against a number or a {state|command: field}.
+    JsonElement? LessThan = null,
+    JsonElement? AtMost = null,
+    JsonElement? GreaterThan = null,
+    JsonElement? AtLeast = null);
 
 /// <summary><c>RequiredRole</c> is schema 2.7.0's <c>readModel.requiredRole</c> -- the
 /// read-side mirror of <see cref="CommandDef.RequiredRole"/>, same shape (a role id, or

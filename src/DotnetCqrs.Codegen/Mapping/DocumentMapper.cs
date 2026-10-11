@@ -439,6 +439,10 @@ public sealed class DocumentMapper
             c.Is is not null ? (c.Is, (Domain.RefusalOperand?)null)
             : c.EqualTo is { } eq ? ("equals", BuildOperand(eq))
             : c.NotEqualTo is { } ne ? ("notEquals", BuildOperand(ne))
+            : c.LessThan is { } lt ? ("lessThan", BuildOperand(lt))
+            : c.AtMost is { } am ? ("atMost", BuildOperand(am))
+            : c.GreaterThan is { } gt ? ("greaterThan", BuildOperand(gt))
+            : c.AtLeast is { } al ? ("atLeast", BuildOperand(al))
             : ("contains", BuildOperand(c.Contains!.Value));
         return new Domain.RefusalCondition(side, Names.SanitizeName(field), op, operand);
     }
@@ -461,8 +465,9 @@ public sealed class DocumentMapper
     /// would let through exactly what the model says to refuse. A <c>state</c> field is one of
     /// the aggregate's event fields (its state); a <c>command</c> field is one the command
     /// declares. <c>equals</c>/<c>notEquals</c> compare text, numbers and bools of one type;
-    /// <c>contains</c> needs a list; a pii field may only be tested for <c>set</c>/<c>notSet</c>
-    /// (a rule never reads personal data).</summary>
+    /// <c>contains</c> needs a list; a numeric comparison (3.11.0) compares a number with a
+    /// number; a pii field may only be tested for <c>set</c>/<c>notSet</c> (a rule never reads
+    /// personal data).</summary>
     private void CheckRefusals()
     {
         foreach (var (aggregate, domain) in _byAggregate)
@@ -494,6 +499,28 @@ public sealed class DocumentMapper
                         if (left.Pii)
                         {
                             _report.Error($"{owner}: {where} compares pii field \"{condition.Field}\"; a rule may only test pii for set or notSet");
+                            continue;
+                        }
+                        if (condition.Operator is "lessThan" or "atMost" or "greaterThan" or "atLeast")
+                        {
+                            if (left.Type != "number")
+                            {
+                                _report.Error($"{owner}: {where}: {condition.Operator} compares numbers, but \"{condition.Field}\" is {left.Type}");
+                                continue;
+                            }
+                            var bound = condition.Operand!;
+                            if (bound.Side is { } boundSide)
+                            {
+                                if (Lookup(boundSide, bound.Field!, where) is not { } boundField) continue;
+                                if (boundField.Pii)
+                                    _report.Error($"{owner}: {where} compares pii field \"{bound.Field}\"; a rule may only test pii for set or notSet");
+                                else if (boundField.Type != "number")
+                                    _report.Error($"{owner}: {where}: {condition.Operator} compares numbers, but \"{bound.Field}\" is {boundField.Type}");
+                            }
+                            else if (bound.Literal is not double)
+                            {
+                                _report.Error($"{owner}: {where}: {condition.Operator} compares numbers, but its operand is not a number");
+                            }
                             continue;
                         }
                         if (condition.Operator == "contains")

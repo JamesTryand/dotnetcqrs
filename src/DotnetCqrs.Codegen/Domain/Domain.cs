@@ -125,8 +125,10 @@ public sealed record Refusal(string Message, IReadOnlyList<RefusalCondition> All
 public enum RefusalSide { State, Command }
 
 /// <summary>One condition. <c>Field</c> is the sanitised field name on <c>Side</c>.
-/// <c>Operator</c> is <c>set</c>, <c>notSet</c>, <c>equals</c>, <c>notEquals</c> or
-/// <c>contains</c>; the last three have an <c>Operand</c>.</summary>
+/// <c>Operator</c> is <c>set</c>, <c>notSet</c>, <c>equals</c>, <c>notEquals</c>,
+/// <c>contains</c>, or (schema 3.11.0) one of the numeric comparisons <c>lessThan</c>,
+/// <c>atMost</c>, <c>greaterThan</c>, <c>atLeast</c>; all but the first two have an
+/// <c>Operand</c>.</summary>
 public sealed record RefusalCondition(RefusalSide Side, string Field, string Operator, RefusalOperand? Operand);
 
 /// <summary>What a condition compares with: a literal (<c>string</c>, <c>double</c> or

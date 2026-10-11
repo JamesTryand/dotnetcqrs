@@ -216,6 +216,11 @@ internal static class DeciderGenerator
             "equals" => $"RefusalEquals({Value(c.Side, c.Field)}, {Operand(c.Operand!)})",
             "notEquals" => $"!RefusalEquals({Value(c.Side, c.Field)}, {Operand(c.Operand!)})",
             "contains" => $"RefusalContains({raw}, {Operand(c.Operand!)})",
+            // Schema 3.11.0: an unset value on either side compares as null, and null < 0 is false.
+            "lessThan" => $"RefusalCompare({Value(c.Side, c.Field)}, {Operand(c.Operand!)}) < 0",
+            "atMost" => $"RefusalCompare({Value(c.Side, c.Field)}, {Operand(c.Operand!)}) <= 0",
+            "greaterThan" => $"RefusalCompare({Value(c.Side, c.Field)}, {Operand(c.Operand!)}) > 0",
+            "atLeast" => $"RefusalCompare({Value(c.Side, c.Field)}, {Operand(c.Operand!)}) >= 0",
             _ => throw new InvalidOperationException($"unknown refusal operator \"{c.Operator}\""),
         };
     }
@@ -274,6 +279,10 @@ internal static class DeciderGenerator
         b.AppendLine("    };");
         b.AppendLine();
         b.AppendLine("    private static bool RefusalEquals(object? left, object? right) => left is null ? right is null : left.Equals(right);");
+        b.AppendLine();
+        b.AppendLine("    // Schema 3.11.0: numbers compare; anything else (an unset value) compares as null, so no rule holds.");
+        b.AppendLine("    private static int? RefusalCompare(object? left, object? right) =>");
+        b.AppendLine("        left is double l && right is double r ? l.CompareTo(r) : null;");
         b.AppendLine();
         b.AppendLine("    private static bool RefusalContains(JsonElement? list, object? item) =>");
         b.AppendLine("        list is { ValueKind: JsonValueKind.Array } items && items.EnumerateArray().Any(e => RefusalEquals(RefusalValue(e), item));");

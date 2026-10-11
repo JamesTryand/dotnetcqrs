@@ -1,9 +1,9 @@
 {
   "$schema": "https://raw.githubusercontent.com/jamestryand/eventmodelschema/main/schema/eventmodeling.schema.json",
-  "eventModelingSchemaVersion": "3.10.0",
+  "eventModelingSchemaVersion": "3.11.0",
   "id": "refusals-example",
   "name": "Refusals Example",
-  "description": "Declared refusals (3.10.0): a time entry is claimed by one invoice at a time, and cannot be changed while it is claimed. Each rule reads the entry's own state (folded from its own events) and the command, never a read model.",
+  "description": "Declared refusals (3.10.0; numeric comparisons, 3.11.0): a time entry is claimed by one invoice at a time, and cannot be changed while it is claimed. Each rule reads the entry's own state (folded from its own events) and the command, never a read model.",
   "swimlanes": [
     { "id": "billing", "name": "Billing", "kind": "team" }
   ],
@@ -62,7 +62,8 @@
       "fields": [{ "name": "hours", "type": "decimal" }],
       "refuseWhen": [
         { "message": "entry is on an invoice", "all": [{ "state": "claimedForInvoiceId", "is": "set" }] },
-        { "message": "hours must be positive", "all": [{ "command": "hours", "equals": 0 }] }
+        { "message": "hours must be positive", "all": [{ "command": "hours", "atMost": 0 }] },
+        { "message": "a day has at most 24 hours", "all": [{ "command": "hours", "greaterThan": 24 }] }
       ]
     }
   },
@@ -139,6 +140,18 @@
           ],
           "when": { "commandId": "update-entry", "data": { "hours": 4 } },
           "then": { "error": { "message": "entry is on an invoice" } }
+        },
+        {
+          "id": "hours-must-be-positive", "name": "Negative hours are refused (3.11.0: atMost)", "kind": "error",
+          "given": [{ "eventId": "entry-logged", "data": { "entryId": "e1", "hours": 3 } }],
+          "when": { "commandId": "update-entry", "data": { "hours": -2 } },
+          "then": { "error": { "message": "hours must be positive" } }
+        },
+        {
+          "id": "at-most-a-day", "name": "More than 24 hours is refused (3.11.0: greaterThan)", "kind": "error",
+          "given": [{ "eventId": "entry-logged", "data": { "entryId": "e1", "hours": 3 } }],
+          "when": { "commandId": "update-entry", "data": { "hours": 25 } },
+          "then": { "error": { "message": "a day has at most 24 hours" } }
         }
       ]
     }
