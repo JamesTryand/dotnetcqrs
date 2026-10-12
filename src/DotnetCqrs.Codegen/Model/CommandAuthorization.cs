@@ -17,10 +17,15 @@ public sealed record CommandFieldGatedRoleDef(
 
 /// <summary>A command's optional <c>requiredOwnership</c> (schema 2.5.0): the actor's own
 /// id must equal the value <see cref="Via"/> resolves for the command's own target,
-/// unless the actor's role is in <see cref="BypassRoles"/>.</summary>
+/// unless the actor's role is in <see cref="BypassRoles"/>. Or (3.15.0) <see cref="StateField"/>:
+/// the field of the aggregate's own state that names the owner, compared with the actor by the
+/// aggregate's decision, refused with <see cref="Message"/>. Exactly one of the two (the schema
+/// says so).</summary>
 public sealed record CommandOwnershipDef(
     [property: JsonConverter(typeof(RoleOrRolesConverter))] IReadOnlyList<string>? BypassRoles,
-    CommandOwnershipVia Via);
+    CommandOwnershipVia? Via,
+    string? StateField = null,
+    string? Message = null);
 
 public sealed record CommandOwnershipVia(string ReadModelId, string KeyField, string OwnerField);
 

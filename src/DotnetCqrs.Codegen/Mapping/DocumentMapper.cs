@@ -400,6 +400,7 @@ public sealed class DocumentMapper
             RequiredRole = cmd.RequiredRole,
             FieldGatedRole = BuildFieldGatedRole(id, cmd.FieldGatedRole),
             RequiredOwnership = BuildOwnership(id, cmd.RequiredOwnership),
+            OwnedBy = BuildStateOwnership(aggregate, CommandName(id), cmd.RequiredOwnership),
             Scope = BuildScope(id, cmd.Scope),
         };
         command.Fields.AddRange(BuildFields($"command \"{id}\"", cmd.Fields ?? []));
@@ -603,6 +604,11 @@ public sealed class DocumentMapper
                         : $"{owner}: {where} names command field \"{field}\", which the command does not declare");
                     return null;
                 }
+
+                // Schema 3.15.0: the owner is a string field of this aggregate's own state.
+                if (command.OwnedBy is { } ownedBy && Lookup(Domain.RefusalSide.State, ownedBy.StateField, "requiredOwnership") is { } ownerField
+                    && ownerField.Type != "text")
+                    _report.Error($"{owner}: requiredOwnership.stateField \"{ownedBy.StateField}\" is {ownerField.Type}; an owner is text (a string)");
 
                 var rules = command.Refusals.Select(r => ($"refusal \"{r.Message}\"", r.All))
                     .Concat(command.Outcomes.SelectMany((o, i) => (o.When ?? []).Select(g => ($"outcome {i}", g))));
@@ -1296,7 +1302,7 @@ public sealed class DocumentMapper
     /// <c>readModel.scopes</c> mapping.</summary>
     private Domain.OwnershipPolicy? BuildOwnership(string commandId, CommandOwnershipDef? def)
     {
-        if (def is null) return null;
+        if (def?.Via is null) return null;
 
         var viaCollection = ResolveReadModelCollection(def.Via.ReadModelId);
         if (viaCollection is null)
@@ -1309,6 +1315,12 @@ public sealed class DocumentMapper
             def.BypassRoles ?? [], viaCollection,
             Names.SanitizeName(def.Via.KeyField), Names.SanitizeName(def.Via.OwnerField));
     }
+
+    /// <summary>Schema 3.15.0: ownership the aggregate decides from its own state. The field is checked
+    /// against the aggregate's state with the refusals (<see cref="CheckRefusals"/>).</summary>
+    private static Domain.StateOwnership? BuildStateOwnership(string aggregate, string commandName, CommandOwnershipDef? def) =>
+        def?.StateField is not { } field ? null
+            : new Domain.StateOwnership(Names.SanitizeName(field), def.Message ?? $"only this {aggregate}'s own {field} may {commandName}");
 
     /// <summary>Resolves a command's <c>scope</c> (schema 2.5.0) -- two independent
     /// via-resolutions, same posture as <see cref="BuildOwnership"/>.</summary>

@@ -43,6 +43,7 @@ public class CqrsGatewayFailureMappingTests : IAsyncDisposable
             "CreateTask" when exists => throw new InvalidOperationException("task already exists"),
             "CreateTask" => [new NewEvent("TaskCreated", cmd.Payload)],
             "NeedsReveal" => throw new RevealRequiredException("decision read a protected value"),
+            "TakeTask" => throw new CommandForbiddenException("only this task's own owner may take it"),
             _ => throw new InvalidOperationException($"unknown command: {cmd.Name}"),
         },
         Evolve = (_, ev) => ev.Type == "TaskCreated",
@@ -157,5 +158,15 @@ public class CqrsGatewayFailureMappingTests : IAsyncDisposable
 
         Assert.Equal(HttpStatusCode.BadRequest, status);
         Assert.Equal("task already exists", problem.GetProperty("detail").GetString());
+    }
+
+    [Fact]
+    public async Task A_forbidden_rejection_returns_403_with_the_deciders_message()
+    {
+        // Schema 3.15.0: ownership decided by the aggregate is refused as forbidden, not as an invalid command.
+        var (status, problem) = await PostAsync("/api/cqrs/task/t1/TakeTask");
+
+        Assert.Equal(HttpStatusCode.Forbidden, status);
+        Assert.Equal("only this task's own owner may take it", problem.GetProperty("detail").GetString());
     }
 }

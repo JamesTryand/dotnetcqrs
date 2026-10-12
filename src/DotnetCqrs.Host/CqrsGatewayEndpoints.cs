@@ -283,6 +283,11 @@ public static class CqrsGatewayEndpoints
             // service-to-service detail, and here it would read as "reload and retry".
             return Results.Problem(ex.Message, statusCode: StatusCodes.Status410Gone);
         }
+        catch (CommandForbiddenException ex) when (DeciderRegistry.IsRejection(ex))
+        {
+            // Schema 3.15.0: the aggregate refused the actor (not the owner its own state names), not the command.
+            return Results.Problem(ex.Message, statusCode: StatusCodes.Status403Forbidden);
+        }
         catch (Exception ex) when (DeciderRegistry.IsRejection(ex))
         {
             // A domain rejection: Decide threw it (DeciderRegistry marks exactly those).

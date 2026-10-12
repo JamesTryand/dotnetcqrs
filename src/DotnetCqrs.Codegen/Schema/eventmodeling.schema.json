@@ -10,7 +10,7 @@
     "eventModelingSchemaVersion": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+$",
-      "default": "3.14.0"
+      "default": "3.15.0"
     },
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
@@ -377,16 +377,30 @@
     },
 
     "commandOwnership": {
+      "description": "Who may run the command: the actor who owns the target. Either via a read model (2.5.0: checked before the command, from a projection, so it lags) or (3.15.0) stateField: the field of the aggregate's own state that names its owner, compared with the command's actor by the aggregate's own decision, never from a projection. bypassRoles applies to via only: a decision knows its actor, not their role.",
       "type": "object",
-      "required": ["via"],
       "properties": {
         "bypassRoles": {
           "type": "array",
           "items": { "$ref": "#/$defs/id" },
           "minItems": 1
         },
-        "via": { "$ref": "#/$defs/ownershipVia" }
+        "via": { "$ref": "#/$defs/ownershipVia" },
+        "stateField": {
+          "description": "3.15.0: the state field (folded from the aggregate's own events) that names the owner. The command is refused, as forbidden rather than invalid, when it differs from the actor.",
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "description": "3.15.0: the refusal's message when the actor is not the owner (stateField only).",
+          "type": "string",
+          "minLength": 1
+        }
       },
+      "oneOf": [
+        { "required": ["via"], "not": { "anyOf": [{ "required": ["stateField"] }, { "required": ["message"] }] } },
+        { "required": ["stateField"], "not": { "anyOf": [{ "required": ["via"] }, { "required": ["bypassRoles"] }] } }
+      ],
       "additionalProperties": false
     },
 

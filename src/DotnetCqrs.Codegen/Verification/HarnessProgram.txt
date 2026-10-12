@@ -50,7 +50,12 @@ static async Task<ScenarioResultDto> RunCommandScenarioAsync(CommandScenarioInpu
 
         try
         {
-            var produced = await registry.HandleAsync(scenario.Aggregate, scenario.StreamId, new Command(scenario.CommandName, scenario.CommandPayload));
+            // The scenario's when.actor/when.at (3.10.0), as the host would resolve them: a rule may read the actor
+            // (3.15.0 requiredOwnership.stateField).
+            var meta = new Dictionary<string, object>();
+            if (scenario.Actor is not null) meta["actor"] = scenario.Actor;
+            if (scenario.At is not null) meta["now"] = scenario.At;
+            var produced = await registry.HandleWithMetaAsync(scenario.Aggregate, scenario.StreamId, new Command(scenario.CommandName, scenario.CommandPayload), meta);
 
             if (scenario.Kind == "error")
                 return Result(scenario, passed: false, $"expected a refusal but the command was accepted and produced {produced.Count} event(s)");
@@ -639,7 +644,7 @@ record GivenEventInput(string Type, string Data);
 record ViewGivenEventInput(string Type, string Data, string MainKey, Dictionary<string, string> ViaKeys, Dictionary<string, string>? PiiFields = null);
 record CommandScenarioInput(string SliceId, string ScenarioId, string Name, string Kind, string DeciderTypeName,
     string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes,
-    string? ExpectedErrorMessage = null, List<List<HandOutcomeEvent>>? HandOutcomes = null);
+    string? ExpectedErrorMessage = null, List<List<HandOutcomeEvent>>? HandOutcomes = null, string? Actor = null, string? At = null);
 record HandOutcomeEvent(string Type, bool Repeated);
 record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,
     string TableName, List<ViewGivenEventInput> Given, string? QueryParams, string? AsOf, string ExpectedResult,

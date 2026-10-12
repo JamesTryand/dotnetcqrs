@@ -86,6 +86,11 @@ public sealed class Command
     /// <c>command.requiredOwnership</c>).</summary>
     public OwnershipPolicy? RequiredOwnership { get; init; }
 
+    /// <summary>Schema 3.15.0 <c>requiredOwnership.stateField</c>: the aggregate decides who owns it, from
+    /// its own state. Generated into <c>Decide</c> after the existence checks; nothing is checked before
+    /// the command (<see cref="RequiredOwnership"/> stays null).</summary>
+    public StateOwnership? OwnedBy { get; init; }
+
     /// <summary>Role bypasses outright, else the actor must be a member of a resolved
     /// set (schema 2.5.0 <c>command.scope</c>).</summary>
     public ScopePolicy? Scope { get; init; }
@@ -112,6 +117,10 @@ public sealed record NumberFieldValue(double Value) : FieldGatedRoleValue;
 /// (resolved once, here, from the document's own <c>via.readModelId</c> -- generation
 /// never re-consults the document), same posture as <see cref="ReadModelScope"/>.</summary>
 public sealed record OwnershipPolicy(IReadOnlyList<string> BypassRoles, string ViaCollection, string KeyField, string OwnerField);
+
+/// <summary>Schema 3.15.0: the state field (sanitized, as state fields are) that names the owner, and the
+/// refusal's message when the actor isn't them.</summary>
+public sealed record StateOwnership(string StateField, string Message);
 
 /// <summary>Domain-level counterpart of <see cref="Model.CommandScopeDef"/>: both
 /// <c>*Collection</c> names are already resolved physical collection/table names, same

@@ -92,6 +92,12 @@ internal static class DeciderGenerator
                 b.AppendLine($"                    if (state.Ended) throw new InvalidOperationException(\"{domain.Aggregate} has ended and cannot begin again\");");
             if (command.RequiresExisting)
                 b.AppendLine($"                    if (!state.Exists) throw new InvalidOperationException(\"{domain.Aggregate} does not exist\");");
+            if (command.OwnedBy is { } ownedBy)
+            {
+                // Schema 3.15.0: the aggregate decides who owns it, from its own state, never a read model.
+                b.AppendLine("                    // requiredOwnership.stateField (schema 3.15.0): only the owner its own state names; refused as forbidden.");
+                b.AppendLine($"                    if (!string.Equals(state.{GenerationSupport.ExportName(ownedBy.StateField)}, cmd.Actor, StringComparison.Ordinal)) throw new CommandForbiddenException({StringLiteral(ownedBy.Message)});");
+            }
             AppendRefusals(b, command);
             if (command.Outcomes.Count > 0)
             {
