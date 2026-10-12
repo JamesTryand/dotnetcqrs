@@ -273,7 +273,9 @@ public static class ScenarioVerifier
             ? $"Generated.{aggregatePascal}.{GenerationSupport.ExportName(info.Collection)}HashedIndex"
             : null;
 
-        var access = readModelDomain.HasAccessRules
+        // A read model declaring only requiredRole has a rule too: the generated route refuses a caller
+        // without the role (D33 in project/timesheets found the harness reading them as a role holder).
+        var access = readModelDomain.HasAccessRules || readModelDomain.RequiredRole is { Count: > 0 }
             ? new ViewAccessInput(readModelDomain.RequiredRole,
                 readModelDomain.SelfAccess is { } selfAccess ? ToSnakeCase(selfAccess.SubjectField) : null,
                 readModelDomain.SelfAccess?.Param,

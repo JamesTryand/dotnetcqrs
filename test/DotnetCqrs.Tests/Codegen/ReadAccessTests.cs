@@ -134,6 +134,37 @@ public class ReadAccessTests
         Assert.False(keepResults.Single(r => r.ScenarioId == "an-unassigned-project-manager-loses-the-grant").Passed);
     }
 
+    [Fact(Timeout = 120000)]
+    [Trait("Category", "Compiles")]
+    public async Task The_harness_refuses_a_caller_without_the_role_on_a_read_model_that_declares_only_requiredRole()
+    {
+        // project-managers declares requiredRole and nothing else, so the generated route answers a
+        // caller without the role 403 (its rows are no one's own). Raised by project/timesheets D33: the
+        // harness read such a caller as a role holder, so a PM's scenario saw a Manager-only invoice.
+        var node = System.Text.Json.Nodes.JsonNode.Parse(ReadAccessJson)!;
+        System.Text.Json.Nodes.JsonNode Scenario(string id, string subject, string role, string expected) =>
+            System.Text.Json.Nodes.JsonNode.Parse(
+                "{\"id\": \"" + id + "\", \"name\": \"" + id + "\", \"kind\": \"stateView\", " +
+                "\"given\": [{\"eventId\": \"project-manager-assigned\", \"data\": {\"assignmentId\": \"p1:s1\", \"projectId\": \"p1\", \"staffId\": \"s1\"}}], " +
+                "\"when\": {\"readModelId\": \"project-managers\", \"caller\": {\"subjectId\": \"" + subject + "\", \"role\": \"" + role + "\"}}, " +
+                "\"then\": {\"result\": {\"entries\": " + expected + "}}}")!;
+        node["slices"]!.AsArray().Add(System.Text.Json.Nodes.JsonNode.Parse("""
+            {"id": "view-managers-slice", "name": "View Managers", "pattern": "stateView", "swimlaneId": "work",
+             "status": "created", "screenId": "my-time-screen", "readModelId": "project-managers", "scenarios": []}
+            """));
+        var scenarios = node["slices"]!.AsArray().Last()!["scenarios"]!.AsArray();
+        scenarios.Add(Scenario("a-manager-sees-the-rows", "m1", "manager", """[{"projectId": "p1", "staffId": "s1"}]"""));
+        scenarios.Add(Scenario("staff-are-refused", "s1", "staff", "[]"));
+        var doc = DocumentLoader.Parse(node.ToJsonString());
+
+        var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
+
+        Assert.True(results.Single(r => r.ScenarioId == "a-manager-sees-the-rows").Passed,
+            results.Single(r => r.ScenarioId == "a-manager-sees-the-rows").Detail);
+        Assert.True(results.Single(r => r.ScenarioId == "staff-are-refused").Passed,
+            results.Single(r => r.ScenarioId == "staff-are-refused").Detail);
+    }
+
     [Theory]
     [InlineData("\"removedByEventIds\": [\"project-manager-unassigned\"]", "\"removedByEventIds\": [\"time-logged\"]", "not in its builtFromEventIds")]
     public void The_mapper_refuses_a_removal_it_cannot_apply_as_written(string from, string to, string message)
