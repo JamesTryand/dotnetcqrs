@@ -53,7 +53,13 @@ public sealed record ReadModelDef(
     [property: JsonConverter(typeof(RoleOrRolesConverter))] IReadOnlyList<string>? RequiredRole,
     ReadModelSelfAccessDef? SelfAccess = null,
     IReadOnlyList<string>? RemovedByEventIds = null,
-    string? RowKeyField = null);
+    string? RowKeyField = null,
+    ReadModelRowsPerListItemDef? RowsPerListItem = null);
+
+/// <summary><c>readModel.rowsPerListItem</c> (schema 3.16.0): one row per group of a stream's list
+/// items. <c>ListField</c> is a list the read model's events carry (each carrying event replaces the
+/// stream's list); <c>GroupBy</c> is the item subfield naming an item's group.</summary>
+public sealed record ReadModelRowsPerListItemDef(string ListField, string GroupBy);
 
 /// <summary><c>readModel.selfAccess</c> (schema 3.2.0; <c>Param</c> 3.8.0): a caller without
 /// <c>requiredRole</c> sees only the rows whose <c>SubjectField</c> is their own subject id, and

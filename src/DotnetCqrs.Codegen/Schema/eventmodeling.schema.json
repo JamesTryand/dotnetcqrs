@@ -10,7 +10,7 @@
     "eventModelingSchemaVersion": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+$",
-      "default": "3.15.0"
+      "default": "3.16.0"
     },
     "id": { "$ref": "#/$defs/id" },
     "name": { "type": "string", "minLength": 1 },
@@ -76,7 +76,7 @@
 
     "fieldCardinality": { "enum": ["single", "list"] },
 
-    "fieldDerivationKind": { "enum": ["toggle", "count", "sum", "groupBy"] },
+    "fieldDerivationKind": { "enum": ["toggle", "count", "sum", "groupBy", "byEvent", "sumOfItems"] },
 
     "fieldDerivation": {
       "type": "object",
@@ -151,6 +151,33 @@
             "required": ["groupByField"],
             "properties": {
               "groupByField": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "kind": { "const": "byEvent" } } },
+          "then": {
+            "type": "object",
+            "description": "3.16.0: the field takes a literal value chosen by which event fired (an id of builtFromEventIds), such as a status; an event not named leaves it as it was. Toggle is the 0/1 case.",
+            "required": ["values"],
+            "properties": {
+              "values": {
+                "type": "object",
+                "propertyNames": { "$ref": "#/$defs/id" },
+                "additionalProperties": { "type": ["string", "number", "boolean"] },
+                "minProperties": 1
+              }
+            }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "kind": { "const": "sumOfItems" } } },
+          "then": {
+            "type": "object",
+            "description": "3.16.0, with readModel.rowsPerListItem only: the sum of a subfield over the row's own items. Absent (null) unless every item carries a value for it, so amounts not yet in one currency are never added.",
+            "required": ["subfield"],
+            "properties": {
+              "subfield": { "type": "string", "minLength": 1 }
             }
           }
         }
@@ -537,6 +564,16 @@
           "type": "array",
           "items": { "$ref": "#/$defs/id" },
           "minItems": 1
+        },
+        "rowsPerListItem": {
+          "description": "3.16.0: one row per group of a stream's list items, in place of one row per stream. listField is a list field the read model's events carry (each carrying event replaces the list); groupBy is the item subfield naming an item's group. Each row is keyed '<stream>|<group>'; its groupBy field takes the group's value, its listField the group's items, and its other plain fields are copied from the stream's events. An item without the groupBy subfield is in no row. A removedByEventIds event removes all of the stream's rows. Not with rowKeyField.",
+          "type": "object",
+          "required": ["listField", "groupBy"],
+          "properties": {
+            "listField": { "type": "string", "minLength": 1 },
+            "groupBy": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
         },
         "rowKeyField": {
           "description": "3.14.0: the field of each event this read model is built from (and removed by) that names the row it updates, in place of the event's stream. For one stream that holds many rows' events, such as a ledger recording a payment per person. Every one of those events must carry it.",

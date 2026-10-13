@@ -250,11 +250,14 @@ public static class ScenarioVerifier
         // same row). See ReadModelIdFieldName's doc comment for the resolution rule.
         var sharedDefault = StreamId(document, scenario.Given);
         var mainIdFieldName = ReadModelIdFieldName(document, readModelId);
+        // Schema 3.16.0: a rowsPerListItem read model's rows are groups of a stream's items, so each given
+        // event is keyed by its own stream (its idAttribute field), and two streams stay two.
+        var rowsPerListItem = document.ReadModels?.GetValueOrDefault(readModelId)?.RowsPerListItem is not null;
         var given = scenario.Given
             .Select(g => new ViewGivenEventInput(
                 index.EventType.GetValueOrDefault(g.EventId, g.EventId),
                 g.Data?.GetRawText() ?? "{}",
-                RowKey(mainIdFieldName, g.Data, sharedDefault),
+                rowsPerListItem ? StreamId(document, [g], sharedDefault) : RowKey(mainIdFieldName, g.Data, sharedDefault),
                 scopes.ToDictionary(s => s.ViaProjectionTypeName, s => RowKey(viaIdFieldNames.GetValueOrDefault(s.ViaProjectionTypeName), g.Data, sharedDefault)),
                 index.EventPiiFields.GetValueOrDefault(index.EventType.GetValueOrDefault(g.EventId, g.EventId)) ?? EmptyPiiFields))
             .ToList();
@@ -340,7 +343,7 @@ public static class ScenarioVerifier
     /// — a stateView scenario queries by the same value, and a fixed placeholder id
     /// would make such a query miss for a reason unrelated to the projection under
     /// test.</summary>
-    private static string StreamId(Document document, IReadOnlyList<EventRef> given)
+    private static string StreamId(Document document, IReadOnlyList<EventRef> given, string fallback = "scenario")
     {
         foreach (var g in given)
         {
@@ -356,7 +359,7 @@ public static class ScenarioVerifier
                 }
             }
         }
-        return "scenario";
+        return fallback;
     }
 
     private static async Task<IReadOnlyList<ScenarioResult>> RunHarnessAsync(

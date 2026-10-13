@@ -228,6 +228,19 @@ public sealed record SumDerivation(IReadOnlyList<string> AddOnEvents, IReadOnlyL
 /// <see cref="GroupByField"/>, which only picks the entry WITHIN that row's list).</summary>
 public sealed record GroupByDerivation(string GroupByField, IReadOnlyList<Field> Subfields) : Derivation;
 
+/// <summary>Schema 3.16.0 <c>byEvent</c>: a literal per event, keyed by the generated event type name.
+/// Each value is a string, a double or a bool, matching the field's type (checked by the mapper).</summary>
+public sealed record ByEventDerivation(IReadOnlyList<KeyValuePair<string, object>> Values) : Derivation;
+
+/// <summary>Schema 3.16.0 <c>sumOfItems</c>: the sum of <see cref="Subfield"/> (sanitised) over a
+/// <see cref="ReadModel.RowsPerListItem"/> row's items; null unless every item carries a number for it.</summary>
+public sealed record SumOfItemsDerivation(string Subfield) : Derivation;
+
+/// <summary>Schema 3.16.0 <c>readModel.rowsPerListItem</c>, resolved: the list field (a column of the
+/// read model and a field its events carry) and the item subfield naming each item's group (also a
+/// column of the read model, which takes the group's value). Both names sanitised.</summary>
+public sealed record ReadModelRowsPerListItem(string ListField, string GroupBy);
+
 /// <summary>A projection's target read-model table.</summary>
 public sealed class ReadModel
 {
@@ -240,6 +253,10 @@ public sealed class ReadModel
     /// <summary>Schema 3.14.0 <c>rowKeyField</c> (sanitised): the field of each seed and removal
     /// event that names its row, in place of the event's stream id. Null: a row is a stream.</summary>
     public string? RowKeyField { get; init; }
+
+    /// <summary>Schema 3.16.0 <c>rowsPerListItem</c>: a row per group of each stream's list items,
+    /// keyed <c>&lt;stream&gt;|&lt;group&gt;</c>, in place of a row per stream. Null: a row is a stream.</summary>
+    public ReadModelRowsPerListItem? RowsPerListItem { get; init; }
 
     public List<Field> Fields { get; } = [];
 

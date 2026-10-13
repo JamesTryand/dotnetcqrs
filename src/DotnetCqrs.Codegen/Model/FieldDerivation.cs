@@ -43,10 +43,20 @@ public sealed record SumDerivation(string Kind, IReadOnlyList<string> AddOnEvent
 /// matching event payload.</summary>
 public sealed record GroupByDerivation(string Kind, string GroupByField) : FieldDerivation(Kind);
 
+/// <summary>Schema 3.16.0: a literal per event (<c>values</c>, event id to a string, number or
+/// boolean), such as a status. An event not named leaves the field as it was; toggle is the 0/1 case.</summary>
+public sealed record ByEventDerivation(string Kind, IReadOnlyDictionary<string, System.Text.Json.JsonElement> Values) : FieldDerivation(Kind);
+
+/// <summary>Schema 3.16.0, with <c>readModel.rowsPerListItem</c> only: the sum of an item subfield
+/// over the row's own items, absent unless every item carries it.</summary>
+public sealed record SumOfItemsDerivation(string Kind, string Subfield) : FieldDerivation(Kind);
+
 public sealed class FieldDerivationConverter() : DiscriminatedUnionConverter<FieldDerivation>("kind", new Dictionary<string, Type>
 {
     ["toggle"] = typeof(ToggleDerivation),
     ["count"] = typeof(CountDerivation),
     ["sum"] = typeof(SumDerivation),
     ["groupBy"] = typeof(GroupByDerivation),
+    ["byEvent"] = typeof(ByEventDerivation),
+    ["sumOfItems"] = typeof(SumOfItemsDerivation),
 });

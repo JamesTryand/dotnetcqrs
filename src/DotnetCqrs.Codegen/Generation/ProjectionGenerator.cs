@@ -24,6 +24,8 @@ internal static class ProjectionGenerator
 {
     public static GeneratedFile Generate(Domain.Domain domain, Domain.ReadModel readModel)
     {
+        if (readModel.RowsPerListItem is { } perItem)
+            return GenerateRowsPerListItem(domain, readModel, perItem);
         var on = readModel.On.Count > 0 ? readModel.On : domain.Events();
         // SeedOn is only ever narrower than On when a count/sum derivation adds
         // foreign-stream events to On without also making them seed-eligible (see
@@ -39,6 +41,7 @@ internal static class ProjectionGenerator
         var toggleColumns = allColumns.Where(f => f.Derivation is Domain.ToggleDerivation).ToList();
         var rollupColumns = allColumns.Where(f => f.Derivation is Domain.CountDerivation or Domain.SumDerivation).ToList();
         var groupByColumns = allColumns.Where(f => f.Derivation is Domain.GroupByDerivation).ToList();
+        var byEventColumns = allColumns.Where(f => f.Derivation is Domain.ByEventDerivation).ToList();
         var typeName = GenerationSupport.ExportName(readModel.Collection) + "Projection";
         // Schema 3.1.0 match filters on non-pii fields search a normalized copy of the field
         // (a shadow column), because SQL can't apply the normalizer itself.
@@ -140,14 +143,14 @@ internal static class ProjectionGenerator
         if (seedIsUnconditional)
         {
             b.AppendLine();
-            EmitSeedBlock(b, readModel, keyColumn, plainColumns, toggleColumns, rowKey);
+            EmitSeedBlock(b, readModel, keyColumn, plainColumns, toggleColumns, byEventColumns, rowKey);
         }
         else if (seedOn.Count > 0)
         {
             b.AppendLine();
             b.AppendLine($"        if (ev.Type is ({Disjunction(seedOn)}))");
             b.AppendLine("        {");
-            EmitSeedBlock(b, readModel, keyColumn, plainColumns, toggleColumns, rowKey);
+            EmitSeedBlock(b, readModel, keyColumn, plainColumns, toggleColumns, byEventColumns, rowKey);
             b.AppendLine("        }");
         }
         // seedOn.Count == 0: every reacted-to event is a foreign-stream roll-up driver
@@ -231,7 +234,7 @@ internal static class ProjectionGenerator
     /// valid key for it) and applies every plain-copy and toggle column -- exactly the
     /// generic field-merge this generator always did, before any derivation existed.</summary>
     private static void EmitSeedBlock(StringBuilder b, Domain.ReadModel readModel, string keyColumn,
-        IReadOnlyList<Domain.Field> plainColumns, IReadOnlyList<Domain.Field> toggleColumns, string rowKey)
+        IReadOnlyList<Domain.Field> plainColumns, IReadOnlyList<Domain.Field> toggleColumns, IReadOnlyList<Domain.Field> byEventColumns, string rowKey)
     {
         if (plainColumns.Count > 0)
         {
@@ -253,7 +256,7 @@ internal static class ProjectionGenerator
         b.AppendLine("            await insert.ExecuteNonQueryAsync(ct);");
         b.AppendLine("        }");
 
-        if (plainColumns.Count == 0 && toggleColumns.Count == 0) return;
+        if (plainColumns.Count == 0 && toggleColumns.Count == 0 && byEventColumns.Count == 0) return;
 
         b.AppendLine();
         b.AppendLine("        var setClauses = new List<string>();");
@@ -298,6 +301,8 @@ internal static class ProjectionGenerator
                 b.AppendLine($"            setClauses.Add(\"{column} = 0\");");
             }
         }
+        foreach (var field in byEventColumns)
+            EmitByEvent(b, field);
         b.AppendLine("        if (setClauses.Count > 0)");
         b.AppendLine("        {");
         b.AppendLine("            update.CommandText = \"UPDATE " + readModel.Collection + " SET \" + string.Join(\", \", setClauses) + \" WHERE " + keyColumn + " = @id\";");
@@ -400,6 +405,214 @@ internal static class ProjectionGenerator
         b.AppendLine("        update.AddParam(\"@id\", rowKey);");
         b.AppendLine("        await update.ExecuteNonQueryAsync(ct);");
         b.AppendLine("    }");
+    }
+
+    /// <summary>Schema 3.16.0 <c>byEvent</c>: the literal the firing event names, into the field's column
+    /// (a bool as 1/0, as everywhere); an event it doesn't name leaves the column as it was.</summary>
+    private static void EmitByEvent(StringBuilder b, Domain.Field field)
+    {
+        var byEvent = (Domain.ByEventDerivation)field.Derivation!;
+        var column = ToSnakeCase(field.Name);
+        var arms = byEvent.Values.Select(v => $"\"{v.Key}\" => (object?){Literal(v.Value)}, ");
+        b.AppendLine($"        var {field.Name}ByEvent = ev.Type switch {{ {string.Concat(arms)}_ => null }};");
+        b.AppendLine($"        if ({field.Name}ByEvent is not null)");
+        b.AppendLine("        {");
+        b.AppendLine($"            setClauses.Add(\"{column} = @{field.Name}ByEvent\");");
+        b.AppendLine($"            update.AddParam(\"@{field.Name}ByEvent\", {field.Name}ByEvent);");
+        b.AppendLine("        }");
+    }
+
+    private static string Literal(object value) => value switch
+    {
+        string text => System.Text.Json.JsonSerializer.Serialize(text),
+        double number => number.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + "d",
+        bool flag => flag ? "1L" : "0L",
+        _ => throw new InvalidOperationException($"unexpected byEvent literal {value}"),
+    };
+
+    /// <summary>Schema 3.16.0 <c>rowsPerListItem</c>: one row per group of each stream's list items.
+    /// The stream's own facts (its plain, toggle and byEvent fields, and the list itself, which each
+    /// carrying event replaces) are merged into a companion table, <c>&lt;table&gt;_streams</c>, exactly as a
+    /// one-row-per-stream projection merges its row. After each event the stream's rows are rebuilt from
+    /// that: one per distinct group value among the items (an item without one is in no row), keyed
+    /// <c>&lt;stream&gt;|&lt;group&gt;</c>, holding the group's items, any <c>sumOfItems</c>, and a copy of the stream's
+    /// facts. A hidden <c>_stream</c> column says whose rows they are. Deterministic and idempotent, so a
+    /// rebuild (both tables cleared) replays to the same rows.</summary>
+    private static GeneratedFile GenerateRowsPerListItem(Domain.Domain domain, Domain.ReadModel readModel, Domain.ReadModelRowsPerListItem perItem)
+    {
+        var on = readModel.On;
+        var rows = readModel.Collection;
+        var streams = rows + "_streams";
+        var keyColumn = ToSnakeCase(readModel.Key);
+        var groupColumn = ToSnakeCase(perItem.GroupBy);
+        var listColumn = ToSnakeCase(perItem.ListField);
+        var allColumns = readModel.Fields.Where(f => f.Name != readModel.Key).ToList();
+        // The stream's facts: everything but the group (each row's own) and the sums (computed per row).
+        var streamColumns = allColumns.Where(f => f.Name != perItem.GroupBy && f.Derivation is not Domain.SumOfItemsDerivation).ToList();
+        var plainColumns = streamColumns.Where(f => f.Derivation is null).ToList();
+        var toggleColumns = streamColumns.Where(f => f.Derivation is Domain.ToggleDerivation).ToList();
+        var byEventColumns = streamColumns.Where(f => f.Derivation is Domain.ByEventDerivation).ToList();
+        var sumColumns = allColumns.Where(f => f.Derivation is Domain.SumOfItemsDerivation).ToList();
+        var copied = streamColumns.Where(f => f.Name != perItem.ListField).Select(f => ToSnakeCase(f.Name)).ToList();
+        var typeName = GenerationSupport.ExportName(rows) + "Projection";
+
+        string SqlType(Domain.Field field) => field.Derivation switch
+        {
+            Domain.ToggleDerivation t => $"INTEGER DEFAULT {(t.Initial ? 1 : 0)}",
+            _ => GenerationSupport.ColumnType(field.Type),
+        };
+
+        var b = new StringBuilder();
+        b.AppendLine("using System.Text.Json;");
+        b.AppendLine("using System.Text.Json.Nodes;");
+        b.AppendLine("using DotnetCqrs.EventStore;");
+        b.AppendLine("using DotnetCqrs.Projections;");
+        b.AppendLine("using DotnetCqrs.ReadModels;");
+        b.AppendLine();
+        b.AppendLine($"namespace Generated.{GenerationSupport.ExportName(domain.Aggregate)};");
+        b.AppendLine();
+        b.AppendLine($"/// <summary>Projects \"{domain.Aggregate}\" events into the \"{rows}\" table, one row per group of a stream's");
+        b.AppendLine($"/// \"{perItem.ListField}\" items by \"{perItem.GroupBy}\" (schema 3.16.0 rowsPerListItem), keyed <c>&lt;stream&gt;|&lt;{perItem.GroupBy}&gt;</c>.");
+        b.AppendLine($"/// The stream's own facts are merged into \"{streams}\"; after each event its rows are rebuilt from them.</summary>");
+        b.AppendLine($"public sealed class {typeName}(IReadModelStore store) : IProjection");
+        b.AppendLine("{");
+        b.AppendLine($"    public string Name => \"{rows}\";");
+        b.AppendLine($"    public IReadOnlyList<string> Tables => [\"{rows}\", \"{streams}\"];");
+        b.AppendLine();
+        b.AppendLine("    public async Task InitAsync(CancellationToken ct = default)");
+        b.AppendLine("    {");
+        b.AppendLine("        await using (var command = store.Connection.CreateCommand())");
+        b.AppendLine("        {");
+        b.AppendLine("            command.CommandText = \"\"\"");
+        b.AppendLine($"                CREATE TABLE IF NOT EXISTS {rows} (");
+        b.AppendLine($"                    {keyColumn} TEXT PRIMARY KEY,");
+        foreach (var field in allColumns)
+            b.AppendLine($"                    {ToSnakeCase(field.Name)} {(field.Derivation is Domain.SumOfItemsDerivation ? GenerationSupport.ColumnType(field.Type) : SqlType(field))},");
+        b.AppendLine("                    _stream TEXT");
+        b.AppendLine("                )");
+        b.AppendLine("                \"\"\";");
+        b.AppendLine("            await command.ExecuteNonQueryAsync(ct);");
+        b.AppendLine("        }");
+        b.AppendLine("        await using (var command = store.Connection.CreateCommand())");
+        b.AppendLine("        {");
+        b.AppendLine("            command.CommandText = \"\"\"");
+        b.AppendLine($"                CREATE TABLE IF NOT EXISTS {streams} (");
+        b.AppendLine("                    stream_id TEXT PRIMARY KEY" + (streamColumns.Count > 0 ? "," : ""));
+        for (var i = 0; i < streamColumns.Count; i++)
+            b.AppendLine($"                    {ToSnakeCase(streamColumns[i].Name)} {SqlType(streamColumns[i])}{(i < streamColumns.Count - 1 ? "," : "")}");
+        b.AppendLine("                )");
+        b.AppendLine("                \"\"\";");
+        b.AppendLine("            await command.ExecuteNonQueryAsync(ct);");
+        b.AppendLine("        }");
+        b.AppendLine("    }");
+        b.AppendLine();
+        b.AppendLine("    public async Task ApplyAsync(Event ev, CancellationToken ct)");
+        b.AppendLine("    {");
+        b.AppendLine($"        if (ev.Type is not ({Disjunction(on)})) return;");
+        b.AppendLine();
+        b.AppendLine("        // The projection's own writes need a write-guard bypass scope, as every generated projection's do.");
+        b.AppendLine("        await using var bypass = await store.BeginBypassAsync(ct);");
+        if (readModel.RemovedOn.Count > 0)
+        {
+            b.AppendLine();
+            b.AppendLine("        // Schema 3.9.0 removedByEventIds: every row of the event's own stream goes, with its facts.");
+            b.AppendLine($"        if (ev.Type is ({Disjunction(readModel.RemovedOn)}))");
+            b.AppendLine("        {");
+            b.AppendLine($"            await ExecAsync(\"DELETE FROM {rows} WHERE _stream = @id\", ev.AggregateId, ct);");
+            b.AppendLine($"            await ExecAsync(\"DELETE FROM {streams} WHERE stream_id = @id\", ev.AggregateId, ct);");
+            b.AppendLine("            return;");
+            b.AppendLine("        }");
+        }
+        b.AppendLine();
+        // The stream's facts, merged into its row of the streams table as a one-row-per-stream projection merges.
+        var streamTable = new Domain.ReadModel { Collection = streams, Key = "streamId" };
+        EmitSeedBlock(b, streamTable, "stream_id", plainColumns, toggleColumns, byEventColumns, "ev.AggregateId");
+        b.AppendLine();
+        b.AppendLine("        await RegroupAsync(ev.AggregateId, ct);");
+        b.AppendLine("    }");
+        b.AppendLine();
+        b.AppendLine("    /// <summary>Rebuilds the stream's rows from its facts: one per distinct group among its items.</summary>");
+        b.AppendLine("    private async Task RegroupAsync(string stream, CancellationToken ct)");
+        b.AppendLine("    {");
+        b.AppendLine("        string? itemsJson;");
+        b.AppendLine("        await using (var select = store.Connection.CreateCommand())");
+        b.AppendLine("        {");
+        b.AppendLine($"            select.CommandText = \"SELECT {listColumn} FROM {streams} WHERE stream_id = @id\";");
+        b.AppendLine("            select.AddParam(\"@id\", stream);");
+        b.AppendLine("            itemsJson = await select.ExecuteScalarAsync(ct) as string;");
+        b.AppendLine("        }");
+        b.AppendLine($"        await ExecAsync(\"DELETE FROM {rows} WHERE _stream = @id\", stream, ct);");
+        b.AppendLine();
+        b.AppendLine("        var items = (string.IsNullOrEmpty(itemsJson) ? null : JsonNode.Parse(itemsJson) as JsonArray) ?? [];");
+        b.AppendLine("        // An item without a group (its subfield missing, empty or not text) is in no row.");
+        b.AppendLine("        var groups = items.OfType<JsonObject>()");
+        b.AppendLine($"            .Select(item => (Item: item, Group: item[\"{perItem.GroupBy}\"] is JsonValue value && value.TryGetValue<string>(out var group) ? group : null))");
+        b.AppendLine("            .Where(g => !string.IsNullOrEmpty(g.Group))");
+        b.AppendLine("            .GroupBy(g => g.Group!, g => g.Item, StringComparer.Ordinal);");
+        b.AppendLine("        foreach (var group in groups)");
+        b.AppendLine("        {");
+        b.AppendLine("            var groupItems = group.ToList();");
+        b.AppendLine("            await using var insert = store.Connection.CreateCommand();");
+        var insertColumns = new List<string> { keyColumn, "_stream", groupColumn, listColumn };
+        var insertValues = new List<string> { "@key", "@stream", "@group", "@items" };
+        insertColumns.AddRange(sumColumns.Select(f => ToSnakeCase(f.Name)));
+        insertValues.AddRange(sumColumns.Select(f => "@" + f.Name));
+        insertColumns.AddRange(copied);
+        insertValues.AddRange(copied);
+        b.AppendLine($"            insert.CommandText = \"INSERT INTO {rows} ({string.Join(", ", insertColumns)}) SELECT {string.Join(", ", insertValues)} FROM {streams} WHERE stream_id = @stream\";");
+        b.AppendLine("            insert.AddParam(\"@key\", $\"{stream}|{group.Key}\");");
+        b.AppendLine("            insert.AddParam(\"@stream\", stream);");
+        b.AppendLine("            insert.AddParam(\"@group\", group.Key);");
+        b.AppendLine("            insert.AddParam(\"@items\", new JsonArray([.. groupItems.Select(item => item.DeepClone())]).ToJsonString());");
+        foreach (var field in sumColumns)
+        {
+            var sum = (Domain.SumOfItemsDerivation)field.Derivation!;
+            var helper = field.Type == "decimal" ? "SumOfItems" : "SumOfItemsAsNumber";
+            b.AppendLine($"            insert.AddParam(\"@{field.Name}\", {helper}(groupItems, \"{sum.Subfield}\"));");
+        }
+        b.AppendLine("            await insert.ExecuteNonQueryAsync(ct);");
+        b.AppendLine("        }");
+        b.AppendLine("    }");
+        if (sumColumns.Any(f => f.Type == "decimal"))
+        {
+            b.AppendLine();
+            b.AppendLine("    /// <summary>Schema 3.16.0 sumOfItems: null unless every item carries a number for the subfield.</summary>");
+            b.AppendLine("    private static decimal? SumOfItems(IReadOnlyList<JsonObject> items, string subfield)");
+            b.AppendLine("    {");
+            b.AppendLine("        var total = 0m;");
+            b.AppendLine("        foreach (var item in items)");
+            b.AppendLine("        {");
+            b.AppendLine("            if (item[subfield] is not JsonValue value || value.GetValueKind() != JsonValueKind.Number || !value.TryGetValue<decimal>(out var amount)) return null;");
+            b.AppendLine("            total += amount;");
+            b.AppendLine("        }");
+            b.AppendLine("        return total;");
+            b.AppendLine("    }");
+        }
+        if (sumColumns.Any(f => f.Type != "decimal"))
+        {
+            b.AppendLine();
+            b.AppendLine("    /// <summary>Schema 3.16.0 sumOfItems: null unless every item carries a number for the subfield.</summary>");
+            b.AppendLine("    private static double? SumOfItemsAsNumber(IReadOnlyList<JsonObject> items, string subfield)");
+            b.AppendLine("    {");
+            b.AppendLine("        var total = 0d;");
+            b.AppendLine("        foreach (var item in items)");
+            b.AppendLine("        {");
+            b.AppendLine("            if (item[subfield] is not JsonValue value || value.GetValueKind() != JsonValueKind.Number || !value.TryGetValue<double>(out var amount)) return null;");
+            b.AppendLine("            total += amount;");
+            b.AppendLine("        }");
+            b.AppendLine("        return total;");
+            b.AppendLine("    }");
+        }
+        b.AppendLine();
+        b.AppendLine("    private async Task ExecAsync(string sql, string id, CancellationToken ct)");
+        b.AppendLine("    {");
+        b.AppendLine("        await using var command = store.Connection.CreateCommand();");
+        b.AppendLine("        command.CommandText = sql;");
+        b.AppendLine("        command.AddParam(\"@id\", id);");
+        b.AppendLine("        await command.ExecuteNonQueryAsync(ct);");
+        b.AppendLine("    }");
+        b.AppendLine("}");
+        return new GeneratedFile($"{typeName}.cs", b.ToString());
     }
 
     private static string Disjunction(IEnumerable<string> eventTypes) =>

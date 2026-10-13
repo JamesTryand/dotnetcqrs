@@ -827,9 +827,49 @@ public sealed class DocumentMapper
                     subfields.AddRange(BuildFields($"{owner} groupBy subfield", [subfield], defaultRowKeyField, siblings: field.Subfields));
                 }
                 return new Domain.GroupByDerivation(Names.SanitizeName(g.GroupByField), subfields);
+            case Model.ByEventDerivation b:
+                return BuildByEvent(owner, field, b);
+            case Model.SumOfItemsDerivation sumOfItems:
+                // Its subfield is checked against the read model's list in CheckRowsPerListItem.
+                return new Domain.SumOfItemsDerivation(Names.SanitizeName(sumOfItems.Subfield));
             default:
                 throw new InvalidOperationException($"unhandled field derivation kind: {field.Derivation.GetType().Name}");
         }
+    }
+
+    /// <summary>Schema 3.16.0 <c>byEvent</c>: each named event must exist, and each value must suit the
+    /// field's own type (text or a date takes a string, a number a number, a bool a boolean), since the
+    /// value is written into the field's column as it is.</summary>
+    private Domain.ByEventDerivation? BuildByEvent(string owner, Model.Field field, Model.ByEventDerivation derivation)
+    {
+        var type = FieldTypeFolding.Fold(field);
+        var values = new List<KeyValuePair<string, object>>();
+        var ok = true;
+        foreach (var (eventId, value) in derivation.Values.OrderBy(v => v.Key, StringComparer.Ordinal))
+        {
+            if (!TryGetEvent(eventId, out _))
+            {
+                _report.Error($"{owner}: field \"{field.Name}\" byEvent names \"{eventId}\", which is not an event");
+                ok = false;
+                continue;
+            }
+            object? literal = (type, value.ValueKind) switch
+            {
+                ("text" or "date", JsonValueKind.String) => value.GetString()!,
+                ("number" or "decimal", JsonValueKind.Number) => value.GetDouble(),
+                ("bool", JsonValueKind.True) => true,
+                ("bool", JsonValueKind.False) => false,
+                _ => null,
+            };
+            if (literal is null)
+            {
+                _report.Error($"{owner}: field \"{field.Name}\" byEvent value for \"{eventId}\" is not a {type} value, as the field is");
+                ok = false;
+                continue;
+            }
+            values.Add(new(EventTypeName(eventId), literal));
+        }
+        return ok ? new Domain.ByEventDerivation(values) : null;
     }
 
     private string? ResolveRowKeyField(string owner, string fieldName, string? explicitRowKeyField, string? defaultRowKeyField)
@@ -887,6 +927,10 @@ public sealed class DocumentMapper
                     case Model.ToggleDerivation t:
                         foreach (var eid in t.OnEventIds) AddOnEvent(eid, seed: true);
                         foreach (var eid in t.OffEventIds) AddOnEvent(eid, seed: true);
+                        break;
+                    case Model.ByEventDerivation b:
+                        // Schema 3.16.0: same-stream, as a toggle is. An unknown id is reported by BuildByEvent.
+                        foreach (var eid in b.Values.Keys.Where(e => TryGetEvent(e, out _))) AddOnEvent(eid, seed: true);
                         break;
                     case Model.CountDerivation c:
                         foreach (var eid in c.IncrementOnEventIds) AddOnEvent(eid, seed: false);
@@ -948,6 +992,9 @@ public sealed class DocumentMapper
             {
                 Collection = Names.SanitizeName(CollectionName(rm.Name, id)), Key = key, RequiredRole = rm.RequiredRole,
                 RowKeyField = rm.RowKeyField is { } rowKeyField ? Names.SanitizeName(rowKeyField) : null,
+                RowsPerListItem = rm.RowsPerListItem is { } perItem
+                    ? new Domain.ReadModelRowsPerListItem(Names.SanitizeName(perItem.ListField), Names.SanitizeName(perItem.GroupBy))
+                    : null,
                 SelfAccess = rm.SelfAccess is { } selfAccess
                     ? new Domain.ReadModelSelfAccess(Names.SanitizeName(selfAccess.SubjectField), selfAccess.Param)
                     : null,
@@ -1035,6 +1082,7 @@ public sealed class DocumentMapper
             CheckReadAccess(id, readModel, piiColumns);
             if (rm.RowKeyField is not null)
                 CheckRowKeyField(id, rm, seedEventIds.Concat(rm.RemovedByEventIds ?? []).Distinct(), readModel);
+            CheckRowsPerListItem(id, rm, seedEventIds, readModel);
             if (readModel.RemovedOn.Count > 0 && Generation.GenerationSupport.IndexedMatchFilters(readModel).Any())
                 _report.Error($"read model \"{id}\" declares removedByEventIds and a search-indexed pii match filter -- " +
                     "removing a row does not yet remove its search-index entries, so this is refused rather than left stale");
@@ -1170,6 +1218,74 @@ public sealed class DocumentMapper
         if (Generation.GenerationSupport.IndexedMatchFilters(readModel).Any() || Generation.GenerationSupport.HashedMatchFilters(readModel).Any())
             _report.Error($"{owner} declares rowKeyField and a search-indexed pii match filter -- the search and hashed indexes key " +
                 "their entries by stream, so this is refused rather than left to disagree");
+    }
+
+    /// <summary>Schema 3.16.0 <c>rowsPerListItem</c>: each row is a group of a stream's list items, so
+    /// the list must be a list of items the read model declares and its events carry, and the group a
+    /// plain-text subfield of the items that is also a field of the row. What the generated projection
+    /// doesn't do with it is refused rather than half done: count/sum/groupBy rollups (they key rows by
+    /// stream or event field), pii (its rows are copies the erasure path doesn't know), a search index
+    /// (keyed by stream), and rowKeyField. <c>sumOfItems</c> needs it, and a numeric subfield.</summary>
+    private void CheckRowsPerListItem(string id, ReadModelDef rm, IReadOnlyCollection<string> seedEventIds, Domain.ReadModel readModel)
+    {
+        var owner = $"read model \"{id}\"";
+        var fields = rm.Fields ?? [];
+        var perItem = rm.RowsPerListItem;
+        if (perItem is null)
+        {
+            foreach (var field in fields.Where(f => f.Derivation is Model.SumOfItemsDerivation))
+                _report.Error($"{owner}: field \"{field.Name}\" declares sumOfItems, which sums a row's items and needs readModel.rowsPerListItem");
+            return;
+        }
+
+        if (rm.RowKeyField is not null)
+            _report.Error($"{owner} declares rowsPerListItem and rowKeyField -- a row is either a group of a stream's items or named by an event field, not both");
+        foreach (var field in fields)
+        {
+            if (field.Derivation is Model.CountDerivation or Model.SumDerivation or Model.GroupByDerivation)
+                _report.Error($"{owner} declares rowsPerListItem, so field \"{field.Name}\"'s {field.Derivation.Kind} derivation is not supported -- its rows are groups of a stream's items, not rows a rollup can key");
+            if (field.Pii == true || (field.Subfields ?? []).Any(sub => sub.Pii == true))
+                _report.Error($"{owner} declares rowsPerListItem and pii field \"{field.Name}\" -- not supported yet: its rows are copies the erasure path doesn't know");
+        }
+        if (Generation.GenerationSupport.IndexedMatchFilters(readModel).Any() || Generation.GenerationSupport.HashedMatchFilters(readModel).Any())
+            _report.Error($"{owner} declares rowsPerListItem and a search-indexed match filter -- the indexes key their entries by stream");
+
+        var list = fields.FirstOrDefault(f => f.Name == perItem.ListField);
+        if (list is null)
+        {
+            _report.Error($"{owner}: rowsPerListItem.listField \"{perItem.ListField}\" is not a field of the read model");
+            return;
+        }
+        if (list.Cardinality != "list" || list.Subfields is not { Count: > 0 })
+        {
+            _report.Error($"{owner}: rowsPerListItem.listField \"{perItem.ListField}\" must be a list field with subfields, the items it groups");
+            return;
+        }
+        if (!seedEventIds.Any(eventId => TryGetEvent(eventId, out var ev) && ev.Fields?.Any(f => f.Name == perItem.ListField && f.Cardinality == "list") == true))
+            _report.Error($"{owner}: rowsPerListItem.listField \"{perItem.ListField}\" is carried as a list by no event it is built from, so it would have no rows");
+
+        var groupSubfield = list.Subfields.FirstOrDefault(f => f.Name == perItem.GroupBy);
+        if (groupSubfield is null)
+            _report.Error($"{owner}: rowsPerListItem.groupBy \"{perItem.GroupBy}\" is not a subfield of \"{perItem.ListField}\"");
+        else if (groupSubfield.Pii == true || FieldTypeFolding.Fold(groupSubfield) != "text")
+            _report.Error($"{owner}: rowsPerListItem.groupBy \"{perItem.GroupBy}\" must be plain text, as a row's group is");
+        var groupField = fields.FirstOrDefault(f => f.Name == perItem.GroupBy);
+        if (groupField is null)
+            _report.Error($"{owner}: rowsPerListItem.groupBy \"{perItem.GroupBy}\" must also be a field of the read model, to hold each row's group");
+        else if (groupField.Derivation is not null || groupField.Cardinality == "list" || FieldTypeFolding.Fold(groupField) != "text")
+            _report.Error($"{owner}: field \"{perItem.GroupBy}\" holds each row's group (rowsPerListItem.groupBy), so it must be plain, underived text");
+
+        foreach (var field in fields)
+        {
+            if (field.Derivation is not Model.SumOfItemsDerivation sum) continue;
+            var sub = list.Subfields.FirstOrDefault(f => f.Name == sum.Subfield);
+            if (sub is null)
+                _report.Error($"{owner}: field \"{field.Name}\" sumOfItems subfield \"{sum.Subfield}\" is not a subfield of \"{perItem.ListField}\"");
+            else if (FieldTypeFolding.Fold(sub) is not ("number" or "decimal"))
+                _report.Error($"{owner}: field \"{field.Name}\" sumOfItems subfield \"{sum.Subfield}\" must be a number to be summed");
+            if (FieldTypeFolding.Fold(field) is not ("number" or "decimal"))
+                _report.Error($"{owner}: field \"{field.Name}\" declares sumOfItems, so it must be a number");
+        }
     }
 
     private void CheckReadModelPii(string id, ReadModelDef rm, IReadOnlyCollection<string> seedEventIds, string key)
