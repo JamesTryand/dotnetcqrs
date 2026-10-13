@@ -104,6 +104,31 @@ public class RowsPerListItemTests
         Assert.Contains("public IReadOnlyList<string> Tables => [\"invoiceParts\", \"invoiceParts_streams\"];", projection);
     }
 
+    [Fact]
+    public void The_query_route_reads_a_sum_of_items_as_money_not_a_float()
+    {
+        // D30.21: decimal end to end; SQLite holds NUMERIC as a float, so the route reads it back as a decimal.
+        var domain = Assert.Single(DocumentMapper.Map(DocumentLoader.Parse(Example().ToJsonString())).Domains);
+
+        var route = ReadModelQueryGenerator.Generate(domain, domain.ReadModels.Single(r => r.Collection == "invoiceParts")).Source;
+        Assert.Contains("reader.GetName(c) is \"subtotal\" ? reader.GetDecimal(c)", route);
+    }
+
+    [Fact]
+    public void The_query_route_reads_a_decimal_by_event_value_as_money()
+    {
+        var node = Example();
+        node["readModels"]!["invoices"] = JsonNode.Parse("""
+            {"name": "Invoices", "builtFromEventIds": ["invoice-drafted", "invoice-issued"],
+             "fields": [{"name": "invoiceId", "type": "string", "idAttribute": true},
+                        {"name": "fee", "type": "decimal", "derivation": {"kind": "byEvent", "values": {"invoice-issued": 12.5}}}]}
+            """);
+        var domain = Assert.Single(DocumentMapper.Map(DocumentLoader.Parse(node.ToJsonString())).Domains);
+
+        var route = ReadModelQueryGenerator.Generate(domain, domain.ReadModels.Single(r => r.Collection == "invoices")).Source;
+        Assert.Contains("reader.GetName(c) is \"fee\" ? reader.GetDecimal(c)", route);
+    }
+
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task The_schema_example_verifies_every_scenario()
     {
