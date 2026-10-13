@@ -365,4 +365,11 @@ public sealed class Reactor
     /// existing stream, so the id must be the bare source aggregate id, not a derived
     /// one nothing created.</summary>
     public string? IdPrefix { get; init; }
+
+    /// <summary>A cross-aggregate reaction that creates a new target per trigger: the id also carries the triggering
+    /// event's sequence (<c>"fulfill-&lt;orderId&gt;-&lt;sequence&gt;"</c>), so a second trigger on the same source stream
+    /// creates a second target rather than being refused as "already exists", while a redelivery of the same event
+    /// still derives the same id. False for an upsert or update into the target the source stream names, and for a
+    /// same-aggregate reaction: those keep the stream's id.</summary>
+    public bool PerEvent { get; init; }
 }

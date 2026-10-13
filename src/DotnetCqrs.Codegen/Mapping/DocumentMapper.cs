@@ -383,6 +383,7 @@ public sealed class DocumentMapper
             Aggregate = aggregate,
             Command = CommandName(slice.CommandId),
             IdPrefix = crossAggregate ? Names.DeriveId(Names.TypeName(slice.Name, slice.Id)) + "-" : null,
+            PerEvent = isCreate,
         };
         reactor.On.AddRange(triggers);
         GetOrCreateDomain(source).Reactors.Add(reactor);

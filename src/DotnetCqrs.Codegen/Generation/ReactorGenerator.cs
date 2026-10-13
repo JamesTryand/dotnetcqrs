@@ -20,8 +20,10 @@ internal static class ReactorGenerator
         b.AppendLine();
         b.AppendLine($"/// <summary>Reacts to \"{domain.Aggregate}\"'s events by dispatching {reactor.Aggregate}/{reactor.Command}");
         b.AppendLine("/// -- one reaction per triggering event, its payload the causing event's own data");
-        b.AppendLine("/// untouched. The target id is derived from the source event, so a replay hits the");
-        b.AppendLine("/// target's own \"already exists\" rejection instead of dispatching twice -- keep it");
+        b.AppendLine(reactor.PerEvent
+            ? "/// untouched. A new target per triggering event: its id is the source stream's and the event's sequence, so a"
+            : "/// untouched. The target is the one the source stream names: its id is the source stream's, so a");
+        b.AppendLine("/// redelivery hits the target's own \"already exists\" rejection instead of dispatching twice -- keep it");
         b.AppendLine("/// deterministic if you change it.</summary>");
         b.AppendLine($"public sealed class {typeName} : IReactor");
         b.AppendLine("{");
@@ -31,7 +33,8 @@ internal static class ReactorGenerator
         b.AppendLine("    {");
         b.AppendLine($"        if (ev.Type is not ({string.Join(" or ", reactor.On.Select(n => $"\"{n}\""))})) return [];");
         b.AppendLine();
-        b.AppendLine($"        return [new Reaction(\"{reactor.Aggregate}\", \"{reactor.IdPrefix}\" + ev.AggregateId, new Command(\"{reactor.Command}\", ev.Data))];");
+        var id = $"\"{reactor.IdPrefix}\" + ev.AggregateId" + (reactor.PerEvent ? " + \"-\" + ev.Sequence" : "");
+        b.AppendLine($"        return [new Reaction(\"{reactor.Aggregate}\", {id}, new Command(\"{reactor.Command}\", ev.Data))];");
         b.AppendLine("    }");
         b.AppendLine("}");
 

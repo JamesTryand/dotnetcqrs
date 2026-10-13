@@ -6,8 +6,8 @@ namespace Generated.Order;
 
 /// <summary>Reacts to "order"'s events by dispatching order/ShipOrder
 /// -- one reaction per triggering event, its payload the causing event's own data
-/// untouched. The target id is derived from the source event, so a replay hits the
-/// target's own "already exists" rejection instead of dispatching twice -- keep it
+/// untouched. The target is the one the source stream names: its id is the source stream's, so a
+/// redelivery hits the target's own "already exists" rejection instead of dispatching twice -- keep it
 /// deterministic if you change it.</summary>
 public sealed class AutoShipPendingOrdersReactor : IReactor
 {
