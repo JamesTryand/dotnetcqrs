@@ -48,6 +48,7 @@ internal static class ProjectionGenerator
         var shadowFilters = GenerationSupport.ShadowMatchFilters(readModel).ToList();
 
         var b = new StringBuilder();
+        if (rollupColumns.Count > 0 || groupByColumns.Count > 0) b.AppendLine("using System.Globalization;");
         b.AppendLine("using System.Text.Json;");
         if (groupByColumns.Count > 0) b.AppendLine("using System.Text.Json.Nodes;");
         if (shadowFilters.Count > 0) b.AppendLine("using DotnetCqrs.Codegen.Generation;");
@@ -63,7 +64,13 @@ internal static class ProjectionGenerator
         b.AppendLine($"public sealed class {typeName}(IReadModelStore store) : IProjection");
         b.AppendLine("{");
         b.AppendLine($"    public string Name => \"{readModel.Collection}\";");
-        b.AppendLine($"    public IReadOnlyList<string> Tables => [\"{readModel.Collection}\"];");
+        // R2: a rollup's contributions, one per event and column, so its totals are worked out from them (idempotent
+        // under redelivery, and whenever the row is seeded). Part of the projection: a rebuild clears it too.
+        var hasRollups = rollupColumns.Count > 0 || groupByColumns.Count > 0;
+        var contributions = readModel.Collection + "_contributions";
+        b.AppendLine(hasRollups
+            ? $"    public IReadOnlyList<string> Tables => [\"{readModel.Collection}\", \"{contributions}\"];"
+            : $"    public IReadOnlyList<string> Tables => [\"{readModel.Collection}\"];");
         b.AppendLine();
         b.AppendLine("    public async Task InitAsync(CancellationToken ct = default)");
         b.AppendLine("    {");
@@ -110,6 +117,16 @@ internal static class ProjectionGenerator
         b.AppendLine("            )");
         b.AppendLine("            \"\"\";");
         b.AppendLine("        await command.ExecuteNonQueryAsync(ct);");
+        if (hasRollups)
+        {
+            b.AppendLine($"        foreach (var sql in new[] {{ \"CREATE TABLE IF NOT EXISTS {contributions} (event_id TEXT NOT NULL, column_name TEXT NOT NULL, row_key TEXT NOT NULL, group_key TEXT, amount TEXT NOT NULL, seq BIGINT NOT NULL, PRIMARY KEY (event_id, column_name))\",");
+            b.AppendLine($"            \"CREATE INDEX IF NOT EXISTS ix_{contributions}_row ON {contributions} (row_key, seq)\" }})");
+            b.AppendLine("        {");
+            b.AppendLine("            await using var create = store.Connection.CreateCommand();");
+            b.AppendLine("            create.CommandText = sql;");
+            b.AppendLine("            await create.ExecuteNonQueryAsync(ct);");
+            b.AppendLine("        }");
+        }
         b.AppendLine("    }");
         b.AppendLine();
         b.AppendLine("    public async Task ApplyAsync(Event ev, CancellationToken ct)");
@@ -135,6 +152,14 @@ internal static class ProjectionGenerator
             b.AppendLine($"            remove.CommandText = \"DELETE FROM {readModel.Collection} WHERE {keyColumn} = @id\";");
             b.AppendLine($"            remove.AddParam(\"@id\", {rowKey});");
             b.AppendLine("            await remove.ExecuteNonQueryAsync(ct);");
+            if (hasRollups)
+            {
+                // A removed row's contributions go with it: seeded again, it starts afresh.
+                b.AppendLine("            await using var forget = store.Connection.CreateCommand();");
+                b.AppendLine($"            forget.CommandText = \"DELETE FROM {contributions} WHERE row_key = @id\";");
+                b.AppendLine($"            forget.AddParam(\"@id\", {rowKey});");
+                b.AppendLine("            await forget.ExecuteNonQueryAsync(ct);");
+            }
             b.AppendLine("            return;");
             b.AppendLine("        }");
         }
@@ -151,6 +176,9 @@ internal static class ProjectionGenerator
             b.AppendLine($"        if (ev.Type is ({Disjunction(seedOn)}))");
             b.AppendLine("        {");
             EmitSeedBlock(b, readModel, keyColumn, plainColumns, toggleColumns, byEventColumns, rowKey);
+            // A row seeded after some of its contributions arrived (they come from other streams) gets them now. When
+            // every event seeds its own row, a contribution never comes before its row, so there is nothing to catch up.
+            if (hasRollups) b.AppendLine($"            await RecomputeAsync({rowKey}, ct);");
             b.AppendLine("        }");
         }
         // seedOn.Count == 0: every reacted-to event is a foreign-stream roll-up driver
@@ -164,15 +192,15 @@ internal static class ProjectionGenerator
             {
                 case Domain.CountDerivation count:
                     if (count.IncrementOnEvents.Count > 0)
-                        EmitRollup(b, readModel, keyColumn, column, count.RowKeyField, count.IncrementOnEvents, $"{column} + 1");
+                        EmitRollup(b, column, count.RowKeyField, count.IncrementOnEvents, "1m");
                     if (count.DecrementOnEvents.Count > 0)
-                        EmitRollup(b, readModel, keyColumn, column, count.RowKeyField, count.DecrementOnEvents, $"{column} - 1");
+                        EmitRollup(b, column, count.RowKeyField, count.DecrementOnEvents, "-1m");
                     break;
                 case Domain.SumDerivation sum:
                     if (sum.AddOnEvents.Count > 0)
-                        EmitRollup(b, readModel, keyColumn, column, sum.RowKeyField, sum.AddOnEvents, $"{column} + @amount", sum.AmountField, field.Type);
+                        EmitRollup(b, column, sum.RowKeyField, sum.AddOnEvents, $"rollupData[\"{sum.AmountField}\"].GetDecimal()");
                     if (sum.SubtractOnEvents.Count > 0)
-                        EmitRollup(b, readModel, keyColumn, column, sum.RowKeyField, sum.SubtractOnEvents, $"{column} - @amount", sum.AmountField, field.Type);
+                        EmitRollup(b, column, sum.RowKeyField, sum.SubtractOnEvents, $"-rollupData[\"{sum.AmountField}\"].GetDecimal()");
                     break;
             }
         }
@@ -189,19 +217,17 @@ internal static class ProjectionGenerator
                 {
                     case Domain.CountDerivation count:
                         if (count.IncrementOnEvents.Count > 0)
-                            EmitGroupByFold(b, readModel, keyColumn, column, groupKeyColumn, groupBy.GroupByField, count.RowKeyField,
-                                subColumn, count.IncrementOnEvents, "current + 1", amountField: null);
+                            EmitGroupByFold(b, column, groupBy.GroupByField, count.RowKeyField, subColumn, count.IncrementOnEvents, "1m");
                         if (count.DecrementOnEvents.Count > 0)
-                            EmitGroupByFold(b, readModel, keyColumn, column, groupKeyColumn, groupBy.GroupByField, count.RowKeyField,
-                                subColumn, count.DecrementOnEvents, "current - 1", amountField: null);
+                            EmitGroupByFold(b, column, groupBy.GroupByField, count.RowKeyField, subColumn, count.DecrementOnEvents, "-1m");
                         break;
                     case Domain.SumDerivation sum:
                         if (sum.AddOnEvents.Count > 0)
-                            EmitGroupByFold(b, readModel, keyColumn, column, groupKeyColumn, groupBy.GroupByField, sum.RowKeyField,
-                                subColumn, sum.AddOnEvents, "current + amount", sum.AmountField);
+                            EmitGroupByFold(b, column, groupBy.GroupByField, sum.RowKeyField, subColumn, sum.AddOnEvents,
+                                $"groupByData[\"{sum.AmountField}\"].GetDecimal()");
                         if (sum.SubtractOnEvents.Count > 0)
-                            EmitGroupByFold(b, readModel, keyColumn, column, groupKeyColumn, groupBy.GroupByField, sum.RowKeyField,
-                                subColumn, sum.SubtractOnEvents, "current - amount", sum.AmountField);
+                            EmitGroupByFold(b, column, groupBy.GroupByField, sum.RowKeyField, subColumn, sum.SubtractOnEvents,
+                                $"-groupByData[\"{sum.AmountField}\"].GetDecimal()");
                         break;
                     // Domain.ToggleDerivation/null: DocumentMapper never produces a groupBy
                     // subfield with either -- a toggle is rejected at mapping time (see its
@@ -214,8 +240,8 @@ internal static class ProjectionGenerator
 
         b.AppendLine("    }");
 
-        if (groupByColumns.Count > 0)
-            EmitApplyGroupByHelper(b);
+        if (hasRollups)
+            EmitRollupHelpers(b, readModel.Collection, keyColumn, contributions, rollupColumns, groupByColumns);
         if (readModel.RowKeyField is { } rowKeyField)
         {
             // The mapper requires every seed and removal event to carry the field as text.
@@ -310,101 +336,115 @@ internal static class ProjectionGenerator
         b.AppendLine("        }");
     }
 
-    /// <summary>Emits one guarded UPDATE for a <c>count</c>/<c>sum</c> derivation's
-    /// increment/decrement (or add/subtract) event set. <paramref name="rowKeyField"/>
-    /// names the payload field on the firing event to EXTRACT the target row's key
-    /// VALUE from -- it is not itself a column name, and may differ from this read
-    /// model's own key field (the schema's documented override case, e.g. an event
-    /// payload calling it <c>forProjectId</c> while the read model's own key is
-    /// <c>projectId</c>). The WHERE clause always filters on <paramref name="keyColumn"/>,
-    /// this read model's own physical key column, never a column derived from
-    /// <paramref name="rowKeyField"/>'s name -- these events live on a different stream
-    /// by construction (see this file's own doc comment), never <c>ev.AggregateId</c>.
-    /// Row existence is NOT this block's job -- the target row is created by its own
-    /// aggregate's normal seed path (<see cref="EmitSeedBlock"/>); an UPDATE against a
-    /// row that doesn't exist yet is simply a no-op, same as a plain-copy field's WHERE
-    /// would be.</summary>
-    private static void EmitRollup(StringBuilder b, Domain.ReadModel readModel, string keyColumn, string column,
-        string rowKeyField, IReadOnlyList<string> eventTypes, string setExpression, string? amountField = null, string amountType = "number")
+    /// <summary>Emits one count/sum roll-up's contribution: the firing event adds <paramref name="amountExpression"/>
+    /// (1 or -1 for a count, the payload's amount or its negation for a sum) to <paramref name="column"/> of the row
+    /// <paramref name="rowKeyField"/> names (these events live on another stream by construction, so never
+    /// <c>ev.AggregateId</c>). The contribution is recorded once per event and column, and the row's totals are
+    /// worked out from its contributions (R2): a redelivery adds nothing, and a row that doesn't exist yet gets its
+    /// contributions when it is seeded.</summary>
+    private static void EmitRollup(StringBuilder b, string column, string rowKeyField, IReadOnlyList<string> eventTypes, string amountExpression)
     {
         b.AppendLine();
         b.AppendLine($"        if (ev.Type is ({Disjunction(eventTypes)}))");
         b.AppendLine("        {");
         b.AppendLine("            var rollupData = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(ev.Data) ?? [];");
-        b.AppendLine("            await using var rollup = store.Connection.CreateCommand();");
-        b.AppendLine($"            rollup.CommandText = \"UPDATE {readModel.Collection} SET {column} = {setExpression} WHERE {keyColumn} = @rowKey\";");
-        b.AppendLine($"            rollup.AddParam(\"@rowKey\", rollupData[\"{rowKeyField}\"].GetString());");
-        if (amountField is not null)
-            b.AppendLine($"            rollup.AddParam(\"@amount\", {JsonElementAccessor(amountType, $"rollupData[\"{amountField}\"]")});");
-        b.AppendLine("            await rollup.ExecuteNonQueryAsync(ct);");
+        b.AppendLine($"            var rollupKey = rollupData[\"{rowKeyField}\"].GetString()!;");
+        b.AppendLine($"            await ContributeAsync(ev, \"{column}\", rollupKey, null, {amountExpression}, ct);");
+        b.AppendLine("            await RecomputeAsync(rollupKey, ct);");
         b.AppendLine("        }");
     }
 
-    /// <summary>Emits one guarded read-modify-write for a <c>groupBy</c> field's
-    /// subfield fold (schema 2.3.0). Unlike <see cref="EmitRollup"/>'s plain SQL
-    /// arithmetic, the target column holds a JSON array (one object per distinct
-    /// <paramref name="groupByField"/> value), which SQLite has no arithmetic over --
-    /// <see cref="EmitApplyGroupByHelper"/>'s <c>ApplyGroupByAsync</c> does the
-    /// SELECT/parse/find-or-create-entry/UPDATE round trip; this method only supplies
-    /// the per-subfield delta as a closure. <paramref name="rowKeyField"/> plays the
-    /// exact same role as <see cref="EmitRollup"/>'s own (which TOP-LEVEL row the
-    /// contributing event targets) -- <paramref name="groupByField"/> is unrelated,
-    /// naming the payload field whose value picks the entry WITHIN that row's list.</summary>
-    private static void EmitGroupByFold(StringBuilder b, Domain.ReadModel readModel, string keyColumn, string column,
-        string groupKeyColumn, string groupByField, string rowKeyField, string subColumn,
-        IReadOnlyList<string> eventTypes, string deltaExpression, string? amountField)
+    /// <summary>Emits one <c>groupBy</c> subfield's contribution (schema 2.3.0): as <see cref="EmitRollup"/>, recorded
+    /// under <c>&lt;column&gt;.&lt;subfield&gt;</c> with the group <paramref name="groupByField"/> names, so the row's list
+    /// (one entry per group, in the order groups first appeared) is worked out from its contributions too.</summary>
+    private static void EmitGroupByFold(StringBuilder b, string column, string groupByField, string rowKeyField, string subColumn,
+        IReadOnlyList<string> eventTypes, string amountExpression)
     {
         b.AppendLine();
         b.AppendLine($"        if (ev.Type is ({Disjunction(eventTypes)}))");
         b.AppendLine("        {");
         b.AppendLine("            var groupByData = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(ev.Data) ?? [];");
-        if (amountField is not null)
-            b.AppendLine($"            var amount = groupByData[\"{amountField}\"].GetDouble();");
-        b.AppendLine($"            await ApplyGroupByAsync(store, \"{readModel.Collection}\", \"{keyColumn}\", groupByData[\"{rowKeyField}\"].GetString()!,");
-        b.AppendLine($"                \"{column}\", \"{groupKeyColumn}\", groupByData[\"{groupByField}\"].GetString()!, ct, entry =>");
-        b.AppendLine("                {");
-        b.AppendLine($"                    var current = entry[\"{subColumn}\"]?.GetValue<double>() ?? 0;");
-        b.AppendLine($"                    entry[\"{subColumn}\"] = {deltaExpression};");
-        b.AppendLine("                });");
+        b.AppendLine($"            var groupByKey = groupByData[\"{rowKeyField}\"].GetString()!;");
+        b.AppendLine($"            await ContributeAsync(ev, \"{column}.{subColumn}\", groupByKey, groupByData[\"{groupByField}\"].GetString()!, {amountExpression}, ct);");
+        b.AppendLine("            await RecomputeAsync(groupByKey, ct);");
         b.AppendLine("        }");
     }
 
-    /// <summary>Emitted once per file, only when the read model declares at least one
-    /// <c>groupBy</c> field: finds-or-creates the JSON entry (keyed by
-    /// <paramref name="groupKeyColumn"/>'s value) inside <paramref name="column"/>'s
-    /// current array, applies the caller's delta to it, then writes the whole array
-    /// back. Uses <see cref="System.Text.Json.Nodes.JsonNode"/> (mutable), not
-    /// <see cref="JsonElement"/> (immutable, everywhere else in this generator) --
-    /// building a modified nested list needs real mutation, not just reading.</summary>
-    private static void EmitApplyGroupByHelper(StringBuilder b)
+    /// <summary>Emitted once per file when the read model has a roll-up: <c>ContributeAsync</c> records a contribution
+    /// once (by event and column), and <c>RecomputeAsync</c> sets every roll-up column of a row from its contributions,
+    /// summed as decimals (exact; a double column gets the decimal total as a double). A count is a whole number; a
+    /// <c>groupBy</c> list has one entry per group, in the order groups first appeared, each holding the subfields
+    /// that group has contributions for.</summary>
+    private static void EmitRollupHelpers(StringBuilder b, string table, string keyColumn, string contributions,
+        IReadOnlyList<Domain.Field> rollupColumns, IReadOnlyList<Domain.Field> groupByColumns)
     {
         b.AppendLine();
-        b.AppendLine("    private static async Task ApplyGroupByAsync(IReadModelStore store, string table, string keyColumn, string rowKey,");
-        b.AppendLine("        string column, string groupKeyColumn, string groupKeyValue, CancellationToken ct, Action<JsonObject> apply)");
+        b.AppendLine("    private async Task ContributeAsync(Event ev, string column, string rowKey, string? groupKey, decimal amount, CancellationToken ct)");
         b.AppendLine("    {");
-        b.AppendLine("        string? currentJson;");
+        b.AppendLine("        await using var insert = store.Connection.CreateCommand();");
+        b.AppendLine($"        insert.CommandText = \"INSERT INTO {contributions} (event_id, column_name, row_key, group_key, amount, seq) \" +");
+        b.AppendLine($"            \"SELECT @event, @column, @rowKey, @groupKey, @amount, COALESCE(MAX(seq), 0) + 1 FROM {contributions} WHERE true \" +");
+        b.AppendLine("            \"ON CONFLICT (event_id, column_name) DO NOTHING\";");
+        b.AppendLine("        insert.AddParam(\"@event\", ev.Id);");
+        b.AppendLine("        insert.AddParam(\"@column\", column);");
+        b.AppendLine("        insert.AddParam(\"@rowKey\", rowKey);");
+        b.AppendLine("        insert.AddParam(\"@groupKey\", groupKey);");
+        b.AppendLine("        insert.AddParam(\"@amount\", amount.ToString(CultureInfo.InvariantCulture));");
+        b.AppendLine("        await insert.ExecuteNonQueryAsync(ct);");
+        b.AppendLine("    }");
+        b.AppendLine();
+        b.AppendLine("    private async Task RecomputeAsync(string rowKey, CancellationToken ct)");
+        b.AppendLine("    {");
+        b.AppendLine("        var contributions = new List<(string Column, string? Group, decimal Amount)>();");
         b.AppendLine("        await using (var select = store.Connection.CreateCommand())");
         b.AppendLine("        {");
-        b.AppendLine("            select.CommandText = $\"SELECT {column} FROM {table} WHERE {keyColumn} = @id\";");
-        b.AppendLine("            select.AddParam(\"@id\", rowKey);");
-        b.AppendLine("            currentJson = (string?)await select.ExecuteScalarAsync(ct);");
+        b.AppendLine($"            select.CommandText = \"SELECT column_name, group_key, amount FROM {contributions} WHERE row_key = @rowKey ORDER BY seq\";");
+        b.AppendLine("            select.AddParam(\"@rowKey\", rowKey);");
+        b.AppendLine("            await using var reader = await select.ExecuteReaderAsync(ct);");
+        b.AppendLine("            while (await reader.ReadAsync(ct))");
+        b.AppendLine("                contributions.Add((reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1), decimal.Parse(reader.GetString(2), CultureInfo.InvariantCulture)));");
         b.AppendLine("        }");
+        b.AppendLine("        decimal Total(string column) => contributions.Where(c => c.Column == column).Sum(c => c.Amount);");
         b.AppendLine();
-        b.AppendLine("        var rows = string.IsNullOrEmpty(currentJson) ? new JsonArray() : JsonNode.Parse(currentJson)!.AsArray();");
-        b.AppendLine("        var entry = rows.OfType<JsonObject>().FirstOrDefault(o => o[groupKeyColumn]?.GetValue<string>() == groupKeyValue);");
-        b.AppendLine("        if (entry is null)");
-        b.AppendLine("        {");
-        b.AppendLine("            entry = new JsonObject { [groupKeyColumn] = groupKeyValue };");
-        b.AppendLine("            rows.Add(entry);");
-        b.AppendLine("        }");
-        b.AppendLine("        apply(entry);");
-        b.AppendLine();
+        var columns = rollupColumns.Concat(groupByColumns).Select(f => ToSnakeCase(f.Name)).ToList();
         b.AppendLine("        await using var update = store.Connection.CreateCommand();");
-        b.AppendLine("        update.CommandText = $\"UPDATE {table} SET {column} = @value WHERE {keyColumn} = @id\";");
-        b.AppendLine("        update.AddParam(\"@value\", rows.ToJsonString());");
-        b.AppendLine("        update.AddParam(\"@id\", rowKey);");
+        b.AppendLine($"        update.CommandText = \"UPDATE {table} SET {string.Join(", ", columns.Select(c => $"{c} = @{c}"))} WHERE {keyColumn} = @rowKey\";");
+        b.AppendLine("        update.AddParam(\"@rowKey\", rowKey);");
+        foreach (var field in rollupColumns)
+        {
+            var column = ToSnakeCase(field.Name);
+            var value = field.Derivation switch
+            {
+                Domain.CountDerivation => $"(long)Total(\"{column}\")",
+                _ when field.Type == "decimal" => $"Total(\"{column}\")",
+                _ => $"(double)Total(\"{column}\")",
+            };
+            b.AppendLine($"        update.AddParam(\"@{column}\", {value});");
+        }
+        foreach (var field in groupByColumns)
+        {
+            var column = ToSnakeCase(field.Name);
+            var groupKeyColumn = ToSnakeCase(((Domain.GroupByDerivation)field.Derivation!).GroupByField);
+            b.AppendLine($"        update.AddParam(\"@{column}\", Groups(contributions, \"{column}\", \"{groupKeyColumn}\"));");
+        }
         b.AppendLine("        await update.ExecuteNonQueryAsync(ct);");
         b.AppendLine("    }");
+        if (groupByColumns.Count > 0)
+        {
+            b.AppendLine();
+            b.AppendLine("    private static string Groups(List<(string Column, string? Group, decimal Amount)> contributions, string column, string groupKeyColumn)");
+            b.AppendLine("    {");
+            b.AppendLine("        var rows = new JsonArray();");
+            b.AppendLine("        foreach (var group in contributions.Where(c => c.Column.StartsWith(column + \".\", StringComparison.Ordinal)).GroupBy(c => c.Group))");
+            b.AppendLine("        {");
+            b.AppendLine("            var entry = new JsonObject { [groupKeyColumn] = group.Key };");
+            b.AppendLine("            foreach (var subfield in group.GroupBy(c => c.Column[(column.Length + 1)..]))");
+            b.AppendLine("                entry[subfield.Key] = (double)subfield.Sum(c => c.Amount);");
+            b.AppendLine("            rows.Add(entry);");
+            b.AppendLine("        }");
+            b.AppendLine("        return rows.ToJsonString();");
+            b.AppendLine("    }");
+        }
     }
 
     /// <summary>Schema 3.16.0 <c>byEvent</c>: the literal the firing event names, into the field's column
