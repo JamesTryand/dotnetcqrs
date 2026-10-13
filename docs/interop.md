@@ -11,6 +11,12 @@ This milestone is the worked example proving it both ways against a real `pocket
 and — more usefully — writing down what actually has to line up for it to work, which is
 almost entirely **auth**, not protocol.
 
+**Since D40 (after 0.28.0), the call is made outside the engine.** `ExtCallerConsumer` only records the event in
+its `Outbox` (the event stores implement `IExtCallOutbox`); run `consumer.Worker.RunAsync(ct)` beside the engine. The
+worker calls out, retries after `RetryPolicy.Backoff` up to `MaxAttempts`, keeps the response's follow-ups, and
+dispatches them in order. A follow-up refused for a concurrency conflict (`ConcurrencyException`, or a gateway's 409)
+is dispatched again at once up to three times, then retried like a failed call, without calling out again.
+
 ## What already matches, for free
 
 Checked directly, not assumed:

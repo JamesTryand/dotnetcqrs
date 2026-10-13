@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.Text.Json;
 using DotnetCqrs.Consumers;
 using DotnetCqrs.EventStore;
+using DotnetCqrs.ExtCalling;
 using Npgsql;
 
 namespace DotnetCqrs.Postgres;
@@ -26,7 +28,7 @@ namespace DotnetCqrs.Postgres;
 /// reads and pooled connections. Milestone 7 deliberately does <b>not</b> deliver
 /// unrestricted concurrent multi-writer append; see <c>docs/postgres-backend.md</c>.</para>
 /// </summary>
-public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbeatStore
+public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbeatStore, IExtCallOutbox
 {
     private const string Schema = """
         CREATE TABLE IF NOT EXISTS events (
@@ -62,6 +64,21 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
             last_failed  text NOT NULL,
             resolved     boolean NOT NULL DEFAULT false
         );
+
+        -- The external caller's outbox (D40): events waiting for ExtCallOutboxWorker, one per consumer and event.
+        CREATE TABLE IF NOT EXISTS extcall_outbox (
+            id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            consumer        text NOT NULL,
+            event_id        text NOT NULL,
+            event_pos       bigint NOT NULL,
+            event           text NOT NULL,
+            attempts        integer NOT NULL DEFAULT 0,
+            next_attempt_at text NOT NULL,
+            follow_ups      text,
+            dispatched      integer NOT NULL DEFAULT 0,
+            UNIQUE (consumer, event_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_extcall_outbox_due ON extcall_outbox (consumer, next_attempt_at);
 
         -- The writer heartbeat (health/telemetry contract section 5): one row, never an event.
         CREATE TABLE IF NOT EXISTS writer_heartbeat (
@@ -314,6 +331,89 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
         var affected = await command.ExecuteNonQueryAsync(ct);
         if (affected == 0)
             throw new KeyNotFoundException($"dead letter {id} not found");
+    }
+
+    // ---- IExtCallOutbox (D40) ----
+
+    /// <summary>The one timestamp format the outbox uses, so text order is time order.</summary>
+    private static string OutboxTime(DateTimeOffset value) =>
+        value.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture);
+
+    /// <inheritdoc/>
+    public async Task EnqueueAsync(string consumer, Event ev, DateTimeOffset now, CancellationToken ct = default)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO extcall_outbox (consumer, event_id, event_pos, event, next_attempt_at)
+            VALUES (@consumer, @eventId, @eventPos, @event, @now)
+            ON CONFLICT (consumer, event_id) DO NOTHING
+            """;
+        command.Parameters.AddWithValue("@consumer", consumer);
+        command.Parameters.AddWithValue("@eventId", ev.Id);
+        command.Parameters.AddWithValue("@eventPos", ev.Position);
+        command.Parameters.AddWithValue("@event", JsonSerializer.Serialize(ev));
+        command.Parameters.AddWithValue("@now", OutboxTime(now));
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<ExtCallOutboxEntry>> DueAsync(string consumer, DateTimeOffset now, int limit, CancellationToken ct = default)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, consumer, event, attempts, next_attempt_at, follow_ups, dispatched FROM extcall_outbox
+            WHERE consumer = @consumer AND next_attempt_at <= @now ORDER BY event_pos, id LIMIT @limit
+            """;
+        command.Parameters.AddWithValue("@consumer", consumer);
+        command.Parameters.AddWithValue("@now", OutboxTime(now));
+        command.Parameters.AddWithValue("@limit", limit);
+        var entries = new List<ExtCallOutboxEntry>();
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            entries.Add(new ExtCallOutboxEntry(
+                reader.GetInt64(0), reader.GetString(1), JsonSerializer.Deserialize<Event>(reader.GetString(2))!,
+                reader.GetInt32(3), DateTimeOffset.Parse(reader.GetString(4), CultureInfo.InvariantCulture),
+                reader.IsDBNull(5) ? null : reader.GetString(5), reader.GetInt32(6)));
+        return entries;
+    }
+
+    /// <inheritdoc/>
+    public async Task<DateTimeOffset?> NextDueAsync(string consumer, CancellationToken ct = default)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT MIN(next_attempt_at) FROM extcall_outbox WHERE consumer = @consumer";
+        command.Parameters.AddWithValue("@consumer", consumer);
+        return await command.ExecuteScalarAsync(ct) is string text ? DateTimeOffset.Parse(text, CultureInfo.InvariantCulture) : null;
+    }
+
+    /// <inheritdoc/>
+    public async Task UpdateAsync(long id, int attempts, DateTimeOffset nextAttemptAt, string? followUps, int dispatched, CancellationToken ct = default)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE extcall_outbox SET attempts = @attempts, next_attempt_at = @next, follow_ups = @followUps, dispatched = @dispatched
+            WHERE id = @id
+            """;
+        command.Parameters.AddWithValue("@id", id);
+        command.Parameters.AddWithValue("@attempts", attempts);
+        command.Parameters.AddWithValue("@next", OutboxTime(nextAttemptAt));
+        command.Parameters.AddWithValue("@followUps", (object?)followUps ?? DBNull.Value);
+        command.Parameters.AddWithValue("@dispatched", dispatched);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <inheritdoc/>
+    public async Task RemoveAsync(long id, CancellationToken ct = default)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM extcall_outbox WHERE id = @id";
+        command.Parameters.AddWithValue("@id", id);
+        await command.ExecuteNonQueryAsync(ct);
     }
 
     private static Event ReadEvent(NpgsqlDataReader reader) => new(

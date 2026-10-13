@@ -18,6 +18,13 @@ public class ExtCallerTests
         }
     }
 
+    internal sealed class ManualClock(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset _now = now;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan by) => _now += by;
+    }
+
     private static Decider<bool> TaskDecider() => new()
     {
         InitialState = () => false,
@@ -60,11 +67,12 @@ public class ExtCallerTests
         var http = new HttpClient(handler);
         var consumer = new ExtCallerConsumer(new ExtCallerConfig
         {
-            Name = "verify", Rules = [EchoRule()], Http = http, Dispatcher = new InProcessFollowUpDispatcher(registry), DeadLetters = store,
+            Name = "verify", Rules = [EchoRule()], Http = http, Dispatcher = new InProcessFollowUpDispatcher(registry), DeadLetters = store, Outbox = store,
         });
 
         var appended = await store.AppendAsync("order", "o1", 0, [new NewEvent("OrderPlaced", "{}")]);
         await consumer.ApplyAsync(appended[0], CancellationToken.None);
+        await consumer.Worker.ProcessDueAsync();
 
         var taskStream = await store.LoadStreamAsync("task", "verify-o1");
         Assert.Single(taskStream);
@@ -80,11 +88,12 @@ public class ExtCallerTests
         var handler = new FakeHandler(_ => throw new InvalidOperationException("must not be called"));
         var consumer = new ExtCallerConsumer(new ExtCallerConfig
         {
-            Name = "verify", Rules = [EchoRule()], Http = new HttpClient(handler), Dispatcher = new InProcessFollowUpDispatcher(registry), DeadLetters = store,
+            Name = "verify", Rules = [EchoRule()], Http = new HttpClient(handler), Dispatcher = new InProcessFollowUpDispatcher(registry), DeadLetters = store, Outbox = store,
         });
 
         var appended = await store.AppendAsync("order", "o1", 0, [new NewEvent("SomethingElse", "{}")]);
         await consumer.ApplyAsync(appended[0], CancellationToken.None); // must not throw, must not call the handler
+        await consumer.Worker.ProcessDueAsync();
 
         Assert.Empty(await store.ListDeadLettersAsync());
     }
@@ -92,6 +101,7 @@ public class ExtCallerTests
     [Fact]
     public async Task An_always_failing_call_retries_up_to_MaxAttempts_then_dead_letters_without_throwing()
     {
+        var clock = new ManualClock(new DateTimeOffset(2026, 10, 14, 9, 0, 0, TimeSpan.Zero));
         await using var store = await SqliteEventStore.OpenAsync(":memory:");
         var (_, registry) = SetUpRegistry(store);
         var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
@@ -101,12 +111,23 @@ public class ExtCallerTests
             Rules = [EchoRule()],
             Http = new HttpClient(handler),
             Dispatcher = new InProcessFollowUpDispatcher(registry),
-            DeadLetters = store,
-            Retry = new RetryPolicy(MaxAttempts: 3, Backoff: TimeSpan.FromMilliseconds(1)),
+            DeadLetters = store, Outbox = store,
+            Retry = new RetryPolicy(MaxAttempts: 3, Backoff: TimeSpan.FromMinutes(1)),
+            Time = clock,
         });
 
         var appended = await store.AppendAsync("order", "o1", 0, [new NewEvent("OrderPlaced", "{}")]);
         await consumer.ApplyAsync(appended[0], CancellationToken.None); // must not throw
+        Assert.Equal(0, handler.CallCount); // the engine never calls out (D40): the worker does
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            await consumer.Worker.ProcessDueAsync();
+            Assert.Equal(attempt, handler.CallCount);
+            await consumer.Worker.ProcessDueAsync(); // not due again until the back-off has passed
+            Assert.Equal(attempt, handler.CallCount);
+            clock.Advance(TimeSpan.FromMinutes(1));
+        }
+        await consumer.Worker.ProcessDueAsync(); // dead-lettered after the third: nothing left to call
 
         Assert.Equal(3, handler.CallCount);
         var dl = Assert.Single(await store.ListDeadLettersAsync());
@@ -129,11 +150,12 @@ public class ExtCallerTests
         };
         var consumer = new ExtCallerConsumer(new ExtCallerConfig
         {
-            Name = "verify", Rules = [rule], Http = new HttpClient(handler), Dispatcher = new InProcessFollowUpDispatcher(registry), DeadLetters = store,
+            Name = "verify", Rules = [rule], Http = new HttpClient(handler), Dispatcher = new InProcessFollowUpDispatcher(registry), DeadLetters = store, Outbox = store,
         });
 
         var appended = await store.AppendAsync("order", "o1", 0, [new NewEvent("OrderPlaced", "{}")]);
         await consumer.ApplyAsync(appended[0], CancellationToken.None);
+        await consumer.Worker.ProcessDueAsync();
 
         var dl = Assert.Single(await store.ListDeadLettersAsync());
         Assert.Contains("handling response", dl.Error);
@@ -150,11 +172,12 @@ public class ExtCallerTests
         var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("y") });
         var consumer = new ExtCallerConsumer(new ExtCallerConfig
         {
-            Name = "verify", Rules = [EchoRule()], Http = new HttpClient(handler), Dispatcher = new InProcessFollowUpDispatcher(registry), DeadLetters = store,
+            Name = "verify", Rules = [EchoRule()], Http = new HttpClient(handler), Dispatcher = new InProcessFollowUpDispatcher(registry), DeadLetters = store, Outbox = store,
         });
 
         var appended = await store.AppendAsync("order", "o1", 0, [new NewEvent("OrderPlaced", "{}")]);
         await consumer.ApplyAsync(appended[0], CancellationToken.None); // must not throw
+        await consumer.Worker.ProcessDueAsync();
 
         var dl = Assert.Single(await store.ListDeadLettersAsync());
         Assert.Contains("dispatching follow-up", dl.Error);
@@ -170,7 +193,7 @@ public class ExtCallerTests
             Rules = [rule, rule],
             Http = new HttpClient(),
             Dispatcher = null!,
-            DeadLetters = null!,
+            DeadLetters = null!, Outbox = null!,
         }));
     }
 
@@ -179,7 +202,7 @@ public class ExtCallerTests
     {
         var consumer = new ExtCallerConsumer(new ExtCallerConfig
         {
-            Name = "verify", Rules = [], Http = new HttpClient(), Dispatcher = null!, DeadLetters = null!,
+            Name = "verify", Rules = [], Http = new HttpClient(), Dispatcher = null!, DeadLetters = null!, Outbox = null!,
         });
         Assert.Equal("extcall:verify", consumer.Name);
     }

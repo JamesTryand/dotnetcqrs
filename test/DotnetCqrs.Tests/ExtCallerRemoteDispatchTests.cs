@@ -93,7 +93,7 @@ public sealed class ExtCallerRemoteDispatchTests : IAsyncDisposable
             Rules = [EchoRule()],
             Http = new HttpClient(new FakeThirdParty(thirdPartyStatus, thirdPartyBody)),
             Dispatcher = new GatewayFollowUpDispatcher(_gatewayClient),
-            DeadLetters = sourceStore,
+            DeadLetters = sourceStore, Outbox = sourceStore,
         });
 
     [Fact]
@@ -104,6 +104,7 @@ public sealed class ExtCallerRemoteDispatchTests : IAsyncDisposable
 
         var appended = await source.AppendAsync("order", "o1", 0, [new NewEvent("OrderPlaced", "{}")]);
         await consumer.ApplyAsync(appended[0], CancellationToken.None);
+        await consumer.Worker.ProcessDueAsync();
 
         var targetStream = await _targetStore.LoadStreamAsync("task", "verify-o1");
         Assert.Single(targetStream);
@@ -119,6 +120,7 @@ public sealed class ExtCallerRemoteDispatchTests : IAsyncDisposable
 
         var appended = await source.AppendAsync("order", "o1", 0, [new NewEvent("OrderPlaced", "{}")]);
         await consumer.ApplyAsync(appended[0], CancellationToken.None);
+        await consumer.Worker.ProcessDueAsync();
 
         var targetEvent = (await _targetStore.LoadStreamAsync("task", "verify-o1")).Single();
         var meta = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(targetEvent.Metadata);
@@ -138,6 +140,7 @@ public sealed class ExtCallerRemoteDispatchTests : IAsyncDisposable
 
         var appended = await source.AppendAsync("order", "o1", 0, [new NewEvent("OrderPlaced", "{}")]);
         await consumer.ApplyAsync(appended[0], CancellationToken.None); // must not throw
+        await consumer.Worker.ProcessDueAsync();
 
         var dl = Assert.Single(await source.ListDeadLettersAsync());
         Assert.Equal("extcall:verify", dl.Consumer);

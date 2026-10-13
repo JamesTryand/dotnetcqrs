@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using DotnetCqrs.Consumers;
+using DotnetCqrs.ExtCalling;
 
 namespace DotnetCqrs.EventStore;
 
@@ -12,7 +14,7 @@ namespace DotnetCqrs.EventStore;
 /// <see cref="ConsumerEngine"/> needs — checkpoints normally live in the same
 /// store being polled.
 /// </summary>
-public sealed class SqliteEventStore : IEventStore, IDeadLetterStore, IHeartbeatStore
+public sealed class SqliteEventStore : IEventStore, IDeadLetterStore, IHeartbeatStore, IExtCallOutbox
 {
     private const string Schema = """
         CREATE TABLE IF NOT EXISTS events (
@@ -45,6 +47,21 @@ public sealed class SqliteEventStore : IEventStore, IDeadLetterStore, IHeartbeat
             last_failed  TEXT NOT NULL,
             resolved     INTEGER NOT NULL DEFAULT 0
         );
+
+        -- The external caller's outbox (D40): events waiting for ExtCallOutboxWorker, one per consumer and event.
+        CREATE TABLE IF NOT EXISTS extcall_outbox (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            consumer        TEXT NOT NULL,
+            event_id        TEXT NOT NULL,
+            event_pos       INTEGER NOT NULL,
+            event           TEXT NOT NULL,
+            attempts        INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT NOT NULL,
+            follow_ups      TEXT,
+            dispatched      INTEGER NOT NULL DEFAULT 0,
+            UNIQUE (consumer, event_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_extcall_outbox_due ON extcall_outbox (consumer, next_attempt_at);
 
         -- The writer heartbeat (health/telemetry contract section 5): one row, never an event.
         CREATE TABLE IF NOT EXISTS writer_heartbeat (
@@ -381,6 +398,99 @@ public sealed class SqliteEventStore : IEventStore, IDeadLetterStore, IHeartbeat
                     reader.GetInt64(8) != 0));
             }
             return results;
+        }, ct);
+    }
+
+    // ---- IExtCallOutbox (D40) ----
+
+    /// <summary>The one timestamp format the outbox uses, so text order is time order.</summary>
+    private static string OutboxTime(DateTimeOffset value) =>
+        value.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture);
+
+    public async Task EnqueueAsync(string consumer, Event ev, DateTimeOffset now, CancellationToken ct = default)
+    {
+        if (_readOnly) throw new ReadOnlyStoreException("enqueue an external call");
+        await Locked(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO extcall_outbox (consumer, event_id, event_pos, event, next_attempt_at)
+                VALUES ($consumer, $eventId, $eventPos, $event, $now)
+                ON CONFLICT (consumer, event_id) DO NOTHING
+                """;
+            command.Parameters.AddWithValue("$consumer", consumer);
+            command.Parameters.AddWithValue("$eventId", ev.Id);
+            command.Parameters.AddWithValue("$eventPos", ev.Position);
+            command.Parameters.AddWithValue("$event", JsonSerializer.Serialize(ev));
+            command.Parameters.AddWithValue("$now", OutboxTime(now));
+            await command.ExecuteNonQueryAsync(ct);
+        }, ct);
+    }
+
+    public async Task<IReadOnlyList<ExtCallOutboxEntry>> DueAsync(string consumer, DateTimeOffset now, int limit, CancellationToken ct = default)
+    {
+        return await Locked(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = """
+                SELECT id, consumer, event, attempts, next_attempt_at, follow_ups, dispatched FROM extcall_outbox
+                WHERE consumer = $consumer AND next_attempt_at <= $now ORDER BY event_pos, id LIMIT $limit
+                """;
+            command.Parameters.AddWithValue("$consumer", consumer);
+            command.Parameters.AddWithValue("$now", OutboxTime(now));
+            command.Parameters.AddWithValue("$limit", limit);
+            var entries = new List<ExtCallOutboxEntry>();
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                entries.Add(new ExtCallOutboxEntry(
+                    reader.GetInt64(0), reader.GetString(1), JsonSerializer.Deserialize<Event>(reader.GetString(2))!,
+                    reader.GetInt32(3), DateTimeOffset.Parse(reader.GetString(4), CultureInfo.InvariantCulture),
+                    reader.IsDBNull(5) ? null : reader.GetString(5), reader.GetInt32(6)));
+            return (IReadOnlyList<ExtCallOutboxEntry>)entries;
+        }, ct);
+    }
+
+    public async Task<DateTimeOffset?> NextDueAsync(string consumer, CancellationToken ct = default)
+    {
+        return await Locked(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT MIN(next_attempt_at) FROM extcall_outbox WHERE consumer = $consumer";
+            command.Parameters.AddWithValue("$consumer", consumer);
+            return await command.ExecuteScalarAsync(ct) is string text
+                ? DateTimeOffset.Parse(text, CultureInfo.InvariantCulture)
+                : (DateTimeOffset?)null;
+        }, ct);
+    }
+
+    public async Task UpdateAsync(long id, int attempts, DateTimeOffset nextAttemptAt, string? followUps, int dispatched, CancellationToken ct = default)
+    {
+        if (_readOnly) throw new ReadOnlyStoreException("update an external call");
+        await Locked(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = """
+                UPDATE extcall_outbox SET attempts = $attempts, next_attempt_at = $next, follow_ups = $followUps, dispatched = $dispatched
+                WHERE id = $id
+                """;
+            command.Parameters.AddWithValue("$id", id);
+            command.Parameters.AddWithValue("$attempts", attempts);
+            command.Parameters.AddWithValue("$next", OutboxTime(nextAttemptAt));
+            command.Parameters.AddWithValue("$followUps", (object?)followUps ?? DBNull.Value);
+            command.Parameters.AddWithValue("$dispatched", dispatched);
+            await command.ExecuteNonQueryAsync(ct);
+        }, ct);
+    }
+
+    public async Task RemoveAsync(long id, CancellationToken ct = default)
+    {
+        if (_readOnly) throw new ReadOnlyStoreException("remove an external call");
+        await Locked(async () =>
+        {
+            await using var command = _connection.CreateCommand();
+            command.CommandText = "DELETE FROM extcall_outbox WHERE id = $id";
+            command.Parameters.AddWithValue("$id", id);
+            await command.ExecuteNonQueryAsync(ct);
         }, ct);
     }
 
