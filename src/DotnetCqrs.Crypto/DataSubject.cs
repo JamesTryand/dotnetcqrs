@@ -127,8 +127,10 @@ public static class DataSubject
     private static NewEvent Event(string type, object payload) =>
         new(type, JsonSerializer.Serialize(payload, Json));
 
+    // Time arrives on the command (DeciderRegistry stamps it); a decider never reads the clock, so a command with no
+    // time is refused rather than given the current one.
     private static string At(Command cmd) =>
-        string.IsNullOrEmpty(cmd.Now) ? DateTimeOffset.UtcNow.ToString("O") : cmd.Now;
+        string.IsNullOrEmpty(cmd.Now) ? throw new InvalidOperationException("the command carries no time (Command.Now)") : cmd.Now;
 
     /// <summary>The pure decider. The stream id IS the subject id, so nothing in the
     /// payload has to name it — and no PII ever reaches this aggregate.</summary>
