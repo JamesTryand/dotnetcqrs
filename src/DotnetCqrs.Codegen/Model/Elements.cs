@@ -54,7 +54,8 @@ public sealed record ReadModelDef(
     ReadModelSelfAccessDef? SelfAccess = null,
     IReadOnlyList<string>? RemovedByEventIds = null,
     string? RowKeyField = null,
-    ReadModelRowsPerListItemDef? RowsPerListItem = null);
+    ReadModelRowsPerListItemDef? RowsPerListItem = null,
+    string? Projection = null);
 
 /// <summary><c>readModel.rowsPerListItem</c> (schema 3.16.0): one row per group of a stream's list
 /// items. <c>ListField</c> is a list the read model's events carry (each carrying event replaces the

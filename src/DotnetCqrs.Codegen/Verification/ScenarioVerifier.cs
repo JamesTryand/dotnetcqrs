@@ -58,6 +58,12 @@ public static class ScenarioVerifier
                     case StateChangeScenario or ErrorScenario:
                         BuildCommandScenario(document, index, slice, scenario, results, commandScenarios, handOutcomes);
                         break;
+                    case StateViewScenario viewScenario when IsHandBuilt(document, viewScenario.When.ReadModelId):
+                        // Schema 3.17.0: a hand-written projection builds it, which only a host check can run.
+                        results.Add(new ScenarioResult(slice.Id, viewScenario.Id, viewScenario.Name, "stateView", Passed: false, Skipped: false,
+                            $"read model \"{viewScenario.When.ReadModelId}\" is built by a hand-written projection (projection: hand); a host check runs it",
+                            ByHand: true));
+                        break;
                     case StateViewScenario viewScenario:
                         BuildViewScenario(document, index, slice, viewScenario, results, viewScenarios);
                         break;
@@ -76,7 +82,8 @@ public static class ScenarioVerifier
     /// <summary>Verifies a document against a host's own deciders (D30, T3): command scenarios
     /// run in-process against what <paramref name="host"/> registers, so the values a scenario
     /// declares check the host's real arithmetic and rules, not a generated stand-in that only
-    /// copies the command's payload. View scenarios still run against the generated projections.</summary>
+    /// copies the command's payload. View scenarios run against the generated projections, or the host's own
+    /// where it gives one (<see cref="HostDeciders.Projections"/>, schema 3.17.0).</summary>
     public static async Task<IReadOnlyList<ScenarioResult>> VerifyAsync(
         Document document, MappingResult mapped, HostDeciders host, CancellationToken ct = default)
     {
@@ -90,7 +97,17 @@ public static class ScenarioVerifier
                 if (scenario is StateChangeScenario or ErrorScenario)
                     BuildCommandScenario(document, index, slice, scenario, results, commandScenarios);
                 else if (scenario is StateViewScenario viewScenario)
-                    BuildViewScenario(document, index, slice, viewScenario, results, viewScenarios);
+                {
+                    var readModelId = viewScenario.When.ReadModelId;
+                    // Schema 3.17.0: the host's own projection, where it gives one; a hand-built read model needs one.
+                    if (host.Projections.TryGetValue(readModelId, out var hostProjection))
+                        BuildViewScenario(document, index, slice, viewScenario, results, viewScenarios, hostProjection);
+                    else if (IsHandBuilt(document, readModelId))
+                        results.Add(new ScenarioResult(slice.Id, viewScenario.Id, viewScenario.Name, "stateView", Passed: false, Skipped: false,
+                            $"read model \"{readModelId}\" declares projection: hand, but the host gives no projection for it (HostDeciders.Projections)"));
+                    else
+                        BuildViewScenario(document, index, slice, viewScenario, results, viewScenarios);
+                }
             }
 
         foreach (var scenario in commandScenarios)
@@ -191,9 +208,12 @@ public static class ScenarioVerifier
             handOutcomes?.GetValueOrDefault((aggregate, generatedName))));
     }
 
+    private static bool IsHandBuilt(Document document, string readModelId) =>
+        document.ReadModels?.GetValueOrDefault(readModelId)?.Projection == "hand";
+
     private static void BuildViewScenario(
         Document document, GeneratedIndex index, Slice slice, StateViewScenario scenario,
-        List<ScenarioResult> results, List<ViewScenarioInput> viewScenarios)
+        List<ScenarioResult> results, List<ViewScenarioInput> viewScenarios, Type? hostProjection = null)
     {
         var readModelId = scenario.When.ReadModelId;
         if (!index.ReadModel.TryGetValue(readModelId, out var info))
@@ -204,7 +224,9 @@ public static class ScenarioVerifier
         }
 
         var aggregatePascal = GenerationSupport.ExportName(info.Aggregate);
-        var projectionTypeName = $"Generated.{aggregatePascal}.{GenerationSupport.ExportName(info.Collection)}Projection";
+        // A host's own projection is named in full, so the harness loads it from the host's assembly.
+        var projectionTypeName = hostProjection?.AssemblyQualifiedName
+            ?? $"Generated.{aggregatePascal}.{GenerationSupport.ExportName(info.Collection)}Projection";
 
         var queryParamNames = new HashSet<string>();
         if (scenario.When.QueryParams is { ValueKind: JsonValueKind.Object } qp)

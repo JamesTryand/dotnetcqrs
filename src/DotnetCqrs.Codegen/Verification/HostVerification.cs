@@ -16,6 +16,11 @@ namespace DotnetCqrs.Codegen.Verification;
 /// </summary>
 public sealed record HostDeciders(Action<DeciderRegistry, IKmsClient> Register)
 {
+    /// <summary>The host's own projections, by read model id (schema 3.17.0): a view scenario of a read model named
+    /// here runs this projection rather than the generated one. Required for a read model declaring
+    /// <c>projection: "hand"</c>. Each type takes an <c>IReadModelStore</c> and writes the read model's table.</summary>
+    public IReadOnlyDictionary<string, Type> Projections { get; init; } = new Dictionary<string, Type>();
+
     public string DefaultActor { get; init; } = "scenario";
     public string DefaultAt { get; init; } = "2026-01-01T09:00:00.000Z";
 }
