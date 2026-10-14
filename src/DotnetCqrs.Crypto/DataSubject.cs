@@ -141,30 +141,74 @@ public static class DataSubject
         Evolve = Evolve,
     };
 
-    private static IReadOnlyList<NewEvent> Decide(DataSubjectState state, Command cmd)
+    /// <summary>The commands a subject in <paramref name="state"/> would accept and record an event for (timesheets'
+    /// paradigm audit U5): what a screen may offer, before the caller's role is considered (that is the host's command
+    /// authorization). The same rules <c>Decide</c> applies, from the same function, so a screen built on this never
+    /// offers what the subject would refuse or ignore. Only what depends on the payload is left out: a hold restated
+    /// with the same reason and review date records nothing, and a reason must be short.</summary>
+    public static IReadOnlyList<string> AcceptedCommands(DataSubjectState state) =>
+        Commands.Where(command => Judge(state, command).Verdict == Verdict.Records).ToList();
+
+    private enum Verdict { Records, Ignored, Refused }
+
+    /// <summary>What a subject in <paramref name="state"/> does with <paramref name="command"/>, before reading its
+    /// payload: records an event, ignores it (idempotent: nothing new to record), or refuses it, and why.</summary>
+    private static (Verdict Verdict, string? Refusal) Judge(DataSubjectState state, string command)
     {
-        switch (cmd.Name)
+        const string alreadyErased = "the subject has already been erased";
+        var open = state.Stage is ErasureStage.Requested or ErasureStage.Held;
+        return command switch
         {
             // Idempotent: erasing an already-erased subject appends nothing rather than
             // throwing, so a retried erasure request is harmless.
+            EraseSubjectCommand when state.Erased => (Verdict.Ignored, null),
+            EraseSubjectCommand when state.LegalHold => (Verdict.Refused, "a legal hold is in place; the subject cannot be erased"),
+            EraseSubjectCommand => (Verdict.Records, null),
+
+            // A request is idempotent while one is open, and meaningless after erasure.
+            RequestErasureCommand when state.Erased || state.Stage != ErasureStage.None => (Verdict.Ignored, null),
+            RequestErasureCommand => (Verdict.Records, null),
+
+            HoldErasureCommand when state.Erased => (Verdict.Refused, alreadyErased),
+            HoldErasureCommand when !open => (Verdict.Refused, "there is no open erasure request to hold"),
+            HoldErasureCommand => (Verdict.Records, null),
+
+            ApproveErasureCommand when state.Erased => (Verdict.Refused, alreadyErased),
+            ApproveErasureCommand when state.Stage == ErasureStage.Approved => (Verdict.Ignored, null),
+            ApproveErasureCommand when !open => (Verdict.Refused, "there is no open erasure request to approve"),
+            ApproveErasureCommand when state.LegalHold => (Verdict.Refused, "a legal hold is in place; the request cannot be approved"),
+            ApproveErasureCommand => (Verdict.Records, null),
+
+            PlaceLegalHoldCommand when state.Erased => (Verdict.Refused, alreadyErased),
+            PlaceLegalHoldCommand when state.LegalHold => (Verdict.Ignored, null),
+            PlaceLegalHoldCommand => (Verdict.Records, null),
+
+            ReleaseLegalHoldCommand when !state.LegalHold => (Verdict.Ignored, null),
+            ReleaseLegalHoldCommand => (Verdict.Records, null),
+
+            _ => (Verdict.Refused, $"unknown command: {command}"),
+        };
+    }
+
+    private static IReadOnlyList<NewEvent> Decide(DataSubjectState state, Command cmd)
+    {
+        var (verdict, refusal) = Judge(state, cmd.Name);
+        if (verdict == Verdict.Refused) throw new InvalidOperationException(refusal);
+        if (verdict == Verdict.Ignored) return [];
+
+        switch (cmd.Name)
+        {
             case EraseSubjectCommand:
-                if (state.Erased) return [];
-                if (state.LegalHold) throw new InvalidOperationException("a legal hold is in place; the subject cannot be erased");
                 return [new NewEvent(SubjectErasedEvent, "{}")];
 
             case RequestErasureCommand:
             {
-                // A request is idempotent while one is open, and meaningless after erasure.
-                if (state.Erased || state.Stage != ErasureStage.None) return [];
                 var reason = CheckedReason(ReadCommand(cmd).Reason, required: false);
                 return [Event(ErasureRequestedEvent, new { requestedBy = cmd.Actor, reason, requestedAt = At(cmd) })];
             }
 
             case HoldErasureCommand:
             {
-                if (state.Erased) throw new InvalidOperationException("the subject has already been erased");
-                if (state.Stage is not (ErasureStage.Requested or ErasureStage.Held))
-                    throw new InvalidOperationException("there is no open erasure request to hold");
                 var payload = ReadCommand(cmd);
                 var reason = CheckedReason(payload.Reason, required: true);
                 // The same hold restated (a redelivered event, a policy re-run): nothing new to record.
@@ -173,26 +217,18 @@ public static class DataSubject
             }
 
             case ApproveErasureCommand:
-                if (state.Erased) throw new InvalidOperationException("the subject has already been erased");
-                if (state.Stage == ErasureStage.Approved) return [];
-                if (state.Stage is not (ErasureStage.Requested or ErasureStage.Held))
-                    throw new InvalidOperationException("there is no open erasure request to approve");
-                if (state.LegalHold) throw new InvalidOperationException("a legal hold is in place; the request cannot be approved");
                 return [Event(ErasureApprovedEvent, new { approvedBy = cmd.Actor, approvedAt = At(cmd) })];
 
             case PlaceLegalHoldCommand:
             {
-                if (state.Erased) throw new InvalidOperationException("the subject has already been erased");
-                if (state.LegalHold) return [];
                 var reason = CheckedReason(ReadCommand(cmd).Reason, required: true);
                 return [Event(LegalHoldPlacedEvent, new { reason, placedBy = cmd.Actor, placedAt = At(cmd) })];
             }
 
             case ReleaseLegalHoldCommand:
-                if (!state.LegalHold) return [];
                 return [Event(LegalHoldReleasedEvent, new { releasedBy = cmd.Actor, releasedAt = At(cmd) })];
 
-            default:
+            default: // Judge has refused it already
                 throw new InvalidOperationException($"unknown command: {cmd.Name}");
         }
     }
