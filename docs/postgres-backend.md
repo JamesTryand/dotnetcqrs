@@ -214,10 +214,8 @@ parity"):
 
 - **Postgres streaming replication** — that would be an alternative to Milestone 3's
   LiteFS story, not part of this milestone.
-- **`LISTEN`/`NOTIFY`** — `IPollSource.Subscribe` stays in-process-only (a best-effort
-  nudge that shortens poll latency); the durable path is still `PollAsync` + a
-  checkpoint. `LISTEN/NOTIFY` as the cross-process nudge is a real improvement and a
-  clear future addition.
+- ~~**`LISTEN`/`NOTIFY`**~~ **Added 2026-10-14** (timesheets' paradigm audit R7; see
+  "Commits wake every node" below).
 - **A migration framework** — the schema is one idempotent `CREATE TABLE IF NOT EXISTS`
   block, same as `SqliteEventStore.Schema`.
 - ~~A generated Postgres host.~~ **Reversed 2026-09-25:** the goal became one generated
@@ -226,6 +224,37 @@ parity"):
   name SQLite.
 - **Sharing a database between backends**, or between `dotnetcqrs` and `pocketcqrs` — the
   same non-goal `docs/interop.md` records, for the same reasons.
+
+## Commits wake every node
+
+Added 2026-10-14 (timesheets' paradigm audit R7). Before, another node's engine heard of
+a new event only on its one-second tick, because `IPollSource.Subscribe` is in-process.
+
+- **Every append sends `pg_notify`** on the log's channel (`CommitChannel`,
+  `dotnetcqrs_events_<schema>`, hashed when the schema name is too long for a channel),
+  inside the append's transaction, so the notice is delivered when the commit is, and
+  never for a rolled-back append. One channel per log, so two logs in one database don't
+  wake each other.
+- **`IPollSource.SubscribeToCommits`** is the engine's wake-up. The default (SQLite) hears
+  this process only; `PostgresEventStore` also keeps one pooled session `LISTEN`ing while
+  anyone subscribes, and wakes the subscribers on each notice. `Subscribe` is unchanged and
+  still in-process only, so a reader's `cqrs_events_appended_total` doesn't count the
+  writer's events.
+- **A lost session** (a server restart, a failover, an idle-session timeout) wakes the
+  engine; its pass's next successful `PollAsync` listens again. Nothing loops or sleeps for
+  it: while the database is unreachable the polls fail, and the tick paces them as before.
+  A session refused before it listened wakes nobody, so a refused `LISTEN` is tried once
+  per tick.
+- **A wake-up is not a delivery.** It may come twice for one commit (the appending
+  process wakes itself as well as hearing its notice) or not at all (a notice sent while
+  nobody listened); `PollAsync` and the checkpoint remain the durable path, and the
+  listener wakes its subscribers once as it starts listening, for anything committed in
+  between.
+
+Tests: `PostgresCommitPushTests` (an engine with a one-hour tick receives another store's
+commit; a terminated listening session listens again after the next pass; one channel per
+log; a 63-character schema name). Mutation-checked, 7 mutants. `PostgresExtCallOutboxTests`
+runs the external caller's outbox (D40) on Postgres for the first time (6 mutants).
 
 ## `created` is stored as text
 

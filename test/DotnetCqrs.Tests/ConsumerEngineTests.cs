@@ -540,6 +540,31 @@ public class ConsumerEngineTests
         Assert.True(await engine.StopAsync(TimeSpan.FromSeconds(1)));
     }
 
+    /// <summary>Registration order is when, not a guarantee (R6, documented on <see cref="ConsumerEngine.Register(IConsumer)"/>):
+    /// an event committed while a later consumer runs is applied by it in this pass, and by the earlier one only in the
+    /// next, so for a while the later consumer is ahead. Here the later consumer's own reaction commits it.</summary>
+    [Fact]
+    public async Task A_consumer_later_in_the_order_can_be_ahead_of_an_earlier_one()
+    {
+        await using var store = await SeededStoreAsync("c1", 1);
+        var engine = new ConsumerEngine(store, store);
+        var earlier = new RecordingConsumer("earlier");
+        var later = new DelegateConsumer("later", async ev =>
+        {
+            if (ev.Type == "Ticked")
+                await store.AppendAsync("reaction", "r1", 0, [new NewEvent("Reacted", "{}")]);
+        });
+        engine.Register(earlier);
+        engine.Register(later);
+
+        await engine.RunOnceAsync();
+
+        Assert.Equal(1, await store.CheckpointAsync("earlier"));
+        Assert.Equal(2, await store.CheckpointAsync("later"));
+        await engine.RunOnceAsync();
+        Assert.Equal(2, await store.CheckpointAsync("earlier"));
+    }
+
     private sealed class DelegateConsumer(string name, Func<Event, Task> apply) : IConsumer
     {
         public string Name { get; } = name;

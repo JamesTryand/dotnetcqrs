@@ -69,9 +69,11 @@ public sealed class HashedIndexKey(string name)
 /// old consumer, and deletes the old version's rows. A host that is never restarted keeps
 /// working on its pinned version; nothing polls.</para>
 ///
-/// <para>Ordering: the live consumer is registered before the rebuild, and the engine runs a
-/// pass in registration order. So by the time the rebuild applies an event, the live consumer
-/// has already drained that pass, and "reached the live position" means caught up.</para>
+/// <para>Switching over rests on positions, not on the engine's order: the rebuild switches once
+/// it has applied the event the live consumer last applied, so the new version is never behind
+/// the one it replaces, whichever ran first. (The live consumer is registered first, so in a
+/// quiet log it is done before the rebuild runs; registration order is only when, ConsumerEngine
+/// R6.) Events after that point the rebuild goes on applying as the only consumer.</para>
 /// </summary>
 public static class HashedSearchIndexRegistration
 {

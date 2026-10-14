@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using DotnetCqrs.Consumers;
 using DotnetCqrs.EventStore;
@@ -99,8 +101,23 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
 
     private readonly Lock _subscribersLock = new();
     private readonly List<Action<Event>> _subscribers = [];
+    private readonly List<Action> _commitSubscribers = [];
 
-    private PostgresEventStore(NpgsqlDataSource dataSource) => _dataSource = dataSource;
+    // The commit push (R7): one session LISTENs on CommitChannel while anyone subscribes to commits. Null while not
+    // listening; started by SubscribeToCommits, and again by the next successful poll once it has been lost.
+    private readonly Lock _listenLock = new();
+    private Task? _listening;
+    private readonly CancellationTokenSource _closing = new();
+
+    private PostgresEventStore(NpgsqlDataSource dataSource, string commitChannel)
+    {
+        _dataSource = dataSource;
+        CommitChannel = commitChannel;
+    }
+
+    /// <summary>The <c>NOTIFY</c> channel every append to this log signals on as it commits (R7): one per log, named
+    /// after the schema the log is in, so two logs in one database don't wake each other.</summary>
+    public string CommitChannel { get; }
 
     /// <summary>Opens (creating the schema if necessary) the event store on the database
     /// named by <paramref name="connectionString"/>.</summary>
@@ -110,8 +127,20 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
 
         await using (var schema = dataSource.CreateCommand(Schema))
             await schema.ExecuteNonQueryAsync(ct);
+        await using var currentSchema = dataSource.CreateCommand("SELECT current_schema()");
+        var schemaName = (string)(await currentSchema.ExecuteScalarAsync(ct))!;
 
-        return new PostgresEventStore(dataSource);
+        return new PostgresEventStore(dataSource, ChannelFor(schemaName));
+    }
+
+    /// <summary>A channel name is an identifier, at most 63 bytes; a schema name long enough to overflow it is
+    /// hashed instead.</summary>
+    private static string ChannelFor(string schema)
+    {
+        const string prefix = "dotnetcqrs_events_";
+        return Encoding.UTF8.GetByteCount(prefix + schema) <= 63
+            ? prefix + schema
+            : prefix + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(schema)))[..40];
     }
 
     /// <inheritdoc/>
@@ -144,6 +173,14 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
             appended.Add(await InsertAsync(connection, transaction, aggregate, aggregateId, sequence, newEvent, ct));
         }
 
+        // Delivered to every listening session when, and only if, the transaction commits (R7).
+        await using (var notify = new NpgsqlCommand("SELECT pg_notify(@channel, @position)", connection, transaction))
+        {
+            notify.Parameters.AddWithValue("@channel", CommitChannel);
+            notify.Parameters.AddWithValue("@position", appended[^1].Position.ToString(CultureInfo.InvariantCulture));
+            await notify.ExecuteNonQueryAsync(ct);
+        }
+
         await transaction.CommitAsync(ct);
         foreach (var ev in appended)
             Publish(ev);
@@ -163,9 +200,12 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
         command.Parameters.AddWithValue("@limit", limit);
 
         var results = new List<Event>();
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
-            results.Add(ReadEvent(reader));
+        await using (var reader = await command.ExecuteReaderAsync(ct))
+            while (await reader.ReadAsync(ct))
+                results.Add(ReadEvent(reader));
+        // The database answered, so a lost listener can listen again (R7). The engine polls on every pass, its tick
+        // included, so nothing waits or retries for this: the pass after a loss restores it.
+        EnsureListening();
         return results;
     }
 
@@ -195,6 +235,74 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
             {
                 try { handler(ev); } catch { /* best-effort */ }
             });
+        // This process's own commit: no need to wait for its notification to come back.
+        WakeCommitSubscribers();
+    }
+
+    /// <summary>Hears every process's commits to this log, through <c>LISTEN</c> on <see cref="CommitChannel"/>, as
+    /// well as this process's own (R7).</summary>
+    public void SubscribeToCommits(Action handler)
+    {
+        lock (_subscribersLock)
+            _commitSubscribers.Add(handler);
+        EnsureListening();
+    }
+
+    private void WakeCommitSubscribers()
+    {
+        List<Action> subscribers;
+        lock (_subscribersLock)
+            subscribers = [.. _commitSubscribers];
+        foreach (var handler in subscribers)
+        {
+            try { handler(); } catch { /* best-effort */ }
+        }
+    }
+
+    private void EnsureListening()
+    {
+        lock (_listenLock)
+        {
+            if (_listening is not null || _closing.IsCancellationRequested) return;
+            lock (_subscribersLock)
+                if (_commitSubscribers.Count == 0) return;
+            _listening = Task.Run(() => ListenAsync(_closing.Token));
+        }
+    }
+
+    /// <summary>Listens on one session until it is lost or the store is disposed. Once listening it wakes the
+    /// subscribers, for anything committed while nobody was, and again when the session is lost, so the pass that
+    /// wakes listens again (<see cref="PollAsync"/>). A session that never got as far as listening wakes nobody, so a
+    /// refused <c>LISTEN</c> is tried once per pass, on the engine's tick, not in a loop.</summary>
+    private async Task ListenAsync(CancellationToken ct)
+    {
+        var listened = false;
+        try
+        {
+            await using var connection = await _dataSource.OpenConnectionAsync(ct);
+            connection.Notification += (_, _) => WakeCommitSubscribers();
+            await using (var listen = connection.CreateCommand())
+            {
+                listen.CommandText = $"LISTEN \"{CommitChannel.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+                await listen.ExecuteNonQueryAsync(ct);
+            }
+            listened = true;
+            WakeCommitSubscribers();
+            while (true)
+                await connection.WaitAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception)
+        {
+            // Lost (the server restarted or ended the session), or never got that far; see the summary.
+        }
+        lock (_listenLock)
+            _listening = null;
+        if (listened)
+            WakeCommitSubscribers();
     }
 
     /// <inheritdoc/>
@@ -457,5 +565,15 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
             : null;
     }
 
-    public ValueTask DisposeAsync() => _dataSource.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        await _closing.CancelAsync();
+        Task? listening;
+        lock (_listenLock)
+            listening = _listening;
+        if (listening is not null)
+            await listening;
+        _closing.Dispose();
+        await _dataSource.DisposeAsync();
+    }
 }

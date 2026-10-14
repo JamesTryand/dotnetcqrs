@@ -162,6 +162,25 @@ back. The stream is Server-Sent Events, and a burst of changes collapses
 into one re-run. After a command, show the command's own outcome; the view
 follows when its push arrives.
 
+### How the engine wakes, and what its order promises
+
+The engine runs a pass whenever its event source reports a commit
+(`IPollSource.SubscribeToCommits`), with a one-second tick as the fallback.
+On SQLite that is this process's own commits. On Postgres it is every
+process's commits to the same log: each append sends `pg_notify` as it
+commits, and the store keeps one session `LISTEN`ing, so a reader node's
+engine (and its live views) wakes at once when the writer commits. A SQLite
+reader on a LiteFS replica has nothing to listen to: its copy of the log
+changes underneath it, so it sees new events on its tick, after LiteFS's own
+1-2 seconds of replication.
+
+A pass catches the consumers up one after another, in registration order.
+That is scheduling, not a guarantee: each consumer reads to the head as it
+is when that consumer runs, so one later in the order can be ahead of one
+earlier, and a blocked or rebuilding consumer is behind everyone. A consumer
+never reads what another consumer wrote to decide something; it folds what
+it needs from the events it is given.
+
 ## Storage: SQLite, twice
 
 Both the event store and the read models are SQLite, but treat them as two

@@ -71,7 +71,15 @@ public sealed class ConsumerEngine : IReadModelChangeFeed
     /// <see cref="ConsumerState.Behind"/> rather than <see cref="ConsumerState.Current"/>.</summary>
     public TimeSpan LagThreshold { get; init; } = DefaultLagThreshold;
 
-    /// <summary>Adds a consumer, checkpointed in the engine's store.</summary>
+    /// <summary>Adds a consumer, checkpointed in the engine's store.
+    ///
+    /// <para><b>Registration order is when, not a guarantee</b> (timesheets' paradigm audit R6). A pass catches each
+    /// consumer up in turn, in the order they were registered, so in a quiet log an earlier consumer is done before a
+    /// later one starts. But each consumer reads to the head <i>as it is when that consumer runs</i>: an event committed
+    /// while a later consumer runs is applied by it in this pass and by the earlier ones only in the next. So a later
+    /// consumer can be ahead of an earlier one, and a blocked or rebuilding consumer is behind everyone. Never read what
+    /// another consumer wrote to decide something (a projection's table, inside an automation): fold what you need
+    /// from the events you are given, in order, as a process manager does.</para></summary>
     public void Register(IConsumer consumer) => Register(consumer, _checkpoints);
 
     /// <summary>Adds a consumer whose position lives in <paramref name="checkpoints"/>
@@ -135,13 +143,14 @@ public sealed class ConsumerEngine : IReadModelChangeFeed
     }
 
     /// <summary>Runs the catch-up loop until <paramref name="ct"/> is cancelled: immediately
-    /// on every committed event (in-process nudge) and on a slow tick fallback (covers
-    /// restarts and missed nudges). Returns the background task; do not await it to
+    /// on every commit the source reports (<see cref="IPollSource.SubscribeToCommits"/>: this
+    /// process's, and on Postgres every process's) and on a slow tick fallback (covers
+    /// restarts and missed wake-ups). Returns the background task; do not await it to
     /// completion except as part of shutdown; <see cref="StopAsync"/> is the orderly way to end it,
     /// and cancelling <paramref name="ct"/> the abrupt one.</summary>
     public Task StartAsync(CancellationToken ct)
     {
-        _source.Subscribe(_ => _nudge.Writer.TryWrite(0));
+        _source.SubscribeToCommits(() => _nudge.Writer.TryWrite(0));
         _hardStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         ct = _hardStop.Token;
 

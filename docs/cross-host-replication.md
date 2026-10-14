@@ -100,6 +100,15 @@ Keeping the write path at the application layer also keeps it visible to
 `verify.sh`'s own assertions (a `400` domain rejection has to survive the forward,
 which a transport-level proxy wouldn't distinguish from a success).
 
+## How a reader learns of new events
+
+A reader's engine runs a pass on its one-second tick. Nothing pushes to it: LiteFS changes
+the reader's copy of `events.db` underneath it, and SQLite tells no other process about a
+commit, so there is nothing to listen to. (A reader on Postgres is woken by the writer's
+commit through `LISTEN/NOTIFY`; see `postgres-backend.md`, "Commits wake every node".) A
+write forwarded to the writer is answered by the writer, with the command's own outcome;
+the reader's views follow within LiteFS's lag plus the tick.
+
 ## Static lease, not consul
 
 `lease.type: static` in both `litefs-primary.yml`/`litefs-secondary.yml` — one fixed
