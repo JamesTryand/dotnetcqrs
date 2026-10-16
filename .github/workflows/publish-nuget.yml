@@ -57,6 +57,7 @@ jobs:
             src/DotnetCqrs.Codegen.Cli/DotnetCqrs.Codegen.Cli.csproj \
             src/DotnetCqrs.Postgres/DotnetCqrs.Postgres.csproj \
             src/DotnetCqrs.Telemetry.Nats/DotnetCqrs.Telemetry.Nats.csproj \
+            src/DotnetCqrs.Retention/DotnetCqrs.Retention.csproj \
           ; do
             dotnet pack "$proj" --configuration Release --no-build \
               -p:Version=${{ steps.version.outputs.value }} -o artifacts

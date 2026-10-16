@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackageId>JamesTryand.DotnetCqrs.Retention</PackageId>
+    <Description>Governed erasure for dotnetcqrs, opt-in: a request to erase a data subject is held while a retention duty or a legal hold stands, and approved once none does. A business-owned retention policy, and a governor that drives each request to a conclusion. Builds on the core dataSubject aggregate in DotnetCqrs.Crypto and only adds refusals to it.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DotnetCqrs.Abstractions\DotnetCqrs.Abstractions.csproj" />
+    <ProjectReference Include="..\DotnetCqrs.Crypto\DotnetCqrs.Crypto.csproj" />
+  </ItemGroup>
+
+</Project>

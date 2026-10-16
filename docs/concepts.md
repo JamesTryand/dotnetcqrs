@@ -260,11 +260,12 @@ erasure, because anyone who can ask the key service for a hash could
 confirm a guessed value against them.
 
 **A request is not an erasure.** Erasure is permanent, and a business is often
-*required* to keep records (payroll, tax, employment) for years. So a request
-goes through a governed lifecycle instead of destroying a key on the spot:
-request, then a retention check that either holds it (with a review date) or
-approves it, then the erasure. A legal hold blocks it whatever the policy says.
-See [Governed erasure](erasure-governance.md).
+*required* by law to keep some records about a person for a time. So the core
+`dataSubject` aggregate records a request (`RequestErasure`) separately from
+the erasure (`EraseSubject`), and something has to decide the request. The
+opt-in `DotnetCqrs.Retention` module does: a retention check either holds the
+request (with a review date) or approves it, then the erasure follows; a legal
+hold blocks it whatever the policy says. See [Governed erasure](retention.md).
 
 ## A CRUD → `dotnetcqrs` glossary
 

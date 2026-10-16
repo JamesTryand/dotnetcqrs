@@ -24,6 +24,9 @@ public sealed class DeciderRegistry(IEventStore store)
     public JsonSerializerOptions PayloadSerializerOptions { get; set; } =
         new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
+    /// <summary>Whether a decider is registered for <paramref name="aggregate"/>.</summary>
+    public bool IsRegistered(string aggregate) => _deciders.ContainsKey(aggregate);
+
     /// <summary>Adds a decider for an aggregate name.</summary>
     public void Register<TState>(string aggregate, Decider<TState> decider) =>
         Register(aggregate, decider, protector: null);

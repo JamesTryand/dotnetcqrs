@@ -43,6 +43,9 @@ Go/PocketBase to C#/.NET rather than wrapping it.
   Erasing the subject destroys the key, so every copy of their data becomes
   unreadable without editing the log. See
   [Concepts](docs/concepts.md#personal-data-crypto-shredding-instead-of-delete).
+- **Governed erasure** (`DotnetCqrs.Retention`, opt-in): a request to erase is
+  held while a retention duty or a legal hold stands, and approved once none
+  does, by a business-owned retention policy. See [Governed erasure](docs/retention.md).
 - **Codegen** (`DotnetCqrs.Codegen`, CLI `dotnetcqrs-codegen`): generate a
   starting decider, projections, reactors and query routes straight from an
   [EventModeling](https://eventmodeling.org) document — wiring correct,

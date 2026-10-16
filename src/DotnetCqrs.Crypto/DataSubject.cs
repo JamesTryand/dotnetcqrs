@@ -4,117 +4,64 @@ using DotnetCqrs.EventStore;
 
 namespace DotnetCqrs.Crypto;
 
-/// <summary>The data subject's own lifecycle — the one aggregate this library ships
-/// rather than generates. Erasure is not a property of any domain aggregate that happens
-/// to mention a person: an order's stream holds the customer's email, but the customer
-/// outlives the order and is erased independently of it. So the subject gets its own
-/// stream, and every reader learns of an erasure the way it learns anything else: from an
-/// event.
+/// <summary>The core fold of a data subject's stream. A module's events leave it unchanged.
 ///
-/// <para>Deliberately NOT modelled in <c>eventmodelschema</c> (user's call, 2026-09-22):
-/// erasure is a runtime concern, not something a document has to describe. If documents
-/// ever need to say something about it, that decision gets revisited.</para>
-///
-/// <para><b><see cref="DataSubjectState.Erased"/> is terminal.</b> A person who is erased
-/// and later returns is a NEW subject with a new id and a new key, never a reactivation
-/// of this one. Reuse would gain nothing (destroying a key destroys its material, so a
-/// new key of the same name cannot read the old ciphertext) and would undo the erasure by
-/// reconnecting a live identity to the history erasure severed. Subject ids are therefore
-/// opaque, never derived from personal data, and never reused.</para>
-/// </summary>
+/// <para><b><see cref="Erased"/> is terminal.</b> A person who is erased and later returns is a NEW subject with a new
+/// id and a new key, never a reactivation of this one. Reuse would gain nothing (destroying a key destroys its
+/// material, so a new key of the same name cannot read the old ciphertext) and would undo the erasure by reconnecting
+/// a live identity to the history erasure severed. Subject ids are therefore opaque, never derived from personal data,
+/// and never reused.</para></summary>
+/// <param name="Requested">An erasure has been asked for. It stays true: only the erasure closes a request.</param>
 public sealed record DataSubjectState(
     bool Erased,
-    ErasureStage Stage = ErasureStage.None,
-    bool LegalHold = false,
+    bool Requested = false,
     string? RequestedBy = null,
-    string? Reason = null,
-    DateTimeOffset? ReviewAt = null);
+    string? Reason = null);
 
-/// <summary>Where a subject's erasure request stands. <see cref="Erased"/> is terminal.</summary>
-public enum ErasureStage
-{
-    /// <summary>No request has been made.</summary>
-    None,
-    /// <summary>Asked for; the retention policy has not ruled yet.</summary>
-    Requested,
-    /// <summary>The retention policy (or an administrator) said "not yet", with a review date.</summary>
-    Held,
-    /// <summary>Cleared to erase; the key is about to be destroyed.</summary>
-    Approved,
-    /// <summary>The key has been destroyed. Terminal.</summary>
-    Erased,
-}
-
-/// <summary>Registration and constants for the built-in data-subject aggregate.
+/// <summary>The data subject's own aggregate, the one this library ships rather than generates. Erasure is not a
+/// property of any domain aggregate that happens to mention a person: an order's stream holds the customer's email,
+/// but the customer outlives the order and is erased independently of it. So the subject gets its own stream (the
+/// stream id IS the subject id), and every reader learns of an erasure the way it learns anything else: from an event.
 ///
-/// <para><b>Erasure is governed, not automatic</b> (venture-overview decision 0013): a request
-/// is not an erasure. The lifecycle is
-/// <c>None -> Requested -> (Held &lt;-&gt; Requested) -> Approved -> Erased</c>, and an explicit
-/// <b>legal hold</b> blocks approval and erasure whatever the stage. Whether a request may be
-/// approved is a retention-policy question (<see cref="IRetentionPolicy"/>), answered outside this
-/// pure decider by <see cref="ErasureGovernor"/>.</para>
+/// <para>The core has two commands (cqrs-system-contracts subject-erasure). <c>RequestErasure</c> records that
+/// someone asked, and erases nothing. <c>EraseSubject</c> records the erasure, which <see cref="SubjectKeyDestroyer"/>
+/// turns into a destroyed key. What decides a request (retention duties, legal holds, review dates) belongs to a
+/// module, such as DotnetCqrs.Retention, which registers its own decider over this one and only ever adds refusals
+/// to it. With no module, nothing acts on a request until the host does.</para>
 ///
-/// <para><b>What the events carry.</b> Reasons are stored in the clear on the subject's own
-/// stream and survive the erasure (the stream is never rewritten), so a reason must be a short
-/// code or non-identifying text, never personal data. Reasons over
-/// <see cref="MaxReasonLength"/> characters are refused.</para>
-///
-/// <para><c>EraseSubject</c> remains as the administrator's direct override (and as the
-/// governor's final step). It is refused while a legal hold stands, and hosts must authorise it
-/// as tightly as the other commands: a command with no declared policy is allowed by the generic
-/// gateway.</para></summary>
+/// <para>A reason is stored in the clear on the subject's own stream and survives the erasure (the stream is never
+/// rewritten), so it must be a short code or non-identifying text, never personal data. Reasons over
+/// <see cref="MaxReasonLength"/> characters are refused. Hosts must authorise these commands: the gateway refuses
+/// every one of them until an authorization policy is wired.</para></summary>
 public static class DataSubject
 {
     public const string Aggregate = "dataSubject";
 
     // Commands.
     public const string RequestErasureCommand = "RequestErasure";
-    public const string HoldErasureCommand = "HoldErasure";
-    public const string ApproveErasureCommand = "ApproveErasure";
-    public const string PlaceLegalHoldCommand = "PlaceLegalHold";
-    public const string ReleaseLegalHoldCommand = "ReleaseLegalHold";
     public const string EraseSubjectCommand = "EraseSubject";
 
     // Events.
     public const string ErasureRequestedEvent = "ErasureRequested";
-    public const string ErasureHeldEvent = "ErasureHeld";
-    public const string ErasureApprovedEvent = "ErasureApproved";
-    public const string LegalHoldPlacedEvent = "LegalHoldPlaced";
-    public const string LegalHoldReleasedEvent = "LegalHoldReleased";
     public const string SubjectErasedEvent = "SubjectErased";
 
     /// <summary>Longest reason accepted.</summary>
     public const int MaxReasonLength = 200;
 
-    /// <summary>The roles that should be allowed to send each command through a host's gateway, for a host whose
-    /// roles are named <c>manager</c> and <c>administrator</c>: anyone who runs the roster may <i>ask</i>; only an
-    /// administrator may hold, approve, place or release a legal hold, or erase directly. Null for a command this
-    /// aggregate does not have. <b>A host must declare a policy for every one of these:</b> the generic gateway
-    /// allows a command that has none, and erasure cannot be undone.</summary>
-    public static IReadOnlyList<string>? DefaultRequiredRoles(string command) => command switch
-    {
-        RequestErasureCommand => ["manager", "administrator"],
-        HoldErasureCommand or ApproveErasureCommand or PlaceLegalHoldCommand or ReleaseLegalHoldCommand or EraseSubjectCommand => ["administrator"],
-        _ => null,
-    };
-
-    /// <summary>Every command the aggregate accepts, for hosts that declare policies in a loop.</summary>
-    public static IReadOnlyList<string> Commands { get; } =
-        [RequestErasureCommand, HoldErasureCommand, ApproveErasureCommand, PlaceLegalHoldCommand, ReleaseLegalHoldCommand, EraseSubjectCommand];
+    /// <summary>Every command the core aggregate accepts.</summary>
+    public static IReadOnlyList<string> Commands { get; } = [RequestErasureCommand, EraseSubjectCommand];
 
     private static readonly JsonSerializerOptions Json =
         new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true };
 
-    private sealed record CommandPayload(string? Reason, DateTimeOffset? ReviewAt);
+    private sealed record Payload(string? Reason, string? RequestedBy);
 
-    private sealed record EventPayload(string? RequestedBy, string? Reason, DateTimeOffset? ReviewAt);
+    private static Payload Read(string? json) =>
+        string.IsNullOrWhiteSpace(json) ? new Payload(null, null) : JsonSerializer.Deserialize<Payload>(json, Json) ?? new Payload(null, null);
 
-    private static CommandPayload ReadCommand(Command cmd) =>
-        string.IsNullOrWhiteSpace(cmd.Payload)
-            ? new CommandPayload(null, null)
-            : JsonSerializer.Deserialize<CommandPayload>(cmd.Payload, Json) ?? new CommandPayload(null, null);
-
-    private static string? CheckedReason(string? reason, bool required)
+    /// <summary>Trims a reason, and refuses one that is missing (when <paramref name="required"/>) or too long to be a
+    /// code. An empty reason is no reason.</summary>
+    public static string? CheckReason(string? reason, bool required)
     {
         reason = reason?.Trim();
         if (string.IsNullOrEmpty(reason))
@@ -124,16 +71,12 @@ public static class DataSubject
         return reason;
     }
 
-    private static NewEvent Event(string type, object payload) =>
-        new(type, JsonSerializer.Serialize(payload, Json));
-
-    // Time arrives on the command (DeciderRegistry stamps it); a decider never reads the clock, so a command with no
-    // time is refused rather than given the current one.
-    private static string At(Command cmd) =>
+    /// <summary>The command's time. It arrives on the command (DeciderRegistry stamps it); a decider never reads the
+    /// clock, so a command with no time is refused rather than given the current one.</summary>
+    public static string TimeOf(Command cmd) =>
         string.IsNullOrEmpty(cmd.Now) ? throw new InvalidOperationException("the command carries no time (Command.Now)") : cmd.Now;
 
-    /// <summary>The pure decider. The stream id IS the subject id, so nothing in the
-    /// payload has to name it — and no PII ever reaches this aggregate.</summary>
+    /// <summary>The core's pure decider. No personal data ever reaches this aggregate.</summary>
     public static Decider<DataSubjectState> Create() => new()
     {
         InitialState = () => new DataSubjectState(false),
@@ -141,119 +84,50 @@ public static class DataSubject
         Evolve = Evolve,
     };
 
-    /// <summary>The commands a subject in <paramref name="state"/> would accept and record an event for (timesheets'
-    /// paradigm audit U5): what a screen may offer, before the caller's role is considered (that is the host's command
-    /// authorization). The same rules <c>Decide</c> applies, from the same function, so a screen built on this never
-    /// offers what the subject would refuse or ignore. Only what depends on the payload is left out: a hold restated
-    /// with the same reason and review date records nothing, and a reason must be short.</summary>
-    public static IReadOnlyList<string> AcceptedCommands(DataSubjectState state) =>
-        Commands.Where(command => Judge(state, command).Verdict == Verdict.Records).ToList();
-
-    private enum Verdict { Records, Ignored, Refused }
-
-    /// <summary>What a subject in <paramref name="state"/> does with <paramref name="command"/>, before reading its
-    /// payload: records an event, ignores it (idempotent: nothing new to record), or refuses it, and why.</summary>
-    private static (Verdict Verdict, string? Refusal) Judge(DataSubjectState state, string command)
+    /// <summary>Registers the core aggregate, unless a <c>dataSubject</c> decider is registered already: a module that
+    /// governs erasure registers its own, which adds refusals to this one, and the order a host wires them in must not
+    /// drop them. A host that stores any <c>field.pii</c> value needs this, or nothing can ever be erased.</summary>
+    public static void RegisterDataSubjects(this DeciderRegistry registry)
     {
-        const string alreadyErased = "the subject has already been erased";
-        var open = state.Stage is ErasureStage.Requested or ErasureStage.Held;
-        return command switch
-        {
-            // Idempotent: erasing an already-erased subject appends nothing rather than
-            // throwing, so a retried erasure request is harmless.
-            EraseSubjectCommand when state.Erased => (Verdict.Ignored, null),
-            EraseSubjectCommand when state.LegalHold => (Verdict.Refused, "a legal hold is in place; the subject cannot be erased"),
-            EraseSubjectCommand => (Verdict.Records, null),
-
-            // A request is idempotent while one is open, and meaningless after erasure.
-            RequestErasureCommand when state.Erased || state.Stage != ErasureStage.None => (Verdict.Ignored, null),
-            RequestErasureCommand => (Verdict.Records, null),
-
-            HoldErasureCommand when state.Erased => (Verdict.Refused, alreadyErased),
-            HoldErasureCommand when !open => (Verdict.Refused, "there is no open erasure request to hold"),
-            HoldErasureCommand => (Verdict.Records, null),
-
-            ApproveErasureCommand when state.Erased => (Verdict.Refused, alreadyErased),
-            ApproveErasureCommand when state.Stage == ErasureStage.Approved => (Verdict.Ignored, null),
-            ApproveErasureCommand when !open => (Verdict.Refused, "there is no open erasure request to approve"),
-            ApproveErasureCommand when state.LegalHold => (Verdict.Refused, "a legal hold is in place; the request cannot be approved"),
-            ApproveErasureCommand => (Verdict.Records, null),
-
-            PlaceLegalHoldCommand when state.Erased => (Verdict.Refused, alreadyErased),
-            PlaceLegalHoldCommand when state.LegalHold => (Verdict.Ignored, null),
-            PlaceLegalHoldCommand => (Verdict.Records, null),
-
-            ReleaseLegalHoldCommand when !state.LegalHold => (Verdict.Ignored, null),
-            ReleaseLegalHoldCommand => (Verdict.Records, null),
-
-            _ => (Verdict.Refused, $"unknown command: {command}"),
-        };
+        if (!registry.IsRegistered(Aggregate)) registry.Register(Aggregate, Create());
     }
 
-    private static IReadOnlyList<NewEvent> Decide(DataSubjectState state, Command cmd)
-    {
-        var (verdict, refusal) = Judge(state, cmd.Name);
-        if (verdict == Verdict.Refused) throw new InvalidOperationException(refusal);
-        if (verdict == Verdict.Ignored) return [];
+    /// <summary>The core commands a subject in <paramref name="state"/> would accept and record an event for: what a
+    /// screen may offer, before the caller's role is considered.</summary>
+    public static IReadOnlyList<string> AcceptedCommands(DataSubjectState state) =>
+        state.Erased ? [] : state.Requested ? [EraseSubjectCommand] : [RequestErasureCommand, EraseSubjectCommand];
 
+    /// <summary>Decides a core command. A module deciding the same aggregate calls this for these two once its own
+    /// refusals have passed.</summary>
+    public static IReadOnlyList<NewEvent> Decide(DataSubjectState state, Command cmd)
+    {
         switch (cmd.Name)
         {
             case EraseSubjectCommand:
-                return [new NewEvent(SubjectErasedEvent, "{}")];
+                // Idempotent: a retried erasure appends nothing rather than throwing.
+                return state.Erased ? [] : [new NewEvent(SubjectErasedEvent, "{}")];
 
             case RequestErasureCommand:
             {
-                var reason = CheckedReason(ReadCommand(cmd).Reason, required: false);
-                return [Event(ErasureRequestedEvent, new { requestedBy = cmd.Actor, reason, requestedAt = At(cmd) })];
+                // Idempotent while one is open, meaningless after erasure.
+                if (state.Erased || state.Requested) return [];
+                var at = TimeOf(cmd);
+                var reason = CheckReason(Read(cmd.Payload).Reason, required: false);
+                return [new NewEvent(ErasureRequestedEvent, JsonSerializer.Serialize(new { requestedBy = cmd.Actor, reason, requestedAt = at }, Json))];
             }
 
-            case HoldErasureCommand:
-            {
-                var payload = ReadCommand(cmd);
-                var reason = CheckedReason(payload.Reason, required: true);
-                // The same hold restated (a redelivered event, a policy re-run): nothing new to record.
-                if (state.Stage == ErasureStage.Held && state.Reason == reason && state.ReviewAt == payload.ReviewAt) return [];
-                return [Event(ErasureHeldEvent, new { reason, reviewAt = payload.ReviewAt, heldBy = cmd.Actor, heldAt = At(cmd) })];
-            }
-
-            case ApproveErasureCommand:
-                return [Event(ErasureApprovedEvent, new { approvedBy = cmd.Actor, approvedAt = At(cmd) })];
-
-            case PlaceLegalHoldCommand:
-            {
-                var reason = CheckedReason(ReadCommand(cmd).Reason, required: true);
-                return [Event(LegalHoldPlacedEvent, new { reason, placedBy = cmd.Actor, placedAt = At(cmd) })];
-            }
-
-            case ReleaseLegalHoldCommand:
-                return [Event(LegalHoldReleasedEvent, new { releasedBy = cmd.Actor, releasedAt = At(cmd) })];
-
-            default: // Judge has refused it already
+            default:
                 throw new InvalidOperationException($"unknown command: {cmd.Name}");
         }
     }
 
-    private static DataSubjectState Evolve(DataSubjectState state, Event ev)
+    /// <summary>Folds a core event; any other event leaves <paramref name="state"/> unchanged.</summary>
+    public static DataSubjectState Evolve(DataSubjectState state, Event ev) => ev.Type switch
     {
-        EventPayload Read() => JsonSerializer.Deserialize<EventPayload>(
-            string.IsNullOrWhiteSpace(ev.Data) ? "{}" : ev.Data, Json) ?? new EventPayload(null, null, null);
-
-        return ev.Type switch
-        {
-            ErasureRequestedEvent => state with { Stage = ErasureStage.Requested, RequestedBy = Read().RequestedBy, Reason = Read().Reason, ReviewAt = null },
-            ErasureHeldEvent => state with { Stage = ErasureStage.Held, Reason = Read().Reason, ReviewAt = Read().ReviewAt },
-            ErasureApprovedEvent => state with { Stage = ErasureStage.Approved },
-            LegalHoldPlacedEvent => state with { LegalHold = true },
-            LegalHoldReleasedEvent => state with { LegalHold = false },
-            SubjectErasedEvent => state with { Erased = true, Stage = ErasureStage.Erased },
-            _ => state,
-        };
-    }
-
-    /// <summary>Registers the built-in aggregate. A host that stores any
-    /// <c>field.pii</c> value needs this, or nothing can ever be erased.</summary>
-    public static void RegisterDataSubjects(this DeciderRegistry registry) =>
-        registry.Register(Aggregate, Create());
+        ErasureRequestedEvent => state with { Requested = true, RequestedBy = Read(ev.Data).RequestedBy, Reason = Read(ev.Data).Reason },
+        SubjectErasedEvent => state with { Erased = true },
+        _ => state,
+    };
 }
 
 /// <summary>Answers "has this subject been erased?" from the subject's own stream.

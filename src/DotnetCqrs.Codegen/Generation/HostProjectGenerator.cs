@@ -606,9 +606,10 @@ public static class HostProjectGenerator
         // is the operator's own addition, the same way resolveActor already is.
         if (hasPii)
         {
-            b.AppendLine("// Erasure is permanent, so the gateway refuses every dataSubject command (RequestErasure, ApproveErasure,");
-            b.AppendLine("// EraseSubject, ...) while no `authorize` policy is wired, and this scaffold is unauthenticated, so it wires");
-            b.AppendLine("// none: erasure is closed by default. Wire a real policy (DataSubject.DefaultRequiredRoles lists the roles).");
+            b.AppendLine("// Erasure is permanent, so the gateway refuses every dataSubject command (RequestErasure, EraseSubject)");
+            b.AppendLine("// while no `authorize` policy is wired, and this scaffold is unauthenticated, so it wires none: erasure is");
+            b.AppendLine("// closed by default. Wire a policy saying who may send them. A request is recorded and nothing acts on it");
+            b.AppendLine("// until something decides it: wire DotnetCqrs.Retention (RegisterErasureRetention) to govern requests.");
             b.AppendLine("// For a THROWAWAY LOCAL RUN ONLY, DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE=1 lets any caller use them.");
             b.AppendLine("var allowUnauthorizedErasure = Environment.GetEnvironmentVariable(\"DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE\") == \"1\";");
             b.AppendLine("if (allowUnauthorizedErasure)");
