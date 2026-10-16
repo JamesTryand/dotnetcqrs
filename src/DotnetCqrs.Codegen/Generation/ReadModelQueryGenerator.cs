@@ -19,7 +19,7 @@ namespace DotnetCqrs.Codegen.Generation;
 /// actual dateRange preset math, so "last7Days" can't quietly mean two different things.
 ///
 /// <para><b>Query-string convention:</b> a plain field or a declared scope's param is an
-/// ordinary string value (<c>?pmStaffId=s1</c>) — exactly how a scoped/unscoped
+/// ordinary string value (<c>?memberId=m1</c>) — exactly how a scoped/unscoped
 /// <c>queryParams</c> entry already works in a stateView scenario's own JSON. A declared
 /// filter's param takes a JSON-encoded object value using the SAME <c>{ kind, from?,
 /// to? }</c> shape a scenario's own <c>queryParams</c> already uses (schema 2.4.0's

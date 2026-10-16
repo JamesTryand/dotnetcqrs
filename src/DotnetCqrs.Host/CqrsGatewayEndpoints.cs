@@ -70,7 +70,7 @@ public static class CqrsGatewayEndpoints
     /// <c>authorize</c> delegate needs is captured in its own closure by whoever wires
     /// it up — e.g. <c>authorize: (user, agg, cmd, id, payload, ct) =>
     /// Generated.CommandAuthorization.AuthorizeAsync(user, agg, cmd, id, payload,
-    /// myReadModelStore, resolveOwnRole, resolveOwnStaffId, ct)</c> — so this library
+    /// myReadModelStore, resolveOwnRole, resolveOwnSubjectId, ct)</c> — so this library
     /// stays exactly as decoupled from <c>DotnetCqrs.ReadModels</c> as it is today.
     /// When supplied and it returns <c>false</c>, the request is refused with 403
     /// before <see cref="DeciderRegistry.HandleWithMetaAsync"/> ever loads any

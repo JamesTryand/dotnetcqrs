@@ -185,7 +185,7 @@ public class ErasureGovernorTests
         await rig.Governor.ApplyAsync(requested, CancellationToken.None);
         await rig.Governor.ApplyAsync(requested, CancellationToken.None);
 
-        Assert.Single((await rig.Types("s1")).Where(t => t == GovernedSubject.ErasureApprovedEvent));
+        Assert.Single(await rig.Types("s1"), t => t == GovernedSubject.ErasureApprovedEvent);
     }
 
     [Fact]

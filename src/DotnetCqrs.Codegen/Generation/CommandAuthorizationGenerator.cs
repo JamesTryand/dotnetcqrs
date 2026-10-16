@@ -24,7 +24,7 @@ namespace DotnetCqrs.Codegen.Generation;
 /// here already takes: <see cref="DeciderGenerator"/>/<see cref="ProjectionGenerator"/>
 /// never reference <c>Domain.*</c> in the code they EMIT, only while building it).</para>
 ///
-/// <para><c>resolveOwnRole</c>/<c>resolveOwnStaffId</c> are pluggable delegates the
+/// <para><c>resolveOwnRole</c>/<c>resolveOwnSubjectId</c> are pluggable delegates the
 /// evaluator takes as parameters, the same shape <c>MapCqrsGateway</c>'s existing
 /// <c>resolveActor</c> already uses -- deliberately NOT fixed claim-type constants baked
 /// into this generator or into <c>DotnetCqrs.Host</c>. Unlike the raw actor id (where
@@ -37,10 +37,8 @@ namespace DotnetCqrs.Codegen.Generation;
 /// operator's own addition.</para>
 ///
 /// <para>The membership check a declared <c>scope</c> runs
-/// (<c>command.scope.memberOfVia</c>) hard-codes a <c>staff_id</c> column on the target
-/// read model -- not a declared field name, since the schema's <c>memberOfVia</c> names
-/// only the field matched against the resolved value, not the one holding the caller's
-/// id.</para>
+/// (<c>command.scope.memberOfVia</c>) compares the member through the field the document
+/// names (<c>actorField</c>, schema 4.0.0), never an assumed column.</para>
 /// </summary>
 public static class CommandAuthorizationGenerator
 {
@@ -63,7 +61,7 @@ public static class CommandAuthorizationGenerator
         b.AppendLine();
         b.AppendLine("/// <summary>Generated command-authorization policy table and evaluator -- see");
         b.AppendLine("/// CommandAuthorizationGenerator's own doc comment for why this is one cross-cutting");
-        b.AppendLine("/// file rather than one per aggregate, and for the resolveOwnRole/resolveOwnStaffId");
+        b.AppendLine("/// file rather than one per aggregate, and for the resolveOwnRole/resolveOwnSubjectId");
         b.AppendLine("/// pluggable-resolver shape below.</summary>");
         b.AppendLine("public static class CommandAuthorization");
         b.AppendLine("{");
@@ -83,7 +81,7 @@ public static class CommandAuthorizationGenerator
         b.AppendLine("    /// command declares must hold, so each refuses or passes on to the next.</summary>");
         b.AppendLine("    public static async Task<bool> AuthorizeAsync(");
         b.AppendLine("        ClaimsPrincipal user, string aggregate, string command, string aggregateId, JsonElement payload,");
-        b.AppendLine("        IReadModelStore store, Func<ClaimsPrincipal, string> resolveOwnRole, Func<ClaimsPrincipal, string> resolveOwnStaffId,");
+        b.AppendLine("        IReadModelStore store, Func<ClaimsPrincipal, string> resolveOwnRole, Func<ClaimsPrincipal, string> resolveOwnSubjectId,");
         b.AppendLine("        CancellationToken ct = default)");
         b.AppendLine("    {");
         b.AppendLine("        if (!Policies.TryGetValue((aggregate, command), out var policy)) return true;");
@@ -104,11 +102,11 @@ public static class CommandAuthorizationGenerator
         b.AppendLine("        {");
         b.AppendLine("            if (!ownership.BypassRoles.Contains(ownRole, StringComparer.OrdinalIgnoreCase))");
         b.AppendLine("            {");
-        b.AppendLine("                var ownStaffId = resolveOwnStaffId(user);");
+        b.AppendLine("                var ownSubjectId = resolveOwnSubjectId(user);");
         b.AppendLine("                var owner = await ScalarStringAsync(store,");
         b.AppendLine("                    $\"SELECT {ownership.OwnerColumn} FROM {ownership.ViaCollection} WHERE {ownership.KeyColumn} = @id\",");
         b.AppendLine("                    [(\"@id\", aggregateId)], ct);");
-        b.AppendLine("                if (owner is null || !string.Equals(owner, ownStaffId, StringComparison.Ordinal)) return false;");
+        b.AppendLine("                if (owner is null || !string.Equals(owner, ownSubjectId, StringComparison.Ordinal)) return false;");
         b.AppendLine("            }");
         b.AppendLine("        }");
         b.AppendLine();
@@ -116,14 +114,14 @@ public static class CommandAuthorizationGenerator
         b.AppendLine("        {");
         b.AppendLine("            if (!scope.BypassRoles.Contains(ownRole, StringComparer.OrdinalIgnoreCase))");
         b.AppendLine("            {");
-        b.AppendLine("                var ownStaffId = resolveOwnStaffId(user);");
+        b.AppendLine("                var ownSubjectId = resolveOwnSubjectId(user);");
         b.AppendLine("                var resolved = await ScalarStringAsync(store,");
         b.AppendLine("                    $\"SELECT {scope.ResolveSelectColumn} FROM {scope.ResolveViaCollection} WHERE {scope.ResolveKeyColumn} = @id\",");
         b.AppendLine("                    [(\"@id\", aggregateId)], ct);");
         b.AppendLine("                if (resolved is null) return false;");
         b.AppendLine("                var member = await ScalarStringAsync(store,");
-        b.AppendLine("                    $\"SELECT 1 FROM {scope.MemberOfViaCollection} WHERE {scope.MemberOfMatchColumn} = @val AND staff_id = @staffId LIMIT 1\",");
-        b.AppendLine("                    [(\"@val\", resolved), (\"@staffId\", ownStaffId)], ct);");
+        b.AppendLine("                    $\"SELECT 1 FROM {scope.MemberOfViaCollection} WHERE {scope.MemberOfMatchColumn} = @val AND {scope.MemberOfActorColumn} = @actor LIMIT 1\",");
+        b.AppendLine("                    [(\"@val\", resolved), (\"@actor\", ownSubjectId)], ct);");
         b.AppendLine("                if (member is null) return false;");
         b.AppendLine("            }");
         b.AppendLine("        }");
@@ -155,7 +153,7 @@ public static class CommandAuthorizationGenerator
         b.AppendLine();
         b.AppendLine("public sealed record ScopePolicy(");
         b.AppendLine("    string ResolveViaCollection, string ResolveKeyColumn, string ResolveSelectColumn,");
-        b.AppendLine("    string MemberOfViaCollection, string MemberOfMatchColumn, string[] BypassRoles);");
+        b.AppendLine("    string MemberOfViaCollection, string MemberOfMatchColumn, string MemberOfActorColumn, string[] BypassRoles);");
 
         return new GeneratedFile("CommandAuthorization.cs", b.ToString());
     }
@@ -171,7 +169,7 @@ public static class CommandAuthorizationGenerator
             parts.Add($"Ownership: new(\"{ownership.ViaCollection}\", \"{ToSnakeCase(ownership.KeyField)}\", \"{ToSnakeCase(ownership.OwnerField)}\", {GenerationSupport.QuotedArray(ownership.BypassRoles)})");
         if (command.Scope is { } scope)
             parts.Add($"Scope: new(\"{scope.ResolveViaCollection}\", \"{ToSnakeCase(scope.ResolveKeyField)}\", \"{ToSnakeCase(scope.ResolveSelectField)}\", " +
-                $"\"{scope.MemberOfViaCollection}\", \"{ToSnakeCase(scope.MemberOfMatchField)}\", {GenerationSupport.QuotedArray(scope.BypassRoles)})");
+                $"\"{scope.MemberOfViaCollection}\", \"{ToSnakeCase(scope.MemberOfMatchField)}\", \"{ToSnakeCase(scope.MemberOfActorField)}\", {GenerationSupport.QuotedArray(scope.BypassRoles)})");
         return "new(" + string.Join(", ", parts) + ")";
     }
 

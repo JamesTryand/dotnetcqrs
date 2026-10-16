@@ -44,7 +44,7 @@ public class CommandAuthorizationGeneratorTests
               "scope": {
                 "bypassRoles": ["manager"],
                 "resolveVia": {"readModelId": "orders", "keyField": "orderId", "selectField": "regionId"},
-                "memberOfVia": {"readModelId": "region-managers", "matchField": "regionId"}
+                "memberOfVia": {"readModelId": "region-managers", "matchField": "regionId", "actorField": "memberId"}
               }},
             "onboard-staff": {"name": "Onboard Staff", "aggregate": "Staff",
               "fieldGatedRole": {"field": "role", "value": "manager", "requiredRole": "administrator"}}
@@ -53,7 +53,7 @@ public class CommandAuthorizationGeneratorTests
             "orders": {"name": "Orders", "builtFromEventIds": ["order-placed"],
               "fields": [{"name": "orderId", "type": "string", "idAttribute": true}, {"name": "ownerId", "type": "string"}, {"name": "regionId", "type": "string"}]},
             "region-managers": {"name": "Region Managers", "builtFromEventIds": ["order-placed"],
-              "fields": [{"name": "staffId", "type": "string", "idAttribute": true}, {"name": "regionId", "type": "string"}]}
+              "fields": [{"name": "memberId", "type": "string", "idAttribute": true}, {"name": "regionId", "type": "string"}]}
           },
           "screens": {"scr": {"name": "Screen"}},
           "slices": [
@@ -93,13 +93,13 @@ public class CommandAuthorizationGeneratorTests
 
         await ExecAsync("CREATE TABLE orders (order_id TEXT, owner_id TEXT, region_id TEXT)");
         await ExecAsync("INSERT INTO orders (order_id, owner_id, region_id) VALUES ('o1', 'staff-1', 'north')");
-        await ExecAsync("CREATE TABLE regionManagers (staff_id TEXT, region_id TEXT)");
-        await ExecAsync("INSERT INTO regionManagers (staff_id, region_id) VALUES ('pm-1', 'north')");
+        await ExecAsync("CREATE TABLE regionManagers (member_id TEXT, region_id TEXT)");
+        await ExecAsync("INSERT INTO regionManagers (member_id, region_id) VALUES ('pm-1', 'north')");
 
-        ClaimsPrincipal Actor(string role, string staffId) =>
-            new(new ClaimsIdentity([new Claim("role", role), new Claim("staffId", staffId)], "test"));
+        ClaimsPrincipal Actor(string role, string subjectId) =>
+            new(new ClaimsIdentity([new Claim("role", role), new Claim("subject", subjectId)], "test"));
         string ResolveRole(ClaimsPrincipal u) => u.Claims.FirstOrDefault(c => c.Type == "role")?.Value ?? "";
-        string ResolveStaffId(ClaimsPrincipal u) => u.Claims.FirstOrDefault(c => c.Type == "staffId")?.Value ?? "";
+        string ResolveSubjectId(ClaimsPrincipal u) => u.Claims.FirstOrDefault(c => c.Type == "subject")?.Value ?? "";
 
         var emptyPayload = JsonDocument.Parse("{}").RootElement;
         var managerRolePayload = JsonDocument.Parse("""{"role":"manager"}""").RootElement;
@@ -115,31 +115,31 @@ public class CommandAuthorizationGeneratorTests
         }
 
         await CheckAsync("requiredRole: manager can PlaceOrder", true,
-            CommandAuthorization.AuthorizeAsync(Actor("manager", "s1"), "order", "PlaceOrder", "o1", emptyPayload, store, ResolveRole, ResolveStaffId));
+            CommandAuthorization.AuthorizeAsync(Actor("manager", "s1"), "order", "PlaceOrder", "o1", emptyPayload, store, ResolveRole, ResolveSubjectId));
         await CheckAsync("requiredRole: staff cannot PlaceOrder", false,
-            CommandAuthorization.AuthorizeAsync(Actor("staff", "s1"), "order", "PlaceOrder", "o1", emptyPayload, store, ResolveRole, ResolveStaffId));
+            CommandAuthorization.AuthorizeAsync(Actor("staff", "s1"), "order", "PlaceOrder", "o1", emptyPayload, store, ResolveRole, ResolveSubjectId));
 
         await CheckAsync("fieldGatedRole: administrator can OnboardStaff as manager", true,
-            CommandAuthorization.AuthorizeAsync(Actor("administrator", "a1"), "staff", "OnboardStaff", "s2", managerRolePayload, store, ResolveRole, ResolveStaffId));
+            CommandAuthorization.AuthorizeAsync(Actor("administrator", "a1"), "staff", "OnboardStaff", "s2", managerRolePayload, store, ResolveRole, ResolveSubjectId));
         await CheckAsync("fieldGatedRole: manager cannot OnboardStaff as manager", false,
-            CommandAuthorization.AuthorizeAsync(Actor("manager", "m1"), "staff", "OnboardStaff", "s2", managerRolePayload, store, ResolveRole, ResolveStaffId));
+            CommandAuthorization.AuthorizeAsync(Actor("manager", "m1"), "staff", "OnboardStaff", "s2", managerRolePayload, store, ResolveRole, ResolveSubjectId));
         await CheckAsync("fieldGatedRole: staff CAN OnboardStaff as plain staff (condition doesn't apply)", true,
-            CommandAuthorization.AuthorizeAsync(Actor("staff", "s1"), "staff", "OnboardStaff", "s2", staffRolePayload, store, ResolveRole, ResolveStaffId));
+            CommandAuthorization.AuthorizeAsync(Actor("staff", "s1"), "staff", "OnboardStaff", "s2", staffRolePayload, store, ResolveRole, ResolveSubjectId));
 
         await CheckAsync("requiredOwnership: owner can UpdateOrder", true,
-            CommandAuthorization.AuthorizeAsync(Actor("staff", "staff-1"), "order", "UpdateOrder", "o1", emptyPayload, store, ResolveRole, ResolveStaffId));
+            CommandAuthorization.AuthorizeAsync(Actor("staff", "staff-1"), "order", "UpdateOrder", "o1", emptyPayload, store, ResolveRole, ResolveSubjectId));
         await CheckAsync("requiredOwnership: non-owner cannot UpdateOrder", false,
-            CommandAuthorization.AuthorizeAsync(Actor("staff", "someone-else"), "order", "UpdateOrder", "o1", emptyPayload, store, ResolveRole, ResolveStaffId));
+            CommandAuthorization.AuthorizeAsync(Actor("staff", "someone-else"), "order", "UpdateOrder", "o1", emptyPayload, store, ResolveRole, ResolveSubjectId));
 
         await CheckAsync("scope: manager bypasses FlagOrder", true,
-            CommandAuthorization.AuthorizeAsync(Actor("manager", "m1"), "order", "FlagOrder", "o1", emptyPayload, store, ResolveRole, ResolveStaffId));
+            CommandAuthorization.AuthorizeAsync(Actor("manager", "m1"), "order", "FlagOrder", "o1", emptyPayload, store, ResolveRole, ResolveSubjectId));
         await CheckAsync("scope: region manager can FlagOrder", true,
-            CommandAuthorization.AuthorizeAsync(Actor("staff", "pm-1"), "order", "FlagOrder", "o1", emptyPayload, store, ResolveRole, ResolveStaffId));
+            CommandAuthorization.AuthorizeAsync(Actor("staff", "pm-1"), "order", "FlagOrder", "o1", emptyPayload, store, ResolveRole, ResolveSubjectId));
         await CheckAsync("scope: non-member staff cannot FlagOrder", false,
-            CommandAuthorization.AuthorizeAsync(Actor("staff", "random"), "order", "FlagOrder", "o1", emptyPayload, store, ResolveRole, ResolveStaffId));
+            CommandAuthorization.AuthorizeAsync(Actor("staff", "random"), "order", "FlagOrder", "o1", emptyPayload, store, ResolveRole, ResolveSubjectId));
 
         await CheckAsync("no declared policy: always authorized", true,
-            CommandAuthorization.AuthorizeAsync(Actor("staff", "s1"), "order", "SomeOtherCommand", "o1", emptyPayload, store, ResolveRole, ResolveStaffId));
+            CommandAuthorization.AuthorizeAsync(Actor("staff", "s1"), "order", "SomeOtherCommand", "o1", emptyPayload, store, ResolveRole, ResolveSubjectId));
 
         Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");
         return failures == 0 ? 0 : 1;
@@ -153,6 +153,13 @@ public class CommandAuthorizationGeneratorTests
         Assert.Equal(2, mapped.Domains.Count);
 
         var files = new List<GeneratedFile> { CommandAuthorizationGenerator.Generate(mapped.Domains) };
+
+        // The member is compared through the field the document names (4.0.0), never an assumed column,
+        // and the resolver is named for what it returns: the caller's subject id.
+        Assert.Contains("\"member_id\"", files[0].Source);
+        Assert.Contains("= @actor", files[0].Source);
+        Assert.Contains("resolveOwnSubjectId", files[0].Source);
+        Assert.DoesNotContain("staff", files[0].Source.Replace("OnboardStaff", "").Replace("\"staff\"", ""), StringComparison.OrdinalIgnoreCase);
 
         var (success, runOutput) = await InMemoryProgram.RunAsync(files, ProgramCs);
         Assert.True(success, $"generated CommandAuthorization.cs did not compile, or the program reported failures:{Environment.NewLine}{runOutput}");

@@ -128,7 +128,7 @@ public sealed record StateOwnership(string StateField, string Message);
 public sealed record ScopePolicy(
     IReadOnlyList<string> BypassRoles,
     string ResolveViaCollection, string ResolveKeyField, string ResolveSelectField,
-    string MemberOfViaCollection, string MemberOfMatchField);
+    string MemberOfViaCollection, string MemberOfMatchField, string MemberOfActorField);
 
 /// <summary>One declared refusal of a command: it refuses with <c>Message</c> when every
 /// condition in <c>All</c> holds.</summary>

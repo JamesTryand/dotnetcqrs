@@ -32,7 +32,7 @@ public class CommandAuthorizationCombinedTests
               "scope": {
                 "bypassRoles": ["manager"],
                 "resolveVia": {"readModelId": "orders", "keyField": "orderId", "selectField": "regionId"},
-                "memberOfVia": {"readModelId": "region-managers", "matchField": "regionId"}
+                "memberOfVia": {"readModelId": "region-managers", "matchField": "regionId", "actorField": "memberId"}
               }},
             "promote-staff": {"name": "Promote Staff", "aggregate": "Staff", "requiredRole": ["manager", "administrator"],
               "fieldGatedRole": {"field": "role", "value": "manager", "requiredRole": "administrator"}}
@@ -41,7 +41,7 @@ public class CommandAuthorizationCombinedTests
             "orders": {"name": "Orders", "builtFromEventIds": ["order-placed"],
               "fields": [{"name": "orderId", "type": "string", "idAttribute": true}, {"name": "ownerId", "type": "string"}, {"name": "regionId", "type": "string"}]},
             "region-managers": {"name": "Region Managers", "builtFromEventIds": ["order-placed"],
-              "fields": [{"name": "staffId", "type": "string", "idAttribute": true}, {"name": "regionId", "type": "string"}]}
+              "fields": [{"name": "memberId", "type": "string", "idAttribute": true}, {"name": "regionId", "type": "string"}]}
           },
           "screens": {"scr": {"name": "Screen"}},
           "slices": [
@@ -75,13 +75,13 @@ public class CommandAuthorizationCombinedTests
         // Order o1 belongs to staff-1, in the north region; pm-1 manages the north region, pm-2 manages none.
         await ExecAsync("CREATE TABLE orders (order_id TEXT, owner_id TEXT, region_id TEXT)");
         await ExecAsync("INSERT INTO orders (order_id, owner_id, region_id) VALUES ('o1', 'staff-1', 'north')");
-        await ExecAsync("CREATE TABLE regionManagers (staff_id TEXT, region_id TEXT)");
-        await ExecAsync("INSERT INTO regionManagers (staff_id, region_id) VALUES ('pm-1', 'north')");
+        await ExecAsync("CREATE TABLE regionManagers (member_id TEXT, region_id TEXT)");
+        await ExecAsync("INSERT INTO regionManagers (member_id, region_id) VALUES ('pm-1', 'north')");
 
-        ClaimsPrincipal Actor(string role, string staffId) =>
-            new(new ClaimsIdentity([new Claim("role", role), new Claim("staffId", staffId)], "test"));
+        ClaimsPrincipal Actor(string role, string subjectId) =>
+            new(new ClaimsIdentity([new Claim("role", role), new Claim("subject", subjectId)], "test"));
         string ResolveRole(ClaimsPrincipal u) => u.Claims.FirstOrDefault(c => c.Type == "role")?.Value ?? "";
-        string ResolveStaffId(ClaimsPrincipal u) => u.Claims.FirstOrDefault(c => c.Type == "staffId")?.Value ?? "";
+        string ResolveSubjectId(ClaimsPrincipal u) => u.Claims.FirstOrDefault(c => c.Type == "subject")?.Value ?? "";
 
         var empty = JsonDocument.Parse("{}").RootElement;
         var toManager = JsonDocument.Parse("""{"role":"manager"}""").RootElement;
@@ -90,7 +90,7 @@ public class CommandAuthorizationCombinedTests
         var failures = 0;
         async Task CheckAsync(string name, bool expected, string role, string staffId, string aggregate, string command, JsonElement payload)
         {
-            var actual = await CommandAuthorization.AuthorizeAsync(Actor(role, staffId), aggregate, command, "o1", payload, store, ResolveRole, ResolveStaffId);
+            var actual = await CommandAuthorization.AuthorizeAsync(Actor(role, staffId), aggregate, command, "o1", payload, store, ResolveRole, ResolveSubjectId);
             var ok = actual == expected;
             Console.WriteLine($"{(ok ? "PASS" : "FAIL")} {name} (expected {expected}, got {actual})");
             if (!ok) failures++;

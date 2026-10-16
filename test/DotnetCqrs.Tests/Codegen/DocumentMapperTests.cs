@@ -850,7 +850,7 @@ public class DocumentMapperTests
               "scope": {
                 "bypassRoles": ["manager"],
                 "resolveVia": {"readModelId": "orders", "keyField": "orderId", "selectField": "regionId"},
-                "memberOfVia": {"readModelId": "region-managers", "matchField": "regionId"}
+                "memberOfVia": {"readModelId": "region-managers", "matchField": "regionId", "actorField": "memberId"}
               }},
             "onboard-staff": {"name": "Onboard Staff", "aggregate": "Staff",
               "fieldGatedRole": {"field": "role", "value": "manager", "requiredRole": "administrator"}}
@@ -860,7 +860,7 @@ public class DocumentMapperTests
               "fields": [{"name": "orderId", "type": "string", "idAttribute": true}, {"name": "ownerId", "type": "string"}, {"name": "regionId", "type": "string"}],
               "requiredRole": "manager"},
             "region-managers": {"name": "Region Managers", "builtFromEventIds": ["order-placed"],
-              "fields": [{"name": "staffId", "type": "string", "idAttribute": true}, {"name": "regionId", "type": "string"}],
+              "fields": [{"name": "memberId", "type": "string", "idAttribute": true}, {"name": "regionId", "type": "string"}],
               "requiredRole": ["manager", "administrator"]}
           },
           "screens": {"scr": {"name": "Screen"}},
@@ -876,6 +876,17 @@ public class DocumentMapperTests
           ]
         }
         """;
+
+    [Fact]
+    public void A_scope_that_does_not_name_the_members_field_is_refused()
+    {
+        var withoutActorField = CommandAuthorizationDocumentJson.Replace(", \"actorField\": \"memberId\"", "");
+        Assert.NotEqual(CommandAuthorizationDocumentJson, withoutActorField);
+
+        var ex = Assert.ThrowsAny<Exception>(() => DocumentLoader.Parse(withoutActorField));
+
+        Assert.Contains("actorField", ex.Message);
+    }
 
     [Fact]
     public void RequiredRole_maps_as_a_list_whether_declared_as_one_value_or_an_array()
@@ -939,6 +950,7 @@ public class DocumentMapperTests
         Assert.Equal("regionId", scope.ResolveSelectField);
         Assert.Equal("regionManagers", scope.MemberOfViaCollection);
         Assert.Equal("regionId", scope.MemberOfMatchField);
+        Assert.Equal("memberId", scope.MemberOfActorField);
     }
 
     [Fact]

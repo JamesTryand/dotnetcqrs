@@ -598,10 +598,10 @@ public static class HostProjectGenerator
         // Generated.CommandAuthorization.AuthorizeAsync (Generated/CommandAuthorization.cs)
         // is always emitted, but never auto-wired here -- same posture as resolveActor
         // above, which this generator also leaves unset. Both need project-specific
-        // resolver delegates (an actor id, an own role, an own staff id) this generator
+        // resolver delegates (an actor id, an own role, an own subject id) this generator
         // has no way to know; wiring `authorize: (user, aggregate, command, id, payload,
         // ct) => Generated.CommandAuthorization.AuthorizeAsync(user, aggregate, command,
-        // id, payload, readModelDb, resolveOwnRole, resolveOwnStaffId, ct)` -- closing
+        // id, payload, readModelDb, resolveOwnRole, resolveOwnSubjectId, ct)` -- closing
         // over this same file's own `readModelDb`, not a new route-handler parameter --
         // is the operator's own addition, the same way resolveActor already is.
         if (hasPii)

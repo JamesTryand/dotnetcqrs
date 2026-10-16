@@ -34,8 +34,7 @@ public sealed record CommandOwnershipVia(string ReadModelId, string KeyField, st
 /// member of the set <see cref="MemberOfVia"/> resolves for that value -- unless the
 /// actor's role is in <see cref="BypassRoles"/>. Kept as its own declaration rather than
 /// merged with <see cref="CommandOwnershipDef"/>: they share the first resolution step but
-/// diverge on the second (equality-against-actor vs. set-membership) -- see
-/// platform/command-authorization's design proposal for the full reasoning.</summary>
+/// diverge on the second (equality-against-actor vs. set-membership).</summary>
 public sealed record CommandScopeDef(
     [property: JsonConverter(typeof(RoleOrRolesConverter))] IReadOnlyList<string>? BypassRoles,
     CommandScopeResolveVia ResolveVia,
@@ -43,7 +42,9 @@ public sealed record CommandScopeDef(
 
 public sealed record CommandScopeResolveVia(string ReadModelId, string KeyField, string SelectField);
 
-public sealed record CommandScopeMemberOfVia(string ReadModelId, string MatchField);
+/// <summary>The membership read model (schema 4.0.0): a row whose <see cref="MatchField"/> equals the resolved
+/// value and whose <see cref="ActorField"/> equals the command's actor makes the actor a member.</summary>
+public sealed record CommandScopeMemberOfVia(string ReadModelId, string MatchField, string ActorField);
 
 /// <summary>Deserializes <c>requiredRole</c>/<c>bypassRoles</c>/<c>fieldGatedRole.requiredRole</c>:
 /// the schema's own <c>roleRequirement</c> <c>$def</c> (named <c>commandRole</c> before
