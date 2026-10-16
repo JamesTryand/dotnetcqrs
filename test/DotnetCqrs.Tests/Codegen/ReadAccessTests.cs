@@ -10,8 +10,8 @@ namespace DotnetCqrs.Tests.Codegen;
 
 /// <summary>Schema 3.8.0 read access: who may read which rows. The rule itself (ReadAccess), the
 /// declarations the loader and mapper refuse, the verify harness running the read-access example's
-/// scenarios, and the generated route over real HTTP. Raised by project/timesheets D21: hand-written
-/// routes scoped a staff caller only when the request carried the scope param.</summary>
+/// scenarios, and the generated route over real HTTP. Hand-written routes used to scope a
+/// caller only when the request carried the scope param.</summary>
 public class ReadAccessTests
 {
     private static string TestDataPath(string fileName) =>
@@ -127,8 +127,8 @@ public class ReadAccessTests
         var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
         Assert.True(results.Single(r => r.ScenarioId == "an-unassigned-project-manager-loses-the-grant").Passed);
 
-        // Without the declaration the generated projection keeps the row (the bug D23 found in
-        // project/timesheets), so the same scenario must fail.
+        // Without the declaration the generated projection keeps the row, so the same
+        // scenario must fail.
         var keeps = DocumentLoader.Parse(ReadAccessJson.Replace("\"removedByEventIds\": [\"project-manager-unassigned\"],", ""));
         var keepResults = await ScenarioVerifier.VerifyAsync(keeps, DocumentMapper.Map(keeps));
         Assert.False(keepResults.Single(r => r.ScenarioId == "an-unassigned-project-manager-loses-the-grant").Passed);
@@ -139,8 +139,8 @@ public class ReadAccessTests
     public async Task The_harness_refuses_a_caller_without_the_role_on_a_read_model_that_declares_only_requiredRole()
     {
         // project-managers declares requiredRole and nothing else, so the generated route answers a
-        // caller without the role 403 (its rows are no one's own). Raised by project/timesheets D33: the
-        // harness read such a caller as a role holder, so a PM's scenario saw a Manager-only invoice.
+        // caller without the role 403 (its rows are no one's own). The harness
+        // used to read such a caller as a role holder.
         var node = System.Text.Json.Nodes.JsonNode.Parse(ReadAccessJson)!;
         System.Text.Json.Nodes.JsonNode Scenario(string id, string subject, string role, string expected) =>
             System.Text.Json.Nodes.JsonNode.Parse(

@@ -7,7 +7,7 @@ using Xunit;
 namespace DotnetCqrs.Tests.Postgres;
 
 /// <summary>
-/// Another process's commit reaches this process's engine at once (timesheets' paradigm audit R7). Two stores on one
+/// Another process's commit reaches this process's engine at once. Two stores on one
 /// log stand for two nodes: a writer, and a reader with its own engine. The reader's engine has a one-hour tick, so
 /// the only way the writer's event can reach it within the test is the store's push (<c>LISTEN/NOTIFY</c>). Before,
 /// <see cref="IPollSource.Subscribe"/> was in-process only, and another node saw a new event on its next tick.

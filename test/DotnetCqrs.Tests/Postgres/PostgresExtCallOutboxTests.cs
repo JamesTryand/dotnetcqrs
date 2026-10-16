@@ -6,7 +6,7 @@ using Xunit;
 
 namespace DotnetCqrs.Tests.Postgres;
 
-/// <summary>Postgres parity for <see cref="ExtCallOutboxTests"/> (D40, timesheets' paradigm audit R4): the outbox
+/// <summary>Postgres parity for <see cref="ExtCallOutboxTests"/>: the outbox
 /// <see cref="PostgresEventStore"/> keeps, driven by the real consumer and worker. Recording is idempotent; a lasting
 /// conflict is retried after the back-off from where it stopped, without calling out again; past the attempts it is
 /// dead-lettered; and a recorded call survives reopening the store.</summary>

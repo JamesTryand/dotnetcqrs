@@ -30,7 +30,7 @@ public class ReadModelQueryGeneratorTests : IClassFixture<PostgresFixture>
     public ReadModelQueryGeneratorTests(PostgresFixture pg) => _pg = pg;
 
     // Same shape as DocumentMapperTests/ScenarioVerifierTests' own dateRange fixture
-    // (project/timesheets's real time-entries read model) -- no stateView scenarios
+    // (a time-entries read model) -- no stateView scenarios
     // needed here, since this test drives the generated route over real HTTP rather
     // than through ScenarioVerifier's harness.
     private const string Json = """

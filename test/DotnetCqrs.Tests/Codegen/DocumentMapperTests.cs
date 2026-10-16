@@ -133,8 +133,8 @@ public class DocumentMapperTests
     public void A_cross_aggregate_automation_with_evidence_of_both_a_new_and_an_existing_target_is_an_upsert()
     {
         // The same rule as a stateChange command: one scenario on a fresh target stream and one on an
-        // existing one means the command runs on either, so neither guard applies. Timesheets D30.20:
-        // the payroll ledger records every entry's pay, its first record and every later one alike.
+        // existing one means the command runs on either, so neither guard applies. For
+        // example, a ledger records every entry's pay, its first record and every later one alike.
         const string json = """
             {
               "eventModelingSchemaVersion": "3.14.0", "id": "upsert-automation", "name": "Upsert Automation",
@@ -487,7 +487,7 @@ public class DocumentMapperTests
     [Fact]
     public void A_create_with_no_scenario_after_the_end_cannot_begin_again()
     {
-        // Timesheets W1: a deleted time entry ends its stream (endsStream), but no
+        // A deleted time entry ends its stream (endsStream), but no
         // scenario logs it again afterwards. Unlike an unassign, the end is final, so the
         // create must not be able to begin the stream again.
         const string json = """
@@ -737,8 +737,8 @@ public class DocumentMapperTests
             e.Contains("everLoggedOvertime") && e.Contains("toggle") && e.Contains("not supported"));
     }
 
-    // Group C item 3/4's real shape (project/timesheets's time-entries read model,
-    // export-pm-slice/export-manager-slice/export-staff-slice): a taskDate-scoped
+    // Group C item 3/4's shape (a time-entries read model with several export
+    // slices): a taskDate-scoped
     // dateRange filter (schema 2.4.0), sibling to readModel.scopes.
     private const string DateRangeFilterDocumentJson = """
         {

@@ -10,8 +10,7 @@ public static class FieldTypeFolding
     /// <summary>Ten values fold onto six, deliberately and deliberately documented
     /// (see <see cref="Note"/>). A list of anything, or a field with subfields, both
     /// become <c>json</c> — a column can hold neither. <c>decimal</c> stays exact (a C#
-    /// <c>decimal</c>): money declared decimal must not lose a half-penny to a double
-    /// (timesheets D30.21). pocketcqrs folds it to <c>number</c>, as JavaScript has one.</summary>
+    /// <c>decimal</c>): money declared decimal must not lose a half-penny to a double. pocketcqrs folds it to <c>number</c>, as JavaScript has one.</summary>
     public static string Fold(Model.Field field)
     {
         if (field.Cardinality == "list" || field.Subfields is { Count: > 0 })

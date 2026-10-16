@@ -234,7 +234,7 @@ public static class ScenarioVerifier
                 queryParamNames.Add(prop.Name);
 
         // Only the scopes this scenario's OWN queryParams actually invoke -- an
-        // unscoped view of the same read model (the Manager's own query, say) passes
+        // unscoped view of the same read model (a role holder's own query, say) passes
         // none of these params and gets no semi-join, exactly as the runtime query
         // would.
         var scopes = new List<ViewScopeInput>();
@@ -266,7 +266,7 @@ public static class ScenarioVerifier
         //
         // Each given event needs its OWN row key per projection it's replayed into --
         // NOT one key shared by the whole scenario (the pre-Finding-3 design): an
-        // unscoped "manager sees every flagged entry" scenario deliberately seeds two
+        // unscoped "a role holder sees every order" scenario deliberately seeds two
         // DIFFERENT entries and expects two DIFFERENT rows out, which one shared
         // synthesized id can never produce (every given event would collapse onto the
         // same row). See ReadModelIdFieldName's doc comment for the resolution rule.
@@ -299,7 +299,7 @@ public static class ScenarioVerifier
             : null;
 
         // A read model declaring only requiredRole has a rule too: the generated route refuses a caller
-        // without the role (D33 in project/timesheets found the harness reading them as a role holder).
+        // without the role (the harness used to read such a caller as a role holder).
         var access = readModelDomain.HasAccessRules || readModelDomain.RequiredRole is { Count: > 0 }
             ? new ViewAccessInput(readModelDomain.RequiredRole,
                 readModelDomain.SelfAccess is { } selfAccess ? ToSnakeCase(selfAccess.SubjectField) : null,

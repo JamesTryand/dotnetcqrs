@@ -8,7 +8,7 @@ namespace DotnetCqrs.Tests.Codegen;
 
 /// <summary>
 /// Schema 3.15.0 <c>requiredOwnership.stateField</c>: ownership decided by the aggregate, comparing the field of its
-/// own state that names the owner with the command's actor, never from a read model. Raised by timesheets W5: a
+/// own state that names the owner with the command's actor, never from a read model. A
 /// <c>via</c> ownership check reads a projection before the command, so the first edit after a create was refused
 /// while the row wasn't projected yet.
 /// </summary>

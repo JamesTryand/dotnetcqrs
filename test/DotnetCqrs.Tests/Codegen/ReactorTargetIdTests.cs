@@ -7,7 +7,7 @@ namespace DotnetCqrs.Tests.Codegen;
 
 /// <summary>
 /// A generated reactor that creates a new target per trigger derives the target's id from the triggering EVENT (its
-/// stream id and sequence), not from its stream alone (timesheets' paradigm audit, R3). Keyed by the stream, a second
+/// stream id and sequence), not from its stream alone. Keyed by the stream, a second
 /// trigger on the same stream was lost as "already exists". The same event redelivered still gives the same id, so the
 /// target's "already exists" absorbs it. A same-aggregate reactor still targets the trigger's own stream. Order
 /// fulfilment: the shipping notification is created per OrderShipped; auto-ship dispatches to the order itself.

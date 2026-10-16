@@ -184,7 +184,7 @@ public class ReplicationTests
     {
         var health = new NodeHealth("node-3", Now);
         health.SetIdentity(new NodeIdentity(
-            "0192b5c4-7e1a-7c3e-9f00-5b2d8a1c4e77", NodeIdentitySource.Persistent, "timesheets", "node-3",
+            "0192b5c4-7e1a-7c3e-9f00-5b2d8a1c4e77", NodeIdentitySource.Persistent, "storefront", "node-3",
             NodeIdentity.StackName, role, Now));
         if (replication is not null)
             health.SetReplication(() => replication);

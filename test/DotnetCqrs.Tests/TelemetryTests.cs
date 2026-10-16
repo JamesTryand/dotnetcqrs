@@ -20,7 +20,7 @@ public class TelemetryTests
     internal static NodeHealth ServingNode(IReadOnlyList<ConsumerStatus>? consumers = null)
     {
         var health = new NodeHealth("node-3", Started);
-        health.SetIdentity(new NodeIdentity(NodeId, NodeIdentitySource.Persistent, "timesheets", "node-3",
+        health.SetIdentity(new NodeIdentity(NodeId, NodeIdentitySource.Persistent, "storefront", "node-3",
             NodeIdentity.StackName, "writer", Started));
         health.BeginCatchUp(() => consumers ?? [], TimeSpan.FromMinutes(1));
         return health;
@@ -235,7 +235,7 @@ public class TelemetryTests
         await Task.Delay(400);
         Assert.Empty(transport.Sent);
 
-        health.SetIdentity(new NodeIdentity(NodeId, NodeIdentitySource.Persistent, "timesheets", "node-3",
+        health.SetIdentity(new NodeIdentity(NodeId, NodeIdentitySource.Persistent, "storefront", "node-3",
             NodeIdentity.StackName, "writer", Started));
 
         Assert.True(await WaitAsync(() => !transport.Sent.IsEmpty));

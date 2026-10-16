@@ -9,16 +9,14 @@ namespace DotnetCqrs.Codegen.Generation;
 /// per read model), this is cross-cutting, the same posture <see cref="HostProjectGenerator"/>'s
 /// own <c>Program.cs</c> already takes. That's a real architectural consequence of how
 /// <c>DotnetCqrs.Host.CqrsGatewayEndpoints.MapCqrsGateway</c> actually dispatches commands:
-/// there is no per-command generated ROUTE to attach a check to (confirmed directly against
-/// <c>project/timesheets</c>'s real <c>Program.cs</c> before designing this -- most commands
-/// fall through the one generic <c>POST {aggregate}/{aggregateId}/{command}</c> route, with
-/// only a handful getting a hand-written literal-route override for reasons unrelated to
-/// authorization). So the generated authorization check has to live in something the
+/// there is no per-command generated ROUTE to attach a check to: most commands fall through
+/// the one generic <c>POST {aggregate}/{aggregateId}/{command}</c> route, with at most a
+/// handful getting a hand-written literal-route override for reasons unrelated to
+/// authorization. So the generated authorization check has to live in something the
 /// generic gateway can consult by <c>(aggregate, command)</c> -- a lookup table, not
 /// per-route code -- and the same table needs to be callable explicitly from any
-/// hand-written literal route too (see this project's own <c>StaffOnboardingHost</c>/
-/// <c>TimeEntryFlaggingHost</c>/<c>ImpersonationHost</c>-shaped guards, which this
-/// capability is meant to replace, not merely supplement).
+/// hand-written literal route too, so it can replace a host's hand-written guards rather
+/// than merely supplement them.
 ///
 /// <para>Runtime types are declared INSIDE the generated file, not borrowed from
 /// <see cref="Domain"/> -- <c>Domain.*</c> is this generator's own input model, not
@@ -31,25 +29,18 @@ namespace DotnetCqrs.Codegen.Generation;
 /// <c>resolveActor</c> already uses -- deliberately NOT fixed claim-type constants baked
 /// into this generator or into <c>DotnetCqrs.Host</c>. Unlike the raw actor id (where
 /// <c>oid</c>/<c>azp</c>/<see cref="System.Security.Claims.ClaimTypes.NameIdentifier"/>
-/// really are provider-standard claim types worth a generic default), a role or
-/// "own staff id" claim's NAME is inherently project-specific -- <c>project/timesheets</c>'s
-/// own <c>EffectiveActor.OwnRoleClaimType</c> is literally <c>"timesheets:ownRole"</c>,
-/// which would mean nothing to a document with no "staff" concept at all (e.g.
-/// <c>samples/OrderFulfillment</c>). The consuming project supplies both resolvers at its
-/// own <c>MapCqrsGateway(authorize: ...)</c> call site -- the same place it already
-/// hand-wires <c>resolveActor: EffectiveActor.Effective</c> today (see
-/// <c>project/timesheets</c>'s own <c>Program.cs</c>, a <c>[HAND, Phase 04g]</c>
-/// addition this generator does not attempt to auto-wire, for the same reason it can't
-/// auto-wire <c>resolveActor</c> either -- see <see cref="HostProjectGenerator"/>'s
-/// generated <c>Program.cs</c>, which leaves both as the operator's own addition).</para>
+/// really are provider-standard claim types worth a generic default), the claim a role or
+/// an own id comes from is named by each host, and would mean nothing to another. The
+/// consuming project supplies both resolvers at its own <c>MapCqrsGateway(authorize: ...)</c>
+/// call site -- the same place it hand-wires <c>resolveActor</c> -- and
+/// <see cref="HostProjectGenerator"/>'s generated <c>Program.cs</c> leaves both as the
+/// operator's own addition.</para>
 ///
 /// <para>The membership check a declared <c>scope</c> runs
 /// (<c>command.scope.memberOfVia</c>) hard-codes a <c>staff_id</c> column on the target
-/// read model -- not a declared field name -- matching the design proposal's own
-/// literal semantics ("the actor's own staffId must appear as a staffId in
-/// memberOfVia.readModelId") and the real hand-written precedent this replaces
-/// (<c>TimeEntryFlaggingHost.AuthorizeAsync</c>'s <c>SELECT 1 FROM projectManagers
-/// WHERE project_id = @projectId AND staff_id = @staffId</c>).</para>
+/// read model -- not a declared field name, since the schema's <c>memberOfVia</c> names
+/// only the field matched against the resolved value, not the one holding the caller's
+/// id.</para>
 /// </summary>
 public static class CommandAuthorizationGenerator
 {

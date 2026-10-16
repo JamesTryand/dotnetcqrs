@@ -5,7 +5,7 @@ using DotnetCqrs.ExtCalling;
 namespace DotnetCqrs.Tests;
 
 /// <summary>
-/// The external caller's outbox (D40, timesheets' paradigm audit R4). The consumer only records the event; the worker
+/// The external caller's outbox. The consumer only records the event; the worker
 /// makes the call outside the engine, retries it after its back-off, and dispatches the response's follow-ups. A
 /// follow-up refused for a concurrency conflict is dispatched again at once (its decider decides afresh), up to three
 /// times, then is an attempt like a failed call, retried later without calling the outside service again. Before, the

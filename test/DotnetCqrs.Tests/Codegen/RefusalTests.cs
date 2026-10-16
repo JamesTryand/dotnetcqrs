@@ -8,8 +8,8 @@ namespace DotnetCqrs.Tests.Codegen;
 
 /// <summary>
 /// Schema 3.10.0 <c>command.refuseWhen</c>: refusals declared on a command, over the
-/// aggregate's own state and the command's fields, generated into Decide. Raised by
-/// timesheets D29: every such guard was hand-written, so the scenario harness (which runs
+/// aggregate's own state and the command's fields, generated into Decide. Every such
+/// guard used to be hand-written, so the scenario harness (which runs
 /// the generated decider) reported each as a failure.
 /// </summary>
 [Trait("Category", "Compiles")]
@@ -175,7 +175,7 @@ public class RefusalTests
     }
 
     // Schema 3.11.0: the four numeric comparisons, against a literal and against a state field,
-    // each with its boundary. Raised by timesheets D30 (F10-F12): a conversion rate must be more
+    // each with its boundary. For example, a conversion rate must be more
     // than 0, a VAT percentage from 0 to 100.
     private const string ComparisonsJson = """
         {
@@ -264,7 +264,7 @@ public class RefusalTests
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_date_or_number_an_event_does_not_carry_is_unset_not_a_default()
     {
-        // timesheets F19: an entry logged without invoicedBeforeCutOver must not read as "invoiced". The
+        // An entry logged without invoicedBeforeCutOver must not read as "invoiced". The
         // generated payload record held a date (and a number, and a bool) as a non-nullable value, so a field
         // the event did not carry folded into state as 0001-01-01 (or 0, or false) and "is set" held for it.
         const string json = """
@@ -315,8 +315,8 @@ public class RefusalTests
     }
 
     // Dates compare for equality by calendar day: a state date is held as a DateTime, a command's
-    // arrives as text, and either may carry a time of day. Raised by timesheets D30.20 (F16): a
-    // payroll period starts the day after the last one ended.
+    // arrives as text, and either may carry a time of day. For example, a
+    // period starts the day after the last one ended.
     private const string DatesJson = """
         {
           "eventModelingSchemaVersion": "3.14.0", "id": "dates-test", "name": "Dates Test",

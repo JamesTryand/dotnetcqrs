@@ -7,7 +7,7 @@ namespace DotnetCqrs.Tests.Codegen;
 /// <summary>
 /// A command's authorization declarations combine: every one it declares must hold. Before this, the generated
 /// evaluator returned as soon as it found <c>requiredRole</c>, so a <c>requiredOwnership</c>, <c>scope</c> or
-/// <c>fieldGatedRole</c> on the same command was never checked (timesheets' paradigm audit, S2). Each case below is a
+/// <c>fieldGatedRole</c> on the same command was never checked. Each case below is a
 /// caller who has the role but fails the other declaration, and so must be refused; and one who meets both.
 /// Compiled and run against a real in-memory store, as <see cref="CommandAuthorizationGeneratorTests"/> does.
 /// </summary>

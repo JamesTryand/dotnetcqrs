@@ -7,7 +7,7 @@ namespace DotnetCqrs.Tests.Codegen;
 
 /// <summary>
 /// Schema 3.14.0 <c>readModel.rowKeyField</c>: rows keyed by a field the events carry, in place of
-/// their stream, for one stream that holds many rows' events. Raised by timesheets D30.20 (F16):
+/// their stream, for one stream that holds many rows' events. For example,
 /// the payroll is one stream, and each release's payments are a row each. The generated projection
 /// is run directly, with every event on the same stream: the scenario harness keys a given event by
 /// the read model's own id field, so a view scenario can't tell a stream key from a row key.

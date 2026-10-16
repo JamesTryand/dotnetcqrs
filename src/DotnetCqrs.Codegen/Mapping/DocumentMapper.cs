@@ -350,7 +350,7 @@ public sealed class DocumentMapper
         // slice's own scenario evidence says so, same rule as IsCreate uses for a
         // directly-invoked command (see its doc comment): a `given` event on the
         // TARGET aggregate's own stream is real evidence the stream already exists
-        // (the fan-out-lock case: log an entry, then an invoice reaction locks it);
+        // (the fan-out-lock case: create an item, then a reaction on another aggregate locks it);
         // foreign-aggregate given events (the trigger's own history) are not. This
         // also means two independent automations/commands can each genuinely create
         // the same aggregate TYPE (e.g. two different triggers each raising a fresh
@@ -1535,7 +1535,7 @@ public sealed class DocumentMapper
     /// (an own-stream endsStream event, netting to not-exists) and the command still
     /// succeeds -- a re-assign after an unassign. Error scenarios are not evidence. With no
     /// such scenario the end is final: the generated create refuses an ended stream, so a
-    /// deleted entry's id can never be logged again (timesheets W1).</summary>
+    /// deleted item's id can never be used again.</summary>
     private bool HasBeginAgainEvidence(Slice slice, string aggregate) =>
         slice.Scenarios.OfType<StateChangeScenario>().Any(s =>
             !ScenarioNetExists(s, aggregate)

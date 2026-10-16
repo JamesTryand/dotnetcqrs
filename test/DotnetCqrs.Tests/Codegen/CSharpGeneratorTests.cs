@@ -405,7 +405,7 @@ public class CSharpGeneratorTests
     [Fact]
     public async Task An_endsStream_event_with_no_scenario_beginning_again_ends_the_stream_for_good()
     {
-        // Timesheets W1: deleting a time entry ends its stream, and nothing may follow --
+        // Deleting a time entry ends its stream, and nothing may follow --
         // not an update, and not a create on the same id either. No scenario logs the
         // entry again after a delete, so the create stays once per stream for good.
         const string json = """

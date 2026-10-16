@@ -14,8 +14,8 @@ public interface IPollSource
     void Subscribe(Action<Event> handler);
 
     /// <summary>Calls <paramref name="handler"/> whenever new events may have been committed: by this process, and,
-    /// where the store can hear them, by any other process appending to the same log (Postgres's <c>LISTEN/NOTIFY</c>;
-    /// timesheets' paradigm audit R7). A wake-up, not a delivery: it may come more than once for one commit, or for
+    /// where the store can hear them, by any other process appending to the same log (Postgres's <c>LISTEN/NOTIFY</c>).
+    /// A wake-up, not a delivery: it may come more than once for one commit, or for
     /// none, and <see cref="PollAsync"/> is still how events are read. A <see cref="ConsumerEngine"/> runs a pass on
     /// it. The default hears this process only, through <see cref="Subscribe"/>.</summary>
     void SubscribeToCommits(Action handler) => Subscribe(_ => handler());

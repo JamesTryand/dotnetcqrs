@@ -71,8 +71,8 @@ public sealed record ReadModelSelfAccessDef(string SubjectField, JsonElement? Vi
 
 /// <summary>One <c>readModel.scopes</c> entry: a query param that resolves through
 /// another read model rather than naming one of this model's own columns — the
-/// semi-join case (e.g. <c>pmStaffId</c> → <c>project-managers.staffId</c> →
-/// <c>project-managers.projectId</c> → this model's own <c>projectId</c>).</summary>
+/// semi-join case (e.g. <c>memberId</c> → <c>team-members.memberId</c> →
+/// <c>team-members.teamId</c> → this model's own <c>teamId</c>).</summary>
 ///
 /// <para><c>GrantsAccess</c> (schema 3.8.0): the param is bound to the caller's own subject id,
 /// and a caller without <c>requiredRole</c> may see the rows this scope admits for them.</para>

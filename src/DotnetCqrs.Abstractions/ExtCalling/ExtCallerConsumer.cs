@@ -58,7 +58,7 @@ public sealed class ExtCallerConfig
 /// (dotnetcqrs-multi-node Milestone 4 — an HTTP POST to a remote command gateway,
 /// matching pocketcqrs's own <c>extcaller.Gateway</c>).
 ///
-/// <para>[D40, timesheets' paradigm audit R4] <see cref="ApplyAsync"/> makes no call: it records the event in the
+/// <para><see cref="ApplyAsync"/> makes no call: it records the event in the
 /// <see cref="ExtCallerConfig.Outbox"/> and wakes <see cref="Worker"/>, which calls out, retries and dispatches outside
 /// the engine. So one slow or failing integration never holds up the rest of the log, and a retry survives a restart.
 /// Run the worker beside the engine (<c>_ = consumer.Worker.RunAsync(ct)</c>). A permanently failing rule dead-letters,

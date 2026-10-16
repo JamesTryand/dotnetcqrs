@@ -14,7 +14,7 @@ namespace DotnetCqrs.Tests.Codegen;
 /// item, in its place. How many, and what each carries, is hand-written: the generator emits a hook
 /// that returns the items, and the scenario harness running the generated decider reports such a
 /// scenario as a choice made by hand, accepting the expected events when they fit the alternative.
-/// Raised by timesheets D30.20 (F16): a payroll release pays each staff member in its own event,
+/// For example: a payroll release pays each staff member in its own event,
 /// encrypted under their key, appended with the release.
 /// </summary>
 [Trait("Category", "Compiles")]

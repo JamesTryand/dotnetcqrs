@@ -58,8 +58,8 @@ namespace DotnetCqrs.Codegen.Generation;
 /// it refuses rather than serve every row when the host has wired no role resolver, or needs a
 /// subject id and has wired no <c>resolveSubjectId</c>. A read model declaring none of these
 /// gets exactly the route it got before. Before 3.8.0 this per-caller narrowing had to be
-/// hand-written (<c>project/timesheets</c> Phase 04g), and it applied only when the request
-/// carried the param, which is how a staff caller could read every row (its decision D21).</para>
+/// hand-written, and it applied only when the request carried the param, which is how a caller
+/// who left the param out could read every row.</para>
 ///
 /// <para><b>Plain params are whitelisted.</b> Any other query key names a column, and that
 /// name goes into the SQL text, so it must be one of the table's own columns (the key plus

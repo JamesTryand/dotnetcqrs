@@ -16,7 +16,7 @@ public class OpsServerTests
     private static readonly DateTimeOffset Started = new(2026, 9, 29, 8, 30, 12, 345, TimeSpan.FromHours(1));
 
     private static NodeIdentity Identity() => new(
-        "0192b5c4-7e1a-7c3e-9f00-5b2d8a1c4e77", NodeIdentitySource.Persistent, "timesheets", "node-3",
+        "0192b5c4-7e1a-7c3e-9f00-5b2d8a1c4e77", NodeIdentitySource.Persistent, "storefront", "node-3",
         NodeIdentity.StackName, "writer", Started);
 
     private static async Task<JsonElement> HealthzAsync(OpsServer ops)
@@ -60,7 +60,7 @@ public class OpsServerTests
         Assert.All(body.EnumerateObject(), p => Assert.NotEqual(JsonValueKind.Null, p.Value.ValueKind));
         Assert.Equal("0192b5c4-7e1a-7c3e-9f00-5b2d8a1c4e77", body.GetProperty("node_id").GetString());
         Assert.Equal("persistent", body.GetProperty("identity").GetString());
-        Assert.Equal("timesheets", body.GetProperty("instance").GetString());
+        Assert.Equal("storefront", body.GetProperty("instance").GetString());
         Assert.Equal("writer", body.GetProperty("role").GetString());
     }
 

@@ -73,7 +73,7 @@ public class DependencyTests
     {
         var health = new NodeHealth("node-3", Started);
         health.SetIdentity(new NodeIdentity(
-            "0192b5c4-7e1a-7c3e-9f00-5b2d8a1c4e77", NodeIdentitySource.Persistent, "timesheets", "node-3",
+            "0192b5c4-7e1a-7c3e-9f00-5b2d8a1c4e77", NodeIdentitySource.Persistent, "storefront", "node-3",
             NodeIdentity.StackName, role, Started));
         if (role == "reader")
             health.SetReplication(() => new ReplicationStatus(ReplicationState.Fresh, 0));

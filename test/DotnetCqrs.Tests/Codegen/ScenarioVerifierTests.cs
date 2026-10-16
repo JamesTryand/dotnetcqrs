@@ -112,7 +112,7 @@ public class ScenarioVerifierTests
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_list_field_the_command_does_not_carry_is_recorded_as_null_not_a_crash()
     {
-        // Timesheets: stage-invoice and finalise-invoice failed --verify with "Operation is not
+        // stage-invoice and finalise-invoice failed --verify with "Operation is not
         // valid due to the current state of the object". The generated payload record held a list
         // (json) field as a non-nullable JsonElement, so a field the command doesn't carry was a
         // default JsonElement, and serialising it threw. It must be null instead.
@@ -151,8 +151,8 @@ public class ScenarioVerifierTests
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task An_error_scenario_refused_for_another_reason_fails_and_names_both_messages()
     {
-        // Timesheets audit T2: the harness used to pass an error scenario on ANY refusal. Three
-        // timesheets scenarios passed because the PII protector refused a payload, not because
+        // The harness used to pass an error scenario on ANY refusal. Three
+        // scenarios passed because the PII protector refused a payload, not because
         // of the rule they describe, and stage-non-invoiceable-project-rejected passed on a
         // crash. The decider's message must be the scenario's then.error.message.
         const string json = """
@@ -766,7 +766,7 @@ public class ScenarioVerifierTests
     [InlineData(51, false)]
     public async Task A_custom_field_copied_from_an_event_is_compared_with_its_own_keys(int expectedRate, bool passes)
     {
-        // timesheets D30.5: a rate's history is a custom list carried on its event and stored as the
+        // A rate's history is a custom list carried on its event and stored as the
         // event wrote it, so its objects keep the event's camelCase keys. Only a groupBy row's objects
         // are built with snake_case keys; comparing every nested key as snake_case meant a custom
         // field's view scenario could never pass. A wrong value must still fail.
@@ -888,8 +888,8 @@ public class ScenarioVerifierTests
         // Schema 2.6.0's readModelQuery.asOf: without it, last7Days/lastCalendarMonth
         // resolve "today" from DateTime.UtcNow, so this exact scenario would only pass
         // on whatever 7-day window contains the real date the test happens to run on --
-        // the drift that motivated asOf in the first place (see NEEDS.md item 8,
-        // project/timesheets's export-pm-slice). asOf: "2026-09-06" pins the window to
+        // the drift that motivated asOf in the first place (an export slice over
+        // a date window). asOf: "2026-09-06" pins the window to
         // 2026-08-31..2026-09-06 regardless of when this test actually executes: if the
         // harness ignored asOf and used the live clock instead, e2 (2026-09-01) would
         // fall outside today's real last7Days window and this assertion would fail.

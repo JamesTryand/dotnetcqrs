@@ -34,7 +34,7 @@ public class ReadinessTests
         {
             Health = new NodeHealth("node-3", Started, Clock);
             Health.SetIdentity(new NodeIdentity(
-                "0192b5c4-7e1a-7c3e-9f00-5b2d8a1c4e77", NodeIdentitySource.Persistent, "timesheets", "node-3",
+                "0192b5c4-7e1a-7c3e-9f00-5b2d8a1c4e77", NodeIdentitySource.Persistent, "storefront", "node-3",
                 NodeIdentity.StackName, role, Started));
             // A reader's replication is fresh here; ReplicationTests covers the other states.
             if (role == "reader")

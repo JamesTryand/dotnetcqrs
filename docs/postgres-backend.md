@@ -214,7 +214,7 @@ parity"):
 
 - **Postgres streaming replication** — that would be an alternative to Milestone 3's
   LiteFS story, not part of this milestone.
-- ~~**`LISTEN`/`NOTIFY`**~~ **Added 2026-10-14** (timesheets' paradigm audit R7; see
+- ~~**`LISTEN`/`NOTIFY`**~~ **Added 2026-10-14** (see
   "Commits wake every node" below).
 - **A migration framework** — the schema is one idempotent `CREATE TABLE IF NOT EXISTS`
   block, same as `SqliteEventStore.Schema`.
@@ -227,7 +227,7 @@ parity"):
 
 ## Commits wake every node
 
-Added 2026-10-14 (timesheets' paradigm audit R7). Before, another node's engine heard of
+Added 2026-10-14. Before, another node's engine heard of
 a new event only on its one-second tick, because `IPollSource.Subscribe` is in-process.
 
 - **Every append sends `pg_notify`** on the log's channel (`CommitChannel`,

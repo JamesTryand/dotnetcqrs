@@ -6,7 +6,7 @@ namespace DotnetCqrs.Tests.Codegen;
 
 /// <summary>
 /// A generated <c>count</c>, <c>sum</c> or <c>groupBy</c> rollup is the same however often its events are delivered,
-/// and whenever its row is seeded (timesheets' paradigm audit, R2). It added to the column on each delivery (apply and
+/// and whenever its row is seeded. It added to the column on each delivery (apply and
 /// checkpoint aren't atomic, so a redelivery added again), and an event that arrived before its row existed was lost.
 /// Each contribution is now recorded once, by event, and the totals are worked out from them.
 ///

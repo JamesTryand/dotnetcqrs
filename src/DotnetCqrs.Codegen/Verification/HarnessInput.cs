@@ -17,7 +17,7 @@ public sealed record GivenEventInput(string Type, string Data);
 /// <summary>A stateView scenario's given event, with a per-event row key already
 /// resolved for the main projection and each active scope's via-projection — see
 /// <see cref="ScenarioVerifier"/>'s row-key resolution doc comment. Distinct rows in the
-/// same table (e.g. two different flagged entries) need distinct keys; events about the
+/// same table (e.g. two different orders) need distinct keys; events about the
 /// same entity (or carrying no identifying data at all) need the SAME key so they fold
 /// onto one row, matching how a real event stream would replay.</summary>
 public sealed record ViewGivenEventInput(

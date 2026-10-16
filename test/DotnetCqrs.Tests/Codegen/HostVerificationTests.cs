@@ -8,7 +8,7 @@ using DotnetCqrs.EventStore;
 namespace DotnetCqrs.Tests.Codegen;
 
 /// <summary>
-/// Verifying a document against a host's own deciders (timesheets D30, T3): command scenarios run
+/// Verifying a document against a host's own deciders: command scenarios run
 /// in-process against what the host registers, not generated stand-ins, so the values a scenario
 /// declares check the real arithmetic. A generated stand-in only copies the command's payload, so
 /// it can never compute a total.

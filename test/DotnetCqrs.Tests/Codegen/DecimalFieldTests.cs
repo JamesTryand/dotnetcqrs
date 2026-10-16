@@ -10,7 +10,7 @@ namespace DotnetCqrs.Tests.Codegen;
 /// The schema's <c>decimal</c> field type is exact: a C# <c>decimal</c>, a <c>NUMERIC</c> column, read
 /// back as a decimal. It was folded into the one <c>number</c> type, a <c>double</c>, so money declared
 /// <c>decimal</c> lost half-pennies (30.06 x 8.25 = 247.995 rounded to 247.99) and a summed column
-/// printed 565.1500000000001. Raised by timesheets D30.21 (F17). <c>double</c>, <c>integer</c> and
+/// printed 565.1500000000001. <c>double</c>, <c>integer</c> and
 /// <c>long</c> still fold to <c>number</c>.
 /// </summary>
 [Trait("Category", "Compiles")]

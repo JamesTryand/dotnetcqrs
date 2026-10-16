@@ -73,7 +73,7 @@ public sealed class ConsumerEngine : IReadModelChangeFeed
 
     /// <summary>Adds a consumer, checkpointed in the engine's store.
     ///
-    /// <para><b>Registration order is when, not a guarantee</b> (timesheets' paradigm audit R6). A pass catches each
+    /// <para><b>Registration order is when, not a guarantee</b>. A pass catches each
     /// consumer up in turn, in the order they were registered, so in a quiet log an earlier consumer is done before a
     /// later one starts. But each consumer reads to the head <i>as it is when that consumer runs</i>: an event committed
     /// while a later consumer runs is applied by it in this pass and by the earlier ones only in the next. So a later

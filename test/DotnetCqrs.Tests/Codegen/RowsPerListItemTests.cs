@@ -9,8 +9,8 @@ namespace DotnetCqrs.Tests.Codegen;
 /// <summary>
 /// Schema 3.16.0 <c>readModel.rowsPerListItem</c>: one row per group of a stream's list items, keyed
 /// <c>&lt;stream&gt;|&lt;group&gt;</c>, with <c>sumOfItems</c> (a subfield summed over the row's items, absent unless every
-/// item carries it) and <c>byEvent</c> (a literal per event). Raised by timesheets D33: a PM sees their project's part of a
-/// client's invoice, which was a hand projection whose view scenarios couldn't be checked against generated code.
+/// item carries it) and <c>byEvent</c> (a literal per event). Such a projection used to be written by hand, so its view scenarios couldn't be
+/// checked against generated code.
 /// The worked values are D33's: p1's two lines of 306.00 are 612.00, p2's one is 136.00, and the 22.44 conversion margin
 /// has no project, so it is in neither.
 /// </summary>

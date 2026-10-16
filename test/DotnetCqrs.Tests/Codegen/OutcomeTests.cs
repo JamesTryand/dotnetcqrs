@@ -14,7 +14,7 @@ namespace DotnetCqrs.Tests.Codegen;
 /// model says when. A declared <c>when</c> is generated into Decide, after the refusals; a
 /// <c>"hand"</c> one is a hook the code must fill, and the scenario harness running the generated
 /// decider reports a scenario that depends on it as a choice made by hand, never as a pass.
-/// Raised by timesheets D30.18 (F15): an entry whose hours are paid at no cost is logged and
+/// For example: an entry whose hours are paid at no cost is logged and
 /// flagged in one decision.
 /// </summary>
 [Trait("Category", "Compiles")]

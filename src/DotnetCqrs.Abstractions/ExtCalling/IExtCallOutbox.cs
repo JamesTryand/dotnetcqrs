@@ -12,7 +12,7 @@ public sealed record ExtCallOutboxEntry(
     long Id, string Consumer, Event Event, int Attempts, DateTimeOffset NextAttemptAt, string? FollowUps, int Dispatched);
 
 /// <summary>
-/// The external caller's outbox (D40, timesheets' paradigm audit R4): <see cref="ExtCallerConsumer"/> records an event
+/// The external caller's outbox: <see cref="ExtCallerConsumer"/> records an event
 /// here, in the engine, and <see cref="ExtCallOutboxWorker"/> makes the call outside it, so a slow or failing service
 /// never holds up any consumer, and a retry survives a restart. Implemented by the event stores, beside their dead
 /// letters.

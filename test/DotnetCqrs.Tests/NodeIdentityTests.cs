@@ -163,8 +163,8 @@ public class NodeIdentityTests : IDisposable
 
         var run1 = NodeIdentity.Resolve(null, dir);
         var run2 = NodeIdentity.Resolve(null, dir);
-        var id1 = new NodeIdentity(run1.NodeId, run1.Identity, "timesheets", "node-3", NodeIdentity.StackName, "writer", before);
-        var id2 = new NodeIdentity(run2.NodeId, run2.Identity, "timesheets", "node-3", NodeIdentity.StackName, "writer", after);
+        var id1 = new NodeIdentity(run1.NodeId, run1.Identity, "storefront", "node-3", NodeIdentity.StackName, "writer", before);
+        var id2 = new NodeIdentity(run2.NodeId, run2.Identity, "storefront", "node-3", NodeIdentity.StackName, "writer", after);
 
         Assert.Equal(id1.NodeId, id2.NodeId);
         Assert.NotEqual(id1.StartedAtValue, id2.StartedAtValue);
@@ -311,14 +311,14 @@ public class NodeIdentityTests : IDisposable
     [Fact]
     public void Descriptive_attributes_sit_beside_the_id_and_report_in_the_contracts_forms()
     {
-        var identity = new NodeIdentity(Stored, NodeIdentitySource.Persistent, "timesheets", "node-3",
+        var identity = new NodeIdentity(Stored, NodeIdentitySource.Persistent, "storefront", "node-3",
             NodeIdentity.StackName, "writer", new DateTimeOffset(2026, 9, 27, 1, 40, 12, 345, TimeSpan.FromHours(1)));
 
         Assert.Equal("persistent", identity.IdentityValue);
         Assert.Equal("dotnetcqrs", identity.Stack);
         Assert.Equal("2026-09-27T00:40:12.345Z", identity.StartedAtValue); // converted to UTC
         Assert.Equal(
-            $"node identity: node_id={Stored} identity=persistent instance=timesheets host=node-3 stack=dotnetcqrs role=writer started_at=2026-09-27T00:40:12.345Z",
+            $"node identity: node_id={Stored} identity=persistent instance=storefront host=node-3 stack=dotnetcqrs role=writer started_at=2026-09-27T00:40:12.345Z",
             identity.ToString());
     }
 
@@ -326,7 +326,7 @@ public class NodeIdentityTests : IDisposable
     [Theory]
     [InlineData(null, "OrderFulfillment")]
     [InlineData("", "OrderFulfillment")]
-    [InlineData("timesheets", "timesheets")]
+    [InlineData("storefront", "storefront")]
     public void Instance_is_the_configured_name_else_the_workloads_own(string? configured, string expected) =>
         Assert.Equal(expected, NodeIdentity.ResolveInstance(configured, "OrderFulfillment"));
 

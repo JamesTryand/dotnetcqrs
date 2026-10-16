@@ -5,9 +5,8 @@ using DotnetCqrs.EventStore;
 namespace DotnetCqrs.ExtCalling;
 
 /// <summary>
-/// Makes the external calls <see cref="ExtCallerConsumer"/> records in its outbox, outside the consumer engine (D40,
-/// timesheets' paradigm audit R4: the consumer used to call out, and sleep between retries, inside the engine, holding
-/// up every consumer after it). For each due entry:
+/// Makes the external calls <see cref="ExtCallerConsumer"/> records in its outbox, outside the consumer engine (calling
+/// out, and sleeping between retries, inside the engine would hold up every consumer after it). For each due entry:
 /// <list type="bullet">
 /// <item>It makes the call, once. A failed call is tried again after <see cref="RetryPolicy.Backoff"/>, and
 /// dead-lettered once <see cref="RetryPolicy.MaxAttempts"/> are used.</item>

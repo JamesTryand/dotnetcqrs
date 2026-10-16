@@ -13,7 +13,7 @@ namespace DotnetCqrs.Tests.Codegen;
 /// Schema 3.17.0 <c>readModel.projection: "hand"</c>: a read model built by a hand-written projection (a join no
 /// declaration expresses). The model-only check reports its view scenarios as HAND rather than failing them; a host
 /// check runs the host's own projection (<see cref="HostDeciders.Projections"/>), so the scenarios prove the real code.
-/// Raised by timesheets' late-entries list (D32.1), a known failure in both checks until then. The example: an order
+/// A known failure in both checks until then. The example: an order
 /// for 14 October, whose dispatch has closed, is late; one for 15 October is not.
 /// </summary>
 [Trait("Category", "Compiles")]

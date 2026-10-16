@@ -26,7 +26,7 @@ namespace DotnetCqrs.Codegen.Generation;
 ///
 /// <para><b>Bound params.</b> <c>selfAccess.param</c> and a granting scope's param always name the
 /// caller. Whatever value a request sends is ignored (<see cref="BindSelf"/>, <see cref="BindGrant"/>).
-/// They narrow any caller, role holders included, so a manager can ask for only their own rows.</para>
+/// They narrow any caller, role holders included, so a role holder can ask for only their own rows.</para>
 ///
 /// <para>A caller whose subject id cannot be resolved (null or empty) gets no rows, not an error,
 /// for the reason schema 3.2.0 gives: an empty list is what "you have none" looks like.</para>

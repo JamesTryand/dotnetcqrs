@@ -29,7 +29,7 @@ public class MetricsTests
     ];
 
     private static NodeIdentity Identity() => new(
-        "0192b5c4-7e1a-7c3e-9f00-5b2d8a1c4e77", NodeIdentitySource.Persistent, "timesheets", "node-3",
+        "0192b5c4-7e1a-7c3e-9f00-5b2d8a1c4e77", NodeIdentitySource.Persistent, "storefront", "node-3",
         NodeIdentity.StackName, "writer", Started);
 
     /// <summary>The value of the one sample line <paramref name="series"/> (name plus labels, exactly).</summary>
@@ -125,7 +125,7 @@ public class MetricsTests
         var body = await health.Metrics.RenderAsync(health);
 
         Assert.Equal("1", Value(body,
-            "cqrs_node_info{node_id=\"0192b5c4-7e1a-7c3e-9f00-5b2d8a1c4e77\",instance=\"timesheets\",host=\"node-3\",role=\"writer\",stack=\"dotnetcqrs\",contract_version=\"1.0\"}"));
+            "cqrs_node_info{node_id=\"0192b5c4-7e1a-7c3e-9f00-5b2d8a1c4e77\",instance=\"storefront\",host=\"node-3\",role=\"writer\",stack=\"dotnetcqrs\",contract_version=\"1.0\"}"));
         Assert.Equal("1", Value(body, "cqrs_readiness_status{status=\"ready\"}"));
         Assert.Equal("1", Value(body, "cqrs_events_appended_total"));
         Assert.Equal("2", Value(body, "cqrs_deadletter_depth"));
