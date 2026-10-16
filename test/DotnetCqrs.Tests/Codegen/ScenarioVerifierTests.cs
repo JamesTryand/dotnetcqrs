@@ -44,9 +44,9 @@ public class ScenarioVerifierTests
         // generic field-merge projection (see ProjectionGenerator's own doc comment)
         // can only copy fields present in an event's data, and computing "status"
         // from *which event type fired* is exactly the kind of real per-event rule
-        // "the author's job" (Milestone 3's own framing) means. The verifier correctly
-        // catching this, rather than silently passing, is the whole point of this
-        // milestone -- so this scenario failing IS the passing assertion for the test.
+        // "the author's job" means. The verifier correctly
+        // catching this, rather than silently passing, is the whole point of the
+        // verifier -- so this scenario failing IS the passing assertion for the test.
         var orderStatus = results.Single(r => r.ScenarioId == "view-order-summary-after-placement");
         Assert.Equal("stateView", orderStatus.Kind);
         Assert.False(orderStatus.Passed);
@@ -112,7 +112,7 @@ public class ScenarioVerifierTests
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_list_field_the_command_does_not_carry_is_recorded_as_null_not_a_crash()
     {
-        // stage-invoice and finalise-invoice failed --verify with "Operation is not
+        // Two commands carrying a list field failed --verify with "Operation is not
         // valid due to the current state of the object". The generated payload record held a list
         // (json) field as a non-nullable JsonElement, so a field the command doesn't carry was a
         // default JsonElement, and serialising it threw. It must be null instead.
@@ -153,7 +153,7 @@ public class ScenarioVerifierTests
     {
         // The harness used to pass an error scenario on ANY refusal. Three
         // scenarios passed because the PII protector refused a payload, not because
-        // of the rule they describe, and stage-non-invoiceable-project-rejected passed on a
+        // of the rule they describe, and another passed on a
         // crash. The decider's message must be the scenario's then.error.message.
         const string json = """
             {
@@ -248,7 +248,7 @@ public class ScenarioVerifierTests
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_toggle_derivation_sets_the_field_from_which_event_fired()
     {
-        // Finding 3's case #2 (staff-roster.ssoEnabled): the generic field-merge can
+        // A case like member-directory.ssoEnabled: the generic field-merge can
         // only copy a literal payload key, and no event carries one named "ssoEnabled"
         // -- the toggle derivation computes it from which EVENT TYPE fired instead.
         const string json = """
@@ -256,47 +256,47 @@ public class ScenarioVerifierTests
               "eventModelingSchemaVersion": "2.2.0", "id": "toggle-test", "name": "Toggle Test",
               "swimlanes": [{"id":"s","name":"S","kind":"team"}],
               "events": {
-                "staff-added": {"name": "Staff Added", "swimlaneId": "s", "aggregate": "Staff"},
-                "staff-sso-enabled": {"name": "Staff SSO Enabled", "swimlaneId": "s", "aggregate": "Staff"},
-                "staff-sso-disabled": {"name": "Staff SSO Disabled", "swimlaneId": "s", "aggregate": "Staff"}
+                "member-added": {"name": "Member Added", "swimlaneId": "s", "aggregate": "Member"},
+                "member-sso-enabled": {"name": "Member SSO Enabled", "swimlaneId": "s", "aggregate": "Member"},
+                "member-sso-disabled": {"name": "Member SSO Disabled", "swimlaneId": "s", "aggregate": "Member"}
               },
               "commands": {
-                "add-staff": {"name": "Add Staff", "aggregate": "Staff"},
-                "enable-staff-sso": {"name": "Enable Staff SSO", "aggregate": "Staff"}
+                "add-member": {"name": "Add Member", "aggregate": "Member"},
+                "enable-member-sso": {"name": "Enable Member SSO", "aggregate": "Member"}
               },
               "readModels": {
-                "staff-roster": {
-                  "name": "Staff Roster",
-                  "builtFromEventIds": ["staff-added"],
+                "member-directory": {
+                  "name": "Member Directory",
+                  "builtFromEventIds": ["member-added"],
                   "fields": [
-                    {"name": "staffId", "type": "string", "idAttribute": true},
+                    {"name": "memberId", "type": "string", "idAttribute": true},
                     {"name": "ssoEnabled", "type": "boolean",
-                      "derivation": {"kind": "toggle", "onEventIds": ["staff-sso-enabled"], "offEventIds": ["staff-sso-disabled"], "initial": false}}
+                      "derivation": {"kind": "toggle", "onEventIds": ["member-sso-enabled"], "offEventIds": ["member-sso-disabled"], "initial": false}}
                   ]
                 }
               },
               "screens": {"scr1": {"name": "Add Screen"}, "scr2": {"name": "Enable Screen"}, "scr3": {"name": "View Screen"}},
               "slices": [
                 {
-                  "id": "add-staff-slice", "name": "Add Staff", "pattern": "stateChange",
+                  "id": "add-member-slice", "name": "Add Member", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr1", "commandId": "add-staff", "eventIds": ["staff-added"],
-                  "scenarios": [{"id":"add-scenario","name":"Add","kind":"stateChange","given":[],"when":{"commandId":"add-staff"},"then":{"events":[{"eventId":"staff-added"}]}}]
+                  "screenId": "scr1", "commandId": "add-member", "eventIds": ["member-added"],
+                  "scenarios": [{"id":"add-scenario","name":"Add","kind":"stateChange","given":[],"when":{"commandId":"add-member"},"then":{"events":[{"eventId":"member-added"}]}}]
                 },
                 {
                   "id": "enable-sso-slice", "name": "Enable SSO", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr2", "commandId": "enable-staff-sso", "eventIds": ["staff-sso-enabled"],
-                  "scenarios": [{"id":"enable-scenario","name":"Enable","kind":"stateChange","given":[{"eventId":"staff-added"}],"when":{"commandId":"enable-staff-sso"},"then":{"events":[{"eventId":"staff-sso-enabled"}]}}]
+                  "screenId": "scr2", "commandId": "enable-member-sso", "eventIds": ["member-sso-enabled"],
+                  "scenarios": [{"id":"enable-scenario","name":"Enable","kind":"stateChange","given":[{"eventId":"member-added"}],"when":{"commandId":"enable-member-sso"},"then":{"events":[{"eventId":"member-sso-enabled"}]}}]
                 },
                 {
-                  "id": "view-roster-slice", "name": "View Roster", "pattern": "stateView",
+                  "id": "view-directory-slice", "name": "View Directory", "pattern": "stateView",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr3", "readModelId": "staff-roster",
+                  "screenId": "scr3", "readModelId": "member-directory",
                   "scenarios": [{
                     "id": "view-after-enable", "name": "SSO shows enabled", "kind": "stateView",
-                    "given": [{"eventId": "staff-added"}, {"eventId": "staff-sso-enabled"}],
-                    "when": {"readModelId": "staff-roster"},
+                    "given": [{"eventId": "member-added"}, {"eventId": "member-sso-enabled"}],
+                    "when": {"readModelId": "member-directory"},
                     "then": {"result": {"ssoEnabled": true}}
                   }]
                 }
@@ -315,7 +315,7 @@ public class ScenarioVerifierTests
     [Fact(Timeout = 300000)]
     public async Task A_view_over_a_pii_column_is_verified_against_plaintext_through_the_real_reveal_path()
     {
-        // Milestone D3 (the read half of E): the given events are sealed the way the real
+        // The given events are sealed the way the real
         // write path seals them, the projection stores the envelope, and the rows are
         // revealed through the same PiiColumnRevealer a query route uses. So the scenario
         // states plaintext and is compared with what a caller would actually see.
@@ -398,7 +398,7 @@ public class ScenarioVerifierTests
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task View_scenarios_run_match_queries_through_the_routes_own_sql_pii_included()
     {
-        // Milestone D5: a scenario's queryParams can name match filters. The harness uses the
+        // A scenario's queryParams can name match filters. The harness uses the
         // clause GenerationSupport.MatchClause builds for the route, the same normalizer and
         // pattern, and for a pii field a real temporary search.db filled by the generated
         // search index from the (sealed) given events.
@@ -513,7 +513,7 @@ public class ScenarioVerifierTests
         var byEmail = results.Single(r => r.ScenarioId == "by-email");
         Assert.True(byEmail.Passed, byEmail.Detail);
         Assert.False(results.Single(r => r.ScenarioId == "wrong-hit").Passed);
-        // Milestone D6: pii exact/prefix hash the normalized term with the harness's index key.
+        // Pii exact/prefix hash the normalized term with the harness's index key.
         var byExact = results.Single(r => r.ScenarioId == "by-email-exact");
         Assert.True(byExact.Passed, byExact.Detail);
         var byPrefix = results.Single(r => r.ScenarioId == "by-email-prefix");
@@ -524,62 +524,62 @@ public class ScenarioVerifierTests
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_count_derivation_rolls_up_across_streams()
     {
-        // Finding 3's case #3 (projects.staffCount): the counted events
-        // (staff-assigned-to-project) live on the ASSIGNMENT stream, not the project's
+        // A case like regions.courierCount: the counted events
+        // (courier-assigned-to-region) live on the ASSIGNMENT stream, not the region's
         // own -- the generic one-row-per-stream projection can't key on ev.AggregateId
         // for them at all. The count derivation keys on the event's own payload
-        // (rowKeyField, defaulted here to "projectId") instead.
+        // (rowKeyField, defaulted here to "regionId") instead.
         const string json = """
             {
               "eventModelingSchemaVersion": "2.2.0", "id": "count-test", "name": "Count Test",
               "swimlanes": [{"id":"s","name":"S","kind":"team"}],
               "events": {
-                "project-created": {"name": "Project Created", "swimlaneId": "s", "aggregate": "Project",
-                  "fields": [{"name": "projectId", "type": "string", "idAttribute": true}]},
-                "staff-assigned-to-project": {"name": "Staff Assigned To Project", "swimlaneId": "s", "aggregate": "ProjectStaffAssignment",
-                  "fields": [{"name": "projectId", "type": "string"}]}
+                "region-created": {"name": "Region Created", "swimlaneId": "s", "aggregate": "Region",
+                  "fields": [{"name": "regionId", "type": "string", "idAttribute": true}]},
+                "courier-assigned-to-region": {"name": "Courier Assigned To Region", "swimlaneId": "s", "aggregate": "RegionCourierAssignment",
+                  "fields": [{"name": "regionId", "type": "string"}]}
               },
               "commands": {
-                "create-project": {"name": "Create Project", "aggregate": "Project"},
-                "assign-staff-to-project": {"name": "Assign Staff To Project", "aggregate": "ProjectStaffAssignment"}
+                "create-region": {"name": "Create Region", "aggregate": "Region"},
+                "assign-courier-to-region": {"name": "Assign Courier To Region", "aggregate": "RegionCourierAssignment"}
               },
               "readModels": {
-                "projects": {
-                  "name": "Projects",
-                  "builtFromEventIds": ["project-created"],
+                "regions": {
+                  "name": "Regions",
+                  "builtFromEventIds": ["region-created"],
                   "fields": [
-                    {"name": "projectId", "type": "string", "idAttribute": true},
-                    {"name": "staffCount", "type": "integer",
-                      "derivation": {"kind": "count", "incrementOnEventIds": ["staff-assigned-to-project"]}}
+                    {"name": "regionId", "type": "string", "idAttribute": true},
+                    {"name": "courierCount", "type": "integer",
+                      "derivation": {"kind": "count", "incrementOnEventIds": ["courier-assigned-to-region"]}}
                   ]
                 }
               },
               "screens": {"scr1": {"name": "Create Screen"}, "scr2": {"name": "Assign Screen"}, "scr3": {"name": "View Screen"}},
               "slices": [
                 {
-                  "id": "create-project-slice", "name": "Create Project", "pattern": "stateChange",
+                  "id": "create-region-slice", "name": "Create Region", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr1", "commandId": "create-project", "eventIds": ["project-created"],
-                  "scenarios": [{"id":"create-scenario","name":"Create","kind":"stateChange","given":[],"when":{"commandId":"create-project"},"then":{"events":[{"eventId":"project-created"}]}}]
+                  "screenId": "scr1", "commandId": "create-region", "eventIds": ["region-created"],
+                  "scenarios": [{"id":"create-scenario","name":"Create","kind":"stateChange","given":[],"when":{"commandId":"create-region"},"then":{"events":[{"eventId":"region-created"}]}}]
                 },
                 {
-                  "id": "assign-staff-slice", "name": "Assign Staff", "pattern": "stateChange",
+                  "id": "assign-courier-slice", "name": "Assign Courier", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr2", "commandId": "assign-staff-to-project", "eventIds": ["staff-assigned-to-project"],
-                  "scenarios": [{"id":"assign-scenario","name":"Assign","kind":"stateChange","given":[],"when":{"commandId":"assign-staff-to-project"},"then":{"events":[{"eventId":"staff-assigned-to-project"}]}}]
+                  "screenId": "scr2", "commandId": "assign-courier-to-region", "eventIds": ["courier-assigned-to-region"],
+                  "scenarios": [{"id":"assign-scenario","name":"Assign","kind":"stateChange","given":[],"when":{"commandId":"assign-courier-to-region"},"then":{"events":[{"eventId":"courier-assigned-to-region"}]}}]
                 },
                 {
-                  "id": "view-projects-slice", "name": "View Projects", "pattern": "stateView",
+                  "id": "view-regions-slice", "name": "View Regions", "pattern": "stateView",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr3", "readModelId": "projects",
+                  "screenId": "scr3", "readModelId": "regions",
                   "scenarios": [{
-                    "id": "view-after-assign", "name": "Staff count reflects the assignment", "kind": "stateView",
+                    "id": "view-after-assign", "name": "Courier count reflects the assignment", "kind": "stateView",
                     "given": [
-                      {"eventId": "project-created", "data": {"projectId": "p1"}},
-                      {"eventId": "staff-assigned-to-project", "data": {"projectId": "p1"}}
+                      {"eventId": "region-created", "data": {"regionId": "p1"}},
+                      {"eventId": "courier-assigned-to-region", "data": {"regionId": "p1"}}
                     ],
-                    "when": {"readModelId": "projects"},
-                    "then": {"result": {"staffCount": 1}}
+                    "when": {"readModelId": "regions"},
+                    "then": {"result": {"courierCount": 1}}
                   }]
                 }
               ]
@@ -598,63 +598,63 @@ public class ScenarioVerifierTests
     public async Task A_count_derivation_honours_an_explicit_rowKeyField_that_differs_from_the_read_models_own_key()
     {
         // Regression for a bug found in review: the counted event's payload here names
-        // the target project "forProjectId", NOT "projectId" (the "projects" read
+        // the target region "forRegionId", NOT "regionId" (the "regions" read
         // model's own idAttribute/key column) -- exactly the schema's documented
         // "explicit override for when they differ" case. EmitRollup must still filter
-        // the UPDATE on the read model's own key column (project_id), extracting the
-        // VALUE via rowKeyField ("forProjectId") -- not generate a WHERE clause against
-        // a for_project_id column, which the projects table never has.
+        // the UPDATE on the read model's own key column (region_id), extracting the
+        // VALUE via rowKeyField ("forRegionId") -- not generate a WHERE clause against
+        // a for_region_id column, which the regions table never has.
         const string json = """
             {
               "eventModelingSchemaVersion": "2.2.0", "id": "count-rowkey-test", "name": "Count RowKey Test",
               "swimlanes": [{"id":"s","name":"S","kind":"team"}],
               "events": {
-                "project-created": {"name": "Project Created", "swimlaneId": "s", "aggregate": "Project",
-                  "fields": [{"name": "projectId", "type": "string", "idAttribute": true}]},
-                "staff-assigned-to-project": {"name": "Staff Assigned To Project", "swimlaneId": "s", "aggregate": "ProjectStaffAssignment",
-                  "fields": [{"name": "forProjectId", "type": "string"}]}
+                "region-created": {"name": "Region Created", "swimlaneId": "s", "aggregate": "Region",
+                  "fields": [{"name": "regionId", "type": "string", "idAttribute": true}]},
+                "courier-assigned-to-region": {"name": "Courier Assigned To Region", "swimlaneId": "s", "aggregate": "RegionCourierAssignment",
+                  "fields": [{"name": "forRegionId", "type": "string"}]}
               },
               "commands": {
-                "create-project": {"name": "Create Project", "aggregate": "Project"},
-                "assign-staff-to-project": {"name": "Assign Staff To Project", "aggregate": "ProjectStaffAssignment"}
+                "create-region": {"name": "Create Region", "aggregate": "Region"},
+                "assign-courier-to-region": {"name": "Assign Courier To Region", "aggregate": "RegionCourierAssignment"}
               },
               "readModels": {
-                "projects": {
-                  "name": "Projects",
-                  "builtFromEventIds": ["project-created"],
+                "regions": {
+                  "name": "Regions",
+                  "builtFromEventIds": ["region-created"],
                   "fields": [
-                    {"name": "projectId", "type": "string", "idAttribute": true},
-                    {"name": "staffCount", "type": "integer",
-                      "derivation": {"kind": "count", "incrementOnEventIds": ["staff-assigned-to-project"], "rowKeyField": "forProjectId"}}
+                    {"name": "regionId", "type": "string", "idAttribute": true},
+                    {"name": "courierCount", "type": "integer",
+                      "derivation": {"kind": "count", "incrementOnEventIds": ["courier-assigned-to-region"], "rowKeyField": "forRegionId"}}
                   ]
                 }
               },
               "screens": {"scr1": {"name": "Create Screen"}, "scr2": {"name": "Assign Screen"}, "scr3": {"name": "View Screen"}},
               "slices": [
                 {
-                  "id": "create-project-slice", "name": "Create Project", "pattern": "stateChange",
+                  "id": "create-region-slice", "name": "Create Region", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr1", "commandId": "create-project", "eventIds": ["project-created"],
-                  "scenarios": [{"id":"create-scenario","name":"Create","kind":"stateChange","given":[],"when":{"commandId":"create-project"},"then":{"events":[{"eventId":"project-created"}]}}]
+                  "screenId": "scr1", "commandId": "create-region", "eventIds": ["region-created"],
+                  "scenarios": [{"id":"create-scenario","name":"Create","kind":"stateChange","given":[],"when":{"commandId":"create-region"},"then":{"events":[{"eventId":"region-created"}]}}]
                 },
                 {
-                  "id": "assign-staff-slice", "name": "Assign Staff", "pattern": "stateChange",
+                  "id": "assign-courier-slice", "name": "Assign Courier", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr2", "commandId": "assign-staff-to-project", "eventIds": ["staff-assigned-to-project"],
-                  "scenarios": [{"id":"assign-scenario","name":"Assign","kind":"stateChange","given":[],"when":{"commandId":"assign-staff-to-project"},"then":{"events":[{"eventId":"staff-assigned-to-project"}]}}]
+                  "screenId": "scr2", "commandId": "assign-courier-to-region", "eventIds": ["courier-assigned-to-region"],
+                  "scenarios": [{"id":"assign-scenario","name":"Assign","kind":"stateChange","given":[],"when":{"commandId":"assign-courier-to-region"},"then":{"events":[{"eventId":"courier-assigned-to-region"}]}}]
                 },
                 {
-                  "id": "view-projects-slice", "name": "View Projects", "pattern": "stateView",
+                  "id": "view-regions-slice", "name": "View Regions", "pattern": "stateView",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr3", "readModelId": "projects",
+                  "screenId": "scr3", "readModelId": "regions",
                   "scenarios": [{
-                    "id": "view-after-assign", "name": "Staff count reflects the assignment", "kind": "stateView",
+                    "id": "view-after-assign", "name": "Courier count reflects the assignment", "kind": "stateView",
                     "given": [
-                      {"eventId": "project-created", "data": {"projectId": "p1"}},
-                      {"eventId": "staff-assigned-to-project", "data": {"forProjectId": "p1"}}
+                      {"eventId": "region-created", "data": {"regionId": "p1"}},
+                      {"eventId": "courier-assigned-to-region", "data": {"forRegionId": "p1"}}
                     ],
-                    "when": {"readModelId": "projects"},
-                    "then": {"result": {"staffCount": 1}}
+                    "when": {"readModelId": "regions"},
+                    "then": {"result": {"courierCount": 1}}
                   }]
                 }
               ]
@@ -672,11 +672,11 @@ public class ScenarioVerifierTests
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_groupBy_derivation_produces_one_nested_row_per_distinct_group_key()
     {
-        // Schema 2.3.0's payroll-periods.staffTotals shape: hours-logged lives on a
-        // DIFFERENT aggregate (TimeEntry) than the read model it rolls up into
-        // (PayrollPeriod) -- same cross-stream shape as the count-derivation tests above.
-        // staffTotals nests one row per distinct staffId, each with its own sum
-        // (outOfHoursHours) computed WITHIN that group -- two contributions for "s1"
+        // Schema 2.3.0's reporting-periods.sellerTotals shape: sale-recorded lives on a
+        // DIFFERENT aggregate (Sale) than the read model it rolls up into
+        // (ReportingPeriod) -- same cross-stream shape as the count-derivation tests above.
+        // sellerTotals nests one row per distinct sellerId, each with its own sum
+        // (weekendUnits) computed WITHIN that group -- two contributions for "s1"
         // (5 + 3) must land in the SAME nested entry, not two separate ones, and "s2"'s
         // single contribution must land in its own entry untouched by s1's.
         const string json = """
@@ -684,31 +684,31 @@ public class ScenarioVerifierTests
               "eventModelingSchemaVersion": "2.3.0", "id": "groupby-verify-test", "name": "GroupBy Verify Test",
               "swimlanes": [{"id":"s","name":"S","kind":"team"}],
               "events": {
-                "period-created": {"name": "Period Created", "swimlaneId": "s", "aggregate": "PayrollPeriod",
+                "period-created": {"name": "Period Created", "swimlaneId": "s", "aggregate": "ReportingPeriod",
                   "fields": [{"name": "periodId", "type": "string", "idAttribute": true}]},
-                "hours-logged": {"name": "Hours Logged", "swimlaneId": "s", "aggregate": "TimeEntry",
+                "sale-recorded": {"name": "Sale Recorded", "swimlaneId": "s", "aggregate": "Sale",
                   "fields": [
                     {"name": "periodId", "type": "string"},
-                    {"name": "staffId", "type": "string"},
-                    {"name": "hours", "type": "double"}
+                    {"name": "sellerId", "type": "string"},
+                    {"name": "units", "type": "double"}
                   ]}
               },
               "commands": {
-                "create-period": {"name": "Create Period", "aggregate": "PayrollPeriod"},
-                "log-hours": {"name": "Log Hours", "aggregate": "TimeEntry"}
+                "create-period": {"name": "Create Period", "aggregate": "ReportingPeriod"},
+                "record-sale": {"name": "Record Sale", "aggregate": "Sale"}
               },
               "readModels": {
-                "payroll-periods": {
-                  "name": "Payroll Periods",
+                "reporting-periods": {
+                  "name": "Reporting Periods",
                   "builtFromEventIds": ["period-created"],
                   "fields": [
                     {"name": "periodId", "type": "string", "idAttribute": true},
-                    {"name": "staffTotals", "type": "custom", "cardinality": "list",
-                      "derivation": {"kind": "groupBy", "groupByField": "staffId"},
+                    {"name": "sellerTotals", "type": "custom", "cardinality": "list",
+                      "derivation": {"kind": "groupBy", "groupByField": "sellerId"},
                       "subfields": [
-                        {"name": "staffId", "type": "string"},
-                        {"name": "outOfHoursHours", "type": "double",
-                          "derivation": {"kind": "sum", "addOnEventIds": ["hours-logged"], "amountField": "hours"}}
+                        {"name": "sellerId", "type": "string"},
+                        {"name": "weekendUnits", "type": "double",
+                          "derivation": {"kind": "sum", "addOnEventIds": ["sale-recorded"], "amountField": "units"}}
                       ]}
                   ]
                 }
@@ -722,29 +722,29 @@ public class ScenarioVerifierTests
                   "scenarios": [{"id":"create-scenario","name":"Create","kind":"stateChange","given":[],"when":{"commandId":"create-period"},"then":{"events":[{"eventId":"period-created"}]}}]
                 },
                 {
-                  "id": "log-hours-slice", "name": "Log Hours", "pattern": "stateChange",
+                  "id": "record-sale-slice", "name": "Record Sale", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr2", "commandId": "log-hours", "eventIds": ["hours-logged"],
-                  "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"log-hours"},"then":{"events":[{"eventId":"hours-logged"}]}}]
+                  "screenId": "scr2", "commandId": "record-sale", "eventIds": ["sale-recorded"],
+                  "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"record-sale"},"then":{"events":[{"eventId":"sale-recorded"}]}}]
                 },
                 {
                   "id": "view-periods-slice", "name": "View Periods", "pattern": "stateView",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr3", "readModelId": "payroll-periods",
+                  "screenId": "scr3", "readModelId": "reporting-periods",
                   "scenarios": [{
-                    "id": "view-after-log", "name": "Staff totals reflect logged hours, grouped by staff", "kind": "stateView",
+                    "id": "view-after-log", "name": "Seller totals reflect recorded sales, grouped by seller", "kind": "stateView",
                     "given": [
                       {"eventId": "period-created", "data": {"periodId": "p1"}},
-                      {"eventId": "hours-logged", "data": {"periodId": "p1", "staffId": "s1", "hours": 5}},
-                      {"eventId": "hours-logged", "data": {"periodId": "p1", "staffId": "s2", "hours": 3}},
-                      {"eventId": "hours-logged", "data": {"periodId": "p1", "staffId": "s1", "hours": 3}}
+                      {"eventId": "sale-recorded", "data": {"periodId": "p1", "sellerId": "s1", "units": 5}},
+                      {"eventId": "sale-recorded", "data": {"periodId": "p1", "sellerId": "s2", "units": 3}},
+                      {"eventId": "sale-recorded", "data": {"periodId": "p1", "sellerId": "s1", "units": 3}}
                     ],
-                    "when": {"readModelId": "payroll-periods"},
+                    "when": {"readModelId": "reporting-periods"},
                     "then": {"result": {
                       "periodId": "p1",
-                      "staffTotals": [
-                        {"staffId": "s1", "outOfHoursHours": 8},
-                        {"staffId": "s2", "outOfHoursHours": 3}
+                      "sellerTotals": [
+                        {"sellerId": "s1", "weekendUnits": 8},
+                        {"sellerId": "s2", "weekendUnits": 3}
                       ]
                     }}
                   }]
@@ -791,7 +791,7 @@ public class ScenarioVerifierTests
                 {"id": "view-rates-slice", "name": "View Rates", "pattern": "stateView", "swimlaneId": "s", "status": "created",
                   "screenId": "scr2", "readModelId": "rates",
                   "scenarios": [{"id": "view-history", "name": "The history as the event carried it", "kind": "stateView",
-                    "given": [{"eventId": "rate-set", "data": {"rateId": "r1", "history": [{"effectiveFrom": "2026-09-01", "outOfHoursRate": 65, "rate": 50}]}}],
+                    "given": [{"eventId": "rate-set", "data": {"rateId": "r1", "history": [{"effectiveFrom": "2026-09-01", "premiumRate": 65, "rate": 50}]}}],
                     "when": {"readModelId": "rates"},
                     "then": {"result": {"entries": [{"rateId": "r1", "history": [{"effectiveFrom": "2026-09-01", "rate": EXPECTED_RATE}]}]}}}]}
               ]
@@ -809,7 +809,7 @@ public class ScenarioVerifierTests
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_dateRange_filter_narrows_a_view_query_to_the_declared_bounds()
     {
-        // Group C item 4's grounding finding: before this, ANY object-shaped
+        // Before this, ANY object-shaped
         // queryParams value (exactly the `{kind, from, to}` shape a real dateRange
         // param uses) was silently skipped by the harness -- this is the regression
         // test that it now becomes a real predicate instead. "custom" is used (not
@@ -820,53 +820,53 @@ public class ScenarioVerifierTests
               "eventModelingSchemaVersion": "2.4.0", "id": "daterange-verify-test", "name": "DateRange Verify Test",
               "swimlanes": [{"id":"s","name":"S","kind":"team"}],
               "events": {
-                "time-entry-logged": {"name": "Time Entry Logged", "swimlaneId": "s", "aggregate": "TimeEntry",
+                "shipment-logged": {"name": "Shipment Logged", "swimlaneId": "s", "aggregate": "Shipment",
                   "fields": [
-                    {"name": "entryId", "type": "string", "idAttribute": true},
-                    {"name": "taskDate", "type": "date"},
-                    {"name": "hours", "type": "double"}
+                    {"name": "shipmentId", "type": "string", "idAttribute": true},
+                    {"name": "shipDate", "type": "date"},
+                    {"name": "weightKg", "type": "double"}
                   ]}
               },
               "commands": {
-                "log-time-entry": {"name": "Log Time Entry", "aggregate": "TimeEntry"}
+                "log-shipment": {"name": "Log Shipment", "aggregate": "Shipment"}
               },
               "readModels": {
-                "time-entries": {
-                  "name": "Time Entries",
-                  "builtFromEventIds": ["time-entry-logged"],
+                "shipments": {
+                  "name": "Shipments",
+                  "builtFromEventIds": ["shipment-logged"],
                   "fields": [
-                    {"name": "entryId", "type": "string", "idAttribute": true},
-                    {"name": "taskDate", "type": "date"},
-                    {"name": "hours", "type": "double"}
+                    {"name": "shipmentId", "type": "string", "idAttribute": true},
+                    {"name": "shipDate", "type": "date"},
+                    {"name": "weightKg", "type": "double"}
                   ],
                   "filters": [
-                    {"param": "dateRange", "field": "taskDate", "kind": "dateRange", "presets": ["last7Days", "lastCalendarMonth", "custom"]}
+                    {"param": "dateRange", "field": "shipDate", "kind": "dateRange", "presets": ["last7Days", "lastCalendarMonth", "custom"]}
                   ]
                 }
               },
               "screens": {"scr1": {"name": "Log Screen"}, "scr2": {"name": "View Screen"}},
               "slices": [
                 {
-                  "id": "log-time-entry-slice", "name": "Log Time Entry", "pattern": "stateChange",
+                  "id": "log-shipment-slice", "name": "Log Shipment", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr1", "commandId": "log-time-entry", "eventIds": ["time-entry-logged"],
-                  "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"log-time-entry"},"then":{"events":[{"eventId":"time-entry-logged"}]}}]
+                  "screenId": "scr1", "commandId": "log-shipment", "eventIds": ["shipment-logged"],
+                  "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"log-shipment"},"then":{"events":[{"eventId":"shipment-logged"}]}}]
                 },
                 {
-                  "id": "view-time-entries-slice", "name": "View Time Entries", "pattern": "stateView",
+                  "id": "view-shipments-slice", "name": "View Shipments", "pattern": "stateView",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr2", "readModelId": "time-entries",
+                  "screenId": "scr2", "readModelId": "shipments",
                   "scenarios": [{
-                    "id": "view-within-custom-range", "name": "Only entries inside the custom date range are returned", "kind": "stateView",
+                    "id": "view-within-custom-range", "name": "Only shipments inside the custom date range are returned", "kind": "stateView",
                     "given": [
-                      {"eventId": "time-entry-logged", "data": {"entryId": "e1", "taskDate": "2026-08-15", "hours": 4}},
-                      {"eventId": "time-entry-logged", "data": {"entryId": "e2", "taskDate": "2026-08-20", "hours": 3}},
-                      {"eventId": "time-entry-logged", "data": {"entryId": "e3", "taskDate": "2026-09-01", "hours": 2}}
+                      {"eventId": "shipment-logged", "data": {"shipmentId": "e1", "shipDate": "2026-08-15", "weightKg": 4}},
+                      {"eventId": "shipment-logged", "data": {"shipmentId": "e2", "shipDate": "2026-08-20", "weightKg": 3}},
+                      {"eventId": "shipment-logged", "data": {"shipmentId": "e3", "shipDate": "2026-09-01", "weightKg": 2}}
                     ],
-                    "when": {"readModelId": "time-entries", "queryParams": {"dateRange": {"kind": "custom", "from": "2026-08-01", "to": "2026-08-31"}}},
+                    "when": {"readModelId": "shipments", "queryParams": {"dateRange": {"kind": "custom", "from": "2026-08-01", "to": "2026-08-31"}}},
                     "then": {"result": {"entries": [
-                      {"entryId": "e1", "taskDate": "2026-08-15", "hours": 4},
-                      {"entryId": "e2", "taskDate": "2026-08-20", "hours": 3}
+                      {"shipmentId": "e1", "shipDate": "2026-08-15", "weightKg": 4},
+                      {"shipmentId": "e2", "shipDate": "2026-08-20", "weightKg": 3}
                     ]}}
                   }]
                 }
@@ -898,53 +898,53 @@ public class ScenarioVerifierTests
               "eventModelingSchemaVersion": "2.6.0", "id": "asof-verify-test", "name": "AsOf Verify Test",
               "swimlanes": [{"id":"s","name":"S","kind":"team"}],
               "events": {
-                "time-entry-logged": {"name": "Time Entry Logged", "swimlaneId": "s", "aggregate": "TimeEntry",
+                "shipment-logged": {"name": "Shipment Logged", "swimlaneId": "s", "aggregate": "Shipment",
                   "fields": [
-                    {"name": "entryId", "type": "string", "idAttribute": true},
-                    {"name": "taskDate", "type": "date"},
-                    {"name": "hours", "type": "double"}
+                    {"name": "shipmentId", "type": "string", "idAttribute": true},
+                    {"name": "shipDate", "type": "date"},
+                    {"name": "weightKg", "type": "double"}
                   ]}
               },
               "commands": {
-                "log-time-entry": {"name": "Log Time Entry", "aggregate": "TimeEntry"}
+                "log-shipment": {"name": "Log Shipment", "aggregate": "Shipment"}
               },
               "readModels": {
-                "time-entries": {
-                  "name": "Time Entries",
-                  "builtFromEventIds": ["time-entry-logged"],
+                "shipments": {
+                  "name": "Shipments",
+                  "builtFromEventIds": ["shipment-logged"],
                   "fields": [
-                    {"name": "entryId", "type": "string", "idAttribute": true},
-                    {"name": "taskDate", "type": "date"},
-                    {"name": "hours", "type": "double"}
+                    {"name": "shipmentId", "type": "string", "idAttribute": true},
+                    {"name": "shipDate", "type": "date"},
+                    {"name": "weightKg", "type": "double"}
                   ],
                   "filters": [
-                    {"param": "dateRange", "field": "taskDate", "kind": "dateRange", "presets": ["last7Days", "lastCalendarMonth", "custom"]}
+                    {"param": "dateRange", "field": "shipDate", "kind": "dateRange", "presets": ["last7Days", "lastCalendarMonth", "custom"]}
                   ]
                 }
               },
               "screens": {"scr1": {"name": "Log Screen"}, "scr2": {"name": "View Screen"}},
               "slices": [
                 {
-                  "id": "log-time-entry-slice", "name": "Log Time Entry", "pattern": "stateChange",
+                  "id": "log-shipment-slice", "name": "Log Shipment", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr1", "commandId": "log-time-entry", "eventIds": ["time-entry-logged"],
-                  "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"log-time-entry"},"then":{"events":[{"eventId":"time-entry-logged"}]}}]
+                  "screenId": "scr1", "commandId": "log-shipment", "eventIds": ["shipment-logged"],
+                  "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"log-shipment"},"then":{"events":[{"eventId":"shipment-logged"}]}}]
                 },
                 {
-                  "id": "view-time-entries-slice", "name": "View Time Entries", "pattern": "stateView",
+                  "id": "view-shipments-slice", "name": "View Shipments", "pattern": "stateView",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr2", "readModelId": "time-entries",
+                  "screenId": "scr2", "readModelId": "shipments",
                   "scenarios": [{
-                    "id": "view-within-pinned-last7days-window", "name": "Only entries inside the asOf-pinned last7Days window are returned", "kind": "stateView",
+                    "id": "view-within-pinned-last7days-window", "name": "Only shipments inside the asOf-pinned last7Days window are returned", "kind": "stateView",
                     "given": [
-                      {"eventId": "time-entry-logged", "data": {"entryId": "e1", "taskDate": "2026-08-30", "hours": 4}},
-                      {"eventId": "time-entry-logged", "data": {"entryId": "e2", "taskDate": "2026-09-01", "hours": 3}},
-                      {"eventId": "time-entry-logged", "data": {"entryId": "e3", "taskDate": "2026-09-06", "hours": 2}}
+                      {"eventId": "shipment-logged", "data": {"shipmentId": "e1", "shipDate": "2026-08-30", "weightKg": 4}},
+                      {"eventId": "shipment-logged", "data": {"shipmentId": "e2", "shipDate": "2026-09-01", "weightKg": 3}},
+                      {"eventId": "shipment-logged", "data": {"shipmentId": "e3", "shipDate": "2026-09-06", "weightKg": 2}}
                     ],
-                    "when": {"readModelId": "time-entries", "asOf": "2026-09-06", "queryParams": {"dateRange": {"kind": "last7Days"}}},
+                    "when": {"readModelId": "shipments", "asOf": "2026-09-06", "queryParams": {"dateRange": {"kind": "last7Days"}}},
                     "then": {"result": {"entries": [
-                      {"entryId": "e2", "taskDate": "2026-09-01", "hours": 3},
-                      {"entryId": "e3", "taskDate": "2026-09-06", "hours": 2}
+                      {"shipmentId": "e2", "shipDate": "2026-09-01", "weightKg": 3},
+                      {"shipmentId": "e3", "shipDate": "2026-09-06", "weightKg": 2}
                     ]}}
                   }]
                 }

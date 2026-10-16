@@ -5,7 +5,7 @@ using DotnetCqrs.Codegen.Mapping;
 namespace DotnetCqrs.Tests.Codegen;
 
 /// <summary>
-/// Milestones D5/D6: schema 3.1.0 <c>match</c> filters. The normalizer's pinned rules (they
+/// Schema 3.1.0 <c>match</c> filters. The normalizer's pinned rules (they
 /// are a contract: a hashed index only works if every implementation agrees byte for byte)
 /// and the mapper's reference checks, which JSON Schema can't express.
 /// </summary>

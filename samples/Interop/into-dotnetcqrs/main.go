@@ -1,4 +1,4 @@
-// Command into-dotnetcqrs is dotnetcqrs-multi-node Milestone 5's direction B: a
+// Command into-dotnetcqrs is the interop sample's direction B: a
 // pocketcqrs-side process dispatching a command into a *dotnetcqrs* gateway.
 //
 // It mirrors, by hand, exactly the HTTP request pocketcqrs's own
@@ -6,7 +6,7 @@
 // Authorization/Content-Type/Idempotency-Key/Causation-Id/Correlation-Id headers, the
 // same deterministic sha256 idempotency key. It is a *thin driver*, not a copy of a
 // production extcaller: gatewayclient is under internal/ in the pocketcqrs module and
-// cannot be imported from this repo, and Milestone 5's point is proving the request
+// cannot be imported from this repo, and the sample's point is proving the request
 // shape pocketcqrs emits is accepted by dotnetcqrs's CqrsGatewayEndpoints -- not
 // re-testing pocketcqrs's extcaller wiring. If you keep this and pocketcqrs's
 // gatewayclient.go in sync, this stays a faithful stand-in.

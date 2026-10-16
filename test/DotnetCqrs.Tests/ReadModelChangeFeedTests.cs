@@ -6,7 +6,7 @@ using DotnetCqrs.Projections;
 
 namespace DotnetCqrs.Tests;
 
-/// <summary>D27 live views, L1: the engine tells live subscribers when a projection changes a table they depend
+/// <summary>Live views: the engine tells live subscribers when a projection changes a table they depend
 /// on. One notification per batch per table, only from projections, only after the checkpoint is saved, and a
 /// subscriber can never hold the engine up.</summary>
 public class ReadModelChangeFeedTests
@@ -53,14 +53,14 @@ public class ReadModelChangeFeedTests
     {
         await using var store = await SeededStoreAsync(3);
         var engine = new ConsumerEngine(store, store);
-        engine.Register(new TableProjection("timeEntries", "timeEntries", "timeEntriesIndex"));
+        engine.Register(new TableProjection("orders", "orders", "ordersIndex"));
         var changes = new ConcurrentQueue<ReadModelChanged>();
-        using var _ = engine.Subscribe(["timeEntries", "timeEntriesIndex"], changes.Enqueue);
+        using var _ = engine.Subscribe(["orders", "ordersIndex"], changes.Enqueue);
 
         await engine.RunOnceAsync();
 
         Assert.Equal(
-            [new ReadModelChanged("timeEntries", 3), new ReadModelChanged("timeEntriesIndex", 3)],
+            [new ReadModelChanged("orders", 3), new ReadModelChanged("ordersIndex", 3)],
             changes.ToArray());
     }
 
@@ -202,9 +202,9 @@ public class ReadModelChangeFeedTests
         await using var store = await SeededStoreAsync(0);
         var cache = new PiiRevealCache();
         var engine = new ConsumerEngine(store, store);
-        await engine.RegisterPiiCacheEvictorAsync(cache, store, viewTables: ["staff", "timeEntries"]);
+        await engine.RegisterPiiCacheEvictorAsync(cache, store, viewTables: ["customers", "orders"]);
         var changes = new ConcurrentQueue<ReadModelChanged>();
-        using var _ = engine.Subscribe(["staff", "timeEntries", "projects"], changes.Enqueue);
+        using var _ = engine.Subscribe(["customers", "orders", "regions"], changes.Enqueue);
 
         // An ordinary event changes nothing the evictor knows about.
         await store.AppendAsync("counter", "c1", 0, [new NewEvent("Ticked", """{"n":1}""")]);
@@ -215,7 +215,7 @@ public class ReadModelChangeFeedTests
         await engine.RunOnceAsync();
 
         Assert.True(cache.IsErased("s1"));
-        Assert.Equal([new ReadModelChanged("staff", 2), new ReadModelChanged("timeEntries", 2)], changes.ToArray());
+        Assert.Equal([new ReadModelChanged("customers", 2), new ReadModelChanged("orders", 2)], changes.ToArray());
 
         // Reported once: the next batch without an erasure says nothing.
         await store.AppendAsync("counter", "c1", 1, [new NewEvent("Ticked", """{"n":2}""")]);

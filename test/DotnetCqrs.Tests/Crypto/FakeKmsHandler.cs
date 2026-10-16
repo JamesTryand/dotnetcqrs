@@ -5,7 +5,7 @@ using System.Text.Json;
 
 namespace DotnetCqrs.Tests.Crypto;
 
-/// <summary>In-memory stand-in for <c>platform/key-management-service</c>'s facade —
+/// <summary>In-memory stand-in for the key-management service's facade —
 /// good enough to unit-test <c>KmsClient</c>/<c>Pii&lt;T&gt;</c>/<c>PiiRevealBuffer</c>
 /// without a live Vault or facade, same spirit as the <c>kms</c> repo's own
 /// fake-Vault-server tests for <c>internal/vaultauth</c>. Ciphertext shape is a fake but

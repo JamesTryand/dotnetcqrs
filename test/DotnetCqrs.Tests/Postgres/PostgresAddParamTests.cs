@@ -5,7 +5,7 @@ using Xunit;
 namespace DotnetCqrs.Tests.Postgres;
 
 /// <summary>
-/// Guards the trap flagged for Milestone 7: <c>DbCommandExtensions.AddParam(name, null)</c>
+/// Guards a known Postgres trap: <c>DbCommandExtensions.AddParam(name, null)</c>
 /// maps a CLR <c>null</c> to an untyped <see cref="System.DBNull"/>. SQLite accepts that
 /// (see <see cref="DbCommandExtensionsTests"/>); Npgsql historically rejected an untyped
 /// null parameter with "cannot determine parameter type". <c>ProjectionGenerator</c>

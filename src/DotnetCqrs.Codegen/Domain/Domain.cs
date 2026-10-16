@@ -2,7 +2,7 @@ namespace DotnetCqrs.Codegen.Domain;
 
 /// <summary>
 /// The intermediate model a document maps onto: what a slice IS, independent of the
-/// document format that described it and of the code a later milestone generates from
+/// document format that described it and of the code generated from
 /// it. Ports pocketcqrs's <c>scaffold.Domain</c> (its own doc comment: "generating from
 /// the model, not from the input format, is what keeps [multiple front-ends] from
 /// growing separate opinions").

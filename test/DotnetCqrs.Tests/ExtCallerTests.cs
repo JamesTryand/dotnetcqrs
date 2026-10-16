@@ -118,7 +118,7 @@ public class ExtCallerTests
 
         var appended = await store.AppendAsync("order", "o1", 0, [new NewEvent("OrderPlaced", "{}")]);
         await consumer.ApplyAsync(appended[0], CancellationToken.None); // must not throw
-        Assert.Equal(0, handler.CallCount); // the engine never calls out (D40): the worker does
+        Assert.Equal(0, handler.CallCount); // the engine never calls out: the worker does
         for (var attempt = 1; attempt <= 3; attempt++)
         {
             await consumer.Worker.ProcessDueAsync();
@@ -207,7 +207,7 @@ public class ExtCallerTests
         Assert.Equal("extcall:verify", consumer.Name);
     }
 
-    // --- GatewayFollowUpDispatcher (dotnetcqrs-multi-node Milestone 4) ---
+    // --- GatewayFollowUpDispatcher ---
 
     private static FollowUpDispatch SampleDispatch(string payload = """{"title":"x"}""") => new(
         "task", "verify-o1", "CreateTask", payload,

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# dotnetcqrs-multi-node Milestone 5: verified dotnetcqrs <-> pocketcqrs interop.
+# Verified dotnetcqrs <-> pocketcqrs interop.
 #
 # Boots a real pocketcqrs gateway and a real dotnetcqrs gateway, then drives a `task`
 # CreateTask command BOTH ways between them and asserts against each event store:
 #
-#   direction A  dotnetcqrs -> pocketcqrs   via Milestone 4's GatewayFollowUpDispatcher
+#   direction A  dotnetcqrs -> pocketcqrs   via GatewayFollowUpDispatcher
 #                (IntoPocketCqrs), authenticating as a --cqrsExternalCallerCollection
 #                record so actor + Causation-Id/Correlation-Id are honoured
 #   direction B  pocketcqrs -> dotnetcqrs   via a thin gatewayclient-shaped driver

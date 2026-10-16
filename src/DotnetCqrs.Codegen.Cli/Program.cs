@@ -6,8 +6,7 @@ using DotnetCqrs.Codegen.Verification;
 
 // Hand-rolled, not System.CommandLine: two subcommands, six flags (one repeatable,
 // one verify-only, two host-only) is still small enough that a dependency buys nothing
-// here -- see README.md's Milestone 7 note, which reconfirmed Milestone 6's original
-// call; Milestone 9 rechecked it again when adding --host/--project-name.
+// here, a call rechecked when --host/--project-name were added.
 if (args.Length == 0 || (args[0] != "generate" && args[0] != "verify"))
 {
     Console.Error.WriteLine("usage: dotnetcqrs-codegen generate --input <path> --output <dir> [--host --dotnetcqrs-project <path> [--project-name <name>]] [--aggregate-override <id>=<aggregate>]...");
@@ -86,8 +85,8 @@ try
     var document = DocumentLoader.LoadFromFile(input!);
     var result = DocumentMapper.Map(document, new MappingOptions { AggregateOverrides = overrides });
 
-    // Warnings are decisions taken on the document's behalf, not failures -- every
-    // milestone so far has printed and continued, never refused, on a warning alone.
+    // Warnings are decisions taken on the document's behalf, not failures -- the
+    // CLI prints and continues, never refuses, on a warning alone.
     foreach (var warning in result.Report.Warnings)
         Console.WriteLine($"warning: {warning}");
 

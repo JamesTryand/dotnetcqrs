@@ -12,7 +12,7 @@ namespace DotnetCqrs.Crypto;
 /// replaying the log can't remove them. The key service's erasure ledger is backed up and
 /// reconciled separately (and is what re-destroys the keys after a Vault restore), so it is the
 /// one record that still knows. Run this at startup, before the query routes open and before
-/// the consumer engine starts (platform/eventmodeling-codegen, "Postgres parity" item 5).</para>
+/// the consumer engine starts.</para>
 ///
 /// <para>The position in the ledger is kept as a checkpoint in the store itself
 /// (<see cref="ISearchIndexStore.ErasureLedgerCheckpoint"/>). If the store is rebuilt or

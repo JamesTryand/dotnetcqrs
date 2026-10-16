@@ -18,7 +18,7 @@ public class DecimalFieldTests
 {
     private const int VerifyTimeoutMs = 120000;
 
-    // A ledger: amounts recorded at a rate and hours, summed per ledger. A ledger refuses an
+    // A ledger: amounts recorded at a rate and a quantity, summed per ledger. A ledger refuses an
     // amount once a large one has been recorded, refuses the same amount twice running, and an
     // amount over 1000 is also flagged, with a decimal fee fixed by the outcome.
     private const string LedgerJson = """
@@ -30,14 +30,14 @@ public class DecimalFieldTests
               {"name": "ledgerId", "type": "string", "idAttribute": true}]},
             "amount-recorded": {"name": "Amount Recorded", "swimlaneId": "s", "aggregate": "Ledger", "fields": [
               {"name": "ledgerId", "type": "string", "idAttribute": true}, {"name": "amount", "type": "decimal"},
-              {"name": "rate", "type": "decimal"}, {"name": "hours", "type": "decimal"}]},
+              {"name": "rate", "type": "decimal"}, {"name": "quantity", "type": "decimal"}]},
             "amount-flagged": {"name": "Amount Flagged", "swimlaneId": "s", "aggregate": "Ledger", "fields": [
               {"name": "ledgerId", "type": "string", "idAttribute": true}, {"name": "fee", "type": "decimal"}]}
           },
           "commands": {
             "open-ledger": {"name": "Open Ledger", "aggregate": "Ledger", "fields": []},
             "record-amount": {"name": "Record Amount", "aggregate": "Ledger", "fields": [
-                {"name": "amount", "type": "decimal"}, {"name": "rate", "type": "decimal"}, {"name": "hours", "type": "decimal"}],
+                {"name": "amount", "type": "decimal"}, {"name": "rate", "type": "decimal"}, {"name": "quantity", "type": "decimal"}],
               "refuseWhen": [
                 {"message": "an amount of zero", "all": [{"command": "amount", "equals": 0}]},
                 {"message": "ledger closed by a large amount", "all": [{"state": "amount", "greaterThan": 100}]},
@@ -67,31 +67,31 @@ public class DecimalFieldTests
              "scenarios": [
                {"id": "small-after-small", "name": "A small amount after a small one", "kind": "stateChange",
                 "given": [{"eventId": "ledger-opened", "data": {"ledgerId": "l1"}},
-                          {"eventId": "amount-recorded", "data": {"ledgerId": "l1", "amount": 99.99, "rate": 1.5, "hours": 1}}],
-                "when": {"commandId": "record-amount", "data": {"ledgerId": "l1", "amount": 56.7, "rate": 1.5, "hours": 1}},
+                          {"eventId": "amount-recorded", "data": {"ledgerId": "l1", "amount": 99.99, "rate": 1.5, "quantity": 1}}],
+                "when": {"commandId": "record-amount", "data": {"ledgerId": "l1", "amount": 56.7, "rate": 1.5, "quantity": 1}},
                 "then": {"events": [{"eventId": "amount-recorded", "data": {"amount": 56.7}}]}},
                {"id": "zero", "name": "Refused at zero (decimal command equals a literal)", "kind": "error",
                 "given": [{"eventId": "ledger-opened", "data": {"ledgerId": "l1"}}],
-                "when": {"commandId": "record-amount", "data": {"ledgerId": "l1", "amount": 0, "rate": 1.5, "hours": 1}},
+                "when": {"commandId": "record-amount", "data": {"ledgerId": "l1", "amount": 0, "rate": 1.5, "quantity": 1}},
                 "then": {"error": {"message": "an amount of zero"}}},
                {"id": "after-large", "name": "Refused after a large amount (decimal state > literal)", "kind": "error",
                 "given": [{"eventId": "ledger-opened", "data": {"ledgerId": "l1"}},
-                          {"eventId": "amount-recorded", "data": {"ledgerId": "l1", "amount": 100.01, "rate": 1.5, "hours": 1}}],
-                "when": {"commandId": "record-amount", "data": {"ledgerId": "l1", "amount": 5, "rate": 1.5, "hours": 1}},
+                          {"eventId": "amount-recorded", "data": {"ledgerId": "l1", "amount": 100.01, "rate": 1.5, "quantity": 1}}],
+                "when": {"commandId": "record-amount", "data": {"ledgerId": "l1", "amount": 5, "rate": 1.5, "quantity": 1}},
                 "then": {"error": {"message": "ledger closed by a large amount"}}},
                {"id": "same-twice", "name": "Refused twice running (command equals decimal state)", "kind": "error",
                 "given": [{"eventId": "ledger-opened", "data": {"ledgerId": "l1"}},
-                          {"eventId": "amount-recorded", "data": {"ledgerId": "l1", "amount": 56.7, "rate": 1.5, "hours": 1}}],
-                "when": {"commandId": "record-amount", "data": {"ledgerId": "l1", "amount": 56.7, "rate": 1.5, "hours": 1}},
+                          {"eventId": "amount-recorded", "data": {"ledgerId": "l1", "amount": 56.7, "rate": 1.5, "quantity": 1}}],
+                "when": {"commandId": "record-amount", "data": {"ledgerId": "l1", "amount": 56.7, "rate": 1.5, "quantity": 1}},
                 "then": {"error": {"message": "the same amount twice"}}},
                {"id": "below-rate", "name": "Refused below the previous rate (command < decimal state)", "kind": "error",
                 "given": [{"eventId": "ledger-opened", "data": {"ledgerId": "l1"}},
-                          {"eventId": "amount-recorded", "data": {"ledgerId": "l1", "amount": 50, "rate": 30.06, "hours": 1}}],
-                "when": {"commandId": "record-amount", "data": {"ledgerId": "l1", "amount": 30.05, "rate": 1.5, "hours": 1}},
+                          {"eventId": "amount-recorded", "data": {"ledgerId": "l1", "amount": 50, "rate": 30.06, "quantity": 1}}],
+                "when": {"commandId": "record-amount", "data": {"ledgerId": "l1", "amount": 30.05, "rate": 1.5, "quantity": 1}},
                 "then": {"error": {"message": "amount above the previous one's rate"}}},
                {"id": "flagged", "name": "A large first amount is flagged with a decimal fee", "kind": "stateChange",
                 "given": [{"eventId": "ledger-opened", "data": {"ledgerId": "l1"}}],
-                "when": {"commandId": "record-amount", "data": {"ledgerId": "l1", "amount": 1000.01, "rate": 1.5, "hours": 1}},
+                "when": {"commandId": "record-amount", "data": {"ledgerId": "l1", "amount": 1000.01, "rate": 1.5, "quantity": 1}},
                 "then": {"events": [{"eventId": "amount-recorded"}, {"eventId": "amount-flagged", "data": {"fee": 2.5}}]}}
              ]}
           ]
@@ -139,21 +139,21 @@ public class DecimalFieldTests
 
             // The payload type is private to the decider; multiply in whatever type it was generated with.
             var type = typeof(LedgerDecider).GetNestedType("AmountRecordedPayload", BindingFlags.NonPublic)!;
-            var payload = JsonSerializer.Deserialize("""{"ledgerId":"l1","amount":0,"rate":30.06,"hours":8.25}""", type,
+            var payload = JsonSerializer.Deserialize("""{"ledgerId":"l1","amount":0,"rate":30.06,"quantity":8.25}""", type,
                 new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
             var rate = type.GetProperty("Rate")!.GetValue(payload)!;
-            var hours = type.GetProperty("Hours")!.GetValue(payload)!;
-            var pay = rate is decimal r
-                ? Math.Round(r * (decimal)hours, 2, MidpointRounding.AwayFromZero).ToString("0.00", CultureInfo.InvariantCulture)
-                : Math.Round((double)rate * (double)hours, 2, MidpointRounding.AwayFromZero).ToString("0.00", CultureInfo.InvariantCulture);
-            Console.WriteLine($"pay {pay} as {rate.GetType().Name}");
+            var quantity = type.GetProperty("Quantity")!.GetValue(payload)!;
+            var total = rate is decimal r
+                ? Math.Round(r * (decimal)quantity, 2, MidpointRounding.AwayFromZero).ToString("0.00", CultureInfo.InvariantCulture)
+                : Math.Round((double)rate * (double)quantity, 2, MidpointRounding.AwayFromZero).ToString("0.00", CultureInfo.InvariantCulture);
+            Console.WriteLine($"total {total} as {rate.GetType().Name}");
             return 0;
             """";
 
         var (success, output) = await InMemoryProgram.RunAsync(Generate(), program);
 
         Assert.True(success, output);
-        Assert.Contains("pay 248.00 as Decimal", output);
+        Assert.Contains("total 248.00 as Decimal", output);
     }
 
     [Fact(Timeout = VerifyTimeoutMs)]
@@ -176,7 +176,7 @@ public class DecimalFieldTests
             Event On(string type, string data) => new(++position, $"e{position}", "ledger", "l1", position, type, data, "{}", "2026-10-01T00:00:00Z");
             await projection.ApplyAsync(On("LedgerOpened", """{"ledgerId":"l1"}"""), default);
             foreach (var amount in new[] { "412.35", "96.10", "56.70" })
-                await projection.ApplyAsync(On("AmountRecorded", $$"""{"ledgerId":"l1","amount":{{amount}},"rate":1,"hours":1}"""), default);
+                await projection.ApplyAsync(On("AmountRecorded", $$"""{"ledgerId":"l1","amount":{{amount}},"rate":1,"quantity":1}"""), default);
 
             var query = typeof(LedgersQueryRoute).GetMethod("QueryAsync", BindingFlags.NonPublic | BindingFlags.Static)!;
             var http = new DefaultHttpContext();

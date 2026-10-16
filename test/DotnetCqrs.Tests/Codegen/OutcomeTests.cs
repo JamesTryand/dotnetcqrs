@@ -14,7 +14,7 @@ namespace DotnetCqrs.Tests.Codegen;
 /// model says when. A declared <c>when</c> is generated into Decide, after the refusals; a
 /// <c>"hand"</c> one is a hook the code must fill, and the scenario harness running the generated
 /// decider reports a scenario that depends on it as a choice made by hand, never as a pass.
-/// For example: an entry whose hours are paid at no cost is logged and
+/// For example: a hire of more than 14 days is booked and
 /// flagged in one decision.
 /// </summary>
 [Trait("Category", "Compiles")]
@@ -47,17 +47,17 @@ public class OutcomeTests
         // Nothing is left to guess, so no "emits the first event" warning.
         Assert.DoesNotContain(result.Report.Warnings, w => w.Contains("different events"));
 
-        var log = domains.SelectMany(d => d.Commands).Single(c => c.Name == "LogEntry");
+        var log = domains.SelectMany(d => d.Commands).Single(c => c.Name == "MakeBooking");
         Assert.Equal(2, log.Outcomes.Count);
-        Assert.Equal(["EntryLogged", "EntryFlagged"], log.Outcomes[0].EventNames);
+        Assert.Equal(["BookingMade", "BookingFlagged"], log.Outcomes[0].EventNames);
         var group = Assert.Single(log.Outcomes[0].When!);
         Assert.Equal("greaterThan", Assert.Single(group).Operator);
         Assert.False(log.Outcomes[0].ByHand);
-        Assert.Equal("long-day", log.Outcomes[0].Set["EntryFlagged"]["reason"]);
-        Assert.Equal(["EntryLogged"], log.Outcomes[1].EventNames);
+        Assert.Equal("long-hire", log.Outcomes[0].Set["BookingFlagged"]["reason"]);
+        Assert.Equal(["BookingMade"], log.Outcomes[1].EventNames);
         Assert.Null(log.Outcomes[1].When);
 
-        var submit = domains.SelectMany(d => d.Commands).Single(c => c.Name == "SubmitExpense");
+        var submit = domains.SelectMany(d => d.Commands).Single(c => c.Name == "RequestRefund");
         Assert.True(submit.Outcomes[0].ByHand);
     }
 
@@ -67,62 +67,62 @@ public class OutcomeTests
         var results = await VerifyAsync(Example);
 
         Assert.Equal(4, results.Count);
-        foreach (var id in new[] { "log-an-entry", "long-day-is-flagged", "refused-before-outcomes" })
+        foreach (var id in new[] { "make-a-booking", "long-hire-is-flagged", "refused-before-outcomes" })
         {
             var r = results.Single(r => r.ScenarioId == id);
             Assert.True(r.Passed, $"{id}: {r.Detail}");
             Assert.False(r.ByHand, id);
         }
-        var hand = results.Single(r => r.ScenarioId == "expense-over-limit");
+        var hand = results.Single(r => r.ScenarioId == "refund-over-threshold");
         Assert.False(hand.Passed);
         Assert.True(hand.ByHand, hand.Detail);
-        Assert.Contains("[ExpenseSubmitted, ExpenseFlagged] is a declared outcome", hand.Detail);
+        Assert.Contains("[RefundRequested, RefundFlagged] is a declared outcome", hand.Detail);
     }
 
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task Without_the_declared_condition_the_two_event_scenario_fails()
     {
-        // The scenarios must be able to fail: with the condition moved out of reach, a 13-hour
-        // day is logged alone and the scenario expecting the flag fails.
+        // The scenarios must be able to fail: with the condition moved out of reach, a 15-day
+        // hire is booked alone and the scenario expecting the flag fails.
         var node = JsonNode.Parse(Example)!;
-        Slice(node, "log-entry-slice")["outcomes"]![0]!["when"]![0]!["all"]![0]!["greaterThan"] = 100;
+        Slice(node, "make-booking-slice")["outcomes"]![0]!["when"]![0]!["all"]![0]!["greaterThan"] = 100;
 
         var results = await VerifyAsync(node.ToJsonString());
 
-        var flagged = results.Single(r => r.ScenarioId == "long-day-is-flagged");
+        var flagged = results.Single(r => r.ScenarioId == "long-hire-is-flagged");
         Assert.False(flagged.Passed);
         Assert.False(flagged.ByHand);
-        Assert.Contains("expected [EntryLogged, EntryFlagged], got [EntryLogged]", flagged.Detail);
-        Assert.True(results.Single(r => r.ScenarioId == "log-an-entry").Passed);
+        Assert.Contains("expected [BookingMade, BookingFlagged], got [BookingMade]", flagged.Detail);
+        Assert.True(results.Single(r => r.ScenarioId == "make-a-booking").Passed);
     }
 
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_condition_holds_when_any_group_holds_and_a_group_when_all_its_conditions_do()
     {
-        // More than 12 hours, or from 1 up to (not including) 2: 13 and 1.5 are flagged; 8 meets
+        // More than 14 days, or from 1 up to (not including) 2: 15 and 1.5 are flagged; 8 meets
         // only half of the second group, 0.5 the other half, so neither is.
         var node = JsonNode.Parse(Example)!;
-        var slice = Slice(node, "log-entry-slice");
+        var slice = Slice(node, "make-booking-slice");
         slice["outcomes"]![0]!["when"] = JsonNode.Parse("""
-            [{"all": [{"command": "hours", "greaterThan": 12}]},
-             {"all": [{"command": "hours", "atLeast": 1}, {"command": "hours", "lessThan": 2}]}]
+            [{"all": [{"command": "days", "greaterThan": 14}]},
+             {"all": [{"command": "days", "atLeast": 1}, {"command": "days", "lessThan": 2}]}]
             """);
         var scenarios = slice["scenarios"]!.AsArray();
-        foreach (var (id, hours, flagged) in new[] { ("h13", 13.0, true), ("h1-5", 1.5, true), ("h8", 8.0, false), ("h0-5", 0.5, false) })
+        foreach (var (id, days, flagged) in new[] { ("d15", 15.0, true), ("d1-5", 1.5, true), ("d8", 8.0, false), ("d0-5", 0.5, false) })
         {
-            var events = new JsonArray(new JsonObject { ["eventId"] = "entry-logged" });
-            if (flagged) events.Add(new JsonObject { ["eventId"] = "entry-flagged" });
+            var events = new JsonArray(new JsonObject { ["eventId"] = "booking-made" });
+            if (flagged) events.Add(new JsonObject { ["eventId"] = "booking-flagged" });
             scenarios.Add(new JsonObject
             {
                 ["id"] = id, ["name"] = id, ["kind"] = "stateChange", ["given"] = new JsonArray(),
-                ["when"] = new JsonObject { ["commandId"] = "log-entry", ["data"] = new JsonObject { ["hours"] = hours } },
+                ["when"] = new JsonObject { ["commandId"] = "make-booking", ["data"] = new JsonObject { ["days"] = days } },
                 ["then"] = new JsonObject { ["events"] = events },
             });
         }
 
         var results = await VerifyAsync(node.ToJsonString());
 
-        foreach (var id in new[] { "h13", "h1-5", "h8", "h0-5" })
+        foreach (var id in new[] { "d15", "d1-5", "d8", "d0-5" })
         {
             var r = results.Single(r => r.ScenarioId == id);
             Assert.True(r.Passed, $"{id}: {r.Detail}");
@@ -133,12 +133,12 @@ public class OutcomeTests
     public async Task A_choice_made_by_hand_whose_events_are_not_a_declared_outcome_fails()
     {
         var node = JsonNode.Parse(Example)!;
-        var scenario = Slice(node, "submit-expense-slice")["scenarios"]![0]!;
+        var scenario = Slice(node, "request-refund-slice")["scenarios"]![0]!;
         scenario["then"]!["events"]!.AsArray().RemoveAt(0); // the flag alone: no alternative says that
 
         var results = await VerifyAsync(node.ToJsonString());
 
-        var r = results.Single(r => r.ScenarioId == "expense-over-limit");
+        var r = results.Single(r => r.ScenarioId == "refund-over-threshold");
         Assert.False(r.Passed);
         Assert.False(r.ByHand, r.Detail);
         Assert.Contains("not a declared outcome", r.Detail);
@@ -150,15 +150,15 @@ public class OutcomeTests
         // Refusals come before outcomes, so a scenario expecting a refusal that no declared rule
         // makes reaches the choice: the command was accepted, and that is a failure.
         var node = JsonNode.Parse(Example)!;
-        Slice(node, "submit-expense-slice")["scenarios"]!.AsArray().Add(JsonNode.Parse("""
-            {"id": "no-negative-expense", "name": "A negative expense is refused", "kind": "error",
-             "given": [], "when": {"commandId": "submit-expense", "data": {"amount": -5, "currency": "GBP"}},
-             "then": {"error": {"message": "an expense is more than 0"}}}
+        Slice(node, "request-refund-slice")["scenarios"]!.AsArray().Add(JsonNode.Parse("""
+            {"id": "no-negative-refund", "name": "A negative refund is refused", "kind": "error",
+             "given": [], "when": {"commandId": "request-refund", "data": {"amount": -5, "currency": "GBP"}},
+             "then": {"error": {"message": "a refund is more than 0"}}}
             """));
 
         var results = await VerifyAsync(node.ToJsonString());
 
-        var r = results.Single(r => r.ScenarioId == "no-negative-expense");
+        var r = results.Single(r => r.ScenarioId == "no-negative-refund");
         Assert.False(r.Passed);
         Assert.False(r.ByHand, r.Detail);
         Assert.Contains("expected a refusal", r.Detail);
@@ -173,29 +173,29 @@ public class OutcomeTests
         var exit = ScenarioReport.Print(results, writer);
 
         Assert.Equal(0, exit);
-        Assert.Contains("HAND [stateChange] submit-expense-slice/expense-over-limit", writer.ToString());
-        Assert.Contains("PASS [stateChange] log-entry-slice/long-day-is-flagged", writer.ToString());
+        Assert.Contains("HAND [stateChange] request-refund-slice/refund-over-threshold", writer.ToString());
+        Assert.Contains("PASS [stateChange] make-booking-slice/long-hire-is-flagged", writer.ToString());
     }
 
     [Fact]
     public async Task Set_fixes_a_value_on_the_alternatives_event()
     {
         var doc = DocumentLoader.Parse(Example);
-        var files = DocumentMapper.Map(doc).Domains.Where(d => d.Aggregate == "entry").SelectMany(CSharpGenerator.Generate).ToList();
+        var files = DocumentMapper.Map(doc).Domains.Where(d => d.Aggregate == "booking").SelectMany(CSharpGenerator.Generate).ToList();
 
         const string programCs = """
             using DotnetCqrs.Deciders;
             using DotnetCqrs.EventStore;
-            using Generated.Entry;
+            using Generated.Booking;
 
             var store = await SqliteEventStore.OpenAsync(":memory:");
             var registry = new DeciderRegistry(store);
-            registry.Register(EntryDecider.Aggregate, EntryDecider.Create());
+            registry.Register(BookingDecider.Aggregate, BookingDecider.Create());
 
-            await registry.HandleAsync("entry", "e1", new Command("LogEntry", "{\"hours\":13}"));
-            await registry.HandleAsync("entry", "e2", new Command("LogEntry", "{\"hours\":8}"));
-            foreach (var id in new[] { "e1", "e2" })
-                foreach (var e in await store.LoadStreamAsync("entry", id))
+            await registry.HandleAsync("booking", "b1", new Command("MakeBooking", "{\"days\":15}"));
+            await registry.HandleAsync("booking", "b2", new Command("MakeBooking", "{\"days\":7}"));
+            foreach (var id in new[] { "b1", "b2" })
+                foreach (var e in await store.LoadStreamAsync("booking", id))
                     Console.WriteLine($"{id} {e.Type} {e.Data}");
             return 0;
             """;
@@ -203,49 +203,49 @@ public class OutcomeTests
         var (success, output) = await InMemoryProgram.RunAsync(files, programCs);
 
         Assert.True(success, output);
-        Assert.Contains("e1 EntryLogged", output);
-        Assert.Contains("e1 EntryFlagged {\"entryId\":null,\"reason\":\"long-day\"}", output);
-        Assert.Contains("e2 EntryLogged", output);
-        Assert.DoesNotContain("e2 EntryFlagged", output);
+        Assert.Contains("b1 BookingMade", output);
+        Assert.Contains("b1 BookingFlagged {\"bookingId\":null,\"reason\":\"long-hire\"}", output);
+        Assert.Contains("b2 BookingMade", output);
+        Assert.DoesNotContain("b2 BookingFlagged", output);
     }
 
     [Fact]
     public async Task A_choice_made_by_hand_is_a_hook_the_code_must_fill()
     {
         var doc = DocumentLoader.Parse(Example);
-        var files = DocumentMapper.Map(doc).Domains.Where(d => d.Aggregate == "expense").SelectMany(CSharpGenerator.Generate).ToList();
+        var files = DocumentMapper.Map(doc).Domains.Where(d => d.Aggregate == "refund").SelectMany(CSharpGenerator.Generate).ToList();
 
         // Generated alone, it does not compile: the hook has no body.
         var (compiles, errors) = InMemoryProgram.Compile(files);
         Assert.False(compiles);
-        Assert.Contains("SubmitExpenseOutcome0", errors);
+        Assert.Contains("RequestRefundOutcome0", errors);
 
         // With the hand-written condition, the decider chooses by it.
-        var hook = new GeneratedFile("ExpenseDecider.Hand.cs", """
+        var hook = new GeneratedFile("RefundDecider.Hand.cs", """
             using System.Text.Json;
             using DotnetCqrs.Deciders;
 
-            namespace Generated.Expense;
+            namespace Generated.Refund;
 
-            public static partial class ExpenseDecider
+            public static partial class RefundDecider
             {
-                private static partial bool SubmitExpenseOutcome0(ExpenseState state, Command cmd) =>
+                private static partial bool RequestRefundOutcome0(RefundState state, Command cmd) =>
                     JsonDocument.Parse(cmd.Payload).RootElement.GetProperty("amount").GetDouble() > 500;
             }
             """);
         const string programCs = """
             using DotnetCqrs.Deciders;
             using DotnetCqrs.EventStore;
-            using Generated.Expense;
+            using Generated.Refund;
 
             var store = await SqliteEventStore.OpenAsync(":memory:");
             var registry = new DeciderRegistry(store);
-            registry.Register(ExpenseDecider.Aggregate, ExpenseDecider.Create());
+            registry.Register(RefundDecider.Aggregate, RefundDecider.Create());
 
-            await registry.HandleAsync("expense", "x1", new Command("SubmitExpense", "{\"amount\":900,\"currency\":\"USD\"}"));
-            await registry.HandleAsync("expense", "x2", new Command("SubmitExpense", "{\"amount\":90,\"currency\":\"USD\"}"));
-            foreach (var id in new[] { "x1", "x2" })
-                foreach (var e in await store.LoadStreamAsync("expense", id))
+            await registry.HandleAsync("refund", "r1", new Command("RequestRefund", "{\"amount\":900,\"currency\":\"USD\"}"));
+            await registry.HandleAsync("refund", "r2", new Command("RequestRefund", "{\"amount\":90,\"currency\":\"USD\"}"));
+            foreach (var id in new[] { "r1", "r2" })
+                foreach (var e in await store.LoadStreamAsync("refund", id))
                     Console.WriteLine($"{id} {e.Type} {e.Data}");
             return 0;
             """;
@@ -253,9 +253,9 @@ public class OutcomeTests
         var (success, output) = await InMemoryProgram.RunAsync([.. files, hook], programCs);
 
         Assert.True(success, output);
-        Assert.Contains("x1 ExpenseFlagged {\"expenseId\":null,\"reason\":\"over-limit\"}", output);
-        Assert.Contains("x2 ExpenseSubmitted", output);
-        Assert.DoesNotContain("x2 ExpenseFlagged", output);
+        Assert.Contains("r1 RefundFlagged {\"refundId\":null,\"reason\":\"over-threshold\"}", output);
+        Assert.Contains("r2 RefundRequested", output);
+        Assert.DoesNotContain("r2 RefundFlagged", output);
     }
 
     [Fact]
@@ -264,15 +264,15 @@ public class OutcomeTests
         // Against a host's deciders nothing is left to hand: the choice and the values are checked.
         var doc = DocumentLoader.Parse(Example);
         static void Register(DeciderRegistry registry, DotnetCqrs.Crypto.IKmsClient _) =>
-            registry.Register("expense", new Decider<bool>
+            registry.Register("refund", new Decider<bool>
             {
                 InitialState = () => false,
                 Decide = (_, cmd) =>
                 {
                     var amount = JsonDocument.Parse(cmd.Payload).RootElement.GetProperty("amount").GetDouble();
-                    var submitted = new NewEvent("ExpenseSubmitted", JsonSerializer.Serialize(new { amount }));
+                    var submitted = new NewEvent("RefundRequested", JsonSerializer.Serialize(new { amount }));
                     return amount > 500
-                        ? [submitted, new NewEvent("ExpenseFlagged", """{"reason":"over-limit"}""")]
+                        ? [submitted, new NewEvent("RefundFlagged", """{"reason":"over-threshold"}""")]
                         : [submitted];
                 },
                 Evolve = (_, _) => true,
@@ -280,7 +280,7 @@ public class OutcomeTests
 
         var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc), new HostDeciders(Register));
 
-        var r = results.Single(r => r.ScenarioId == "expense-over-limit");
+        var r = results.Single(r => r.ScenarioId == "refund-over-threshold");
         Assert.True(r.Passed, r.Detail);
         Assert.False(r.ByHand);
     }
@@ -290,7 +290,7 @@ public class OutcomeTests
     private static IReadOnlyList<string> MappingErrors(Action<JsonNode> change)
     {
         var node = JsonNode.Parse(Example)!;
-        change(Slice(node, "log-entry-slice"));
+        change(Slice(node, "make-booking-slice"));
         var doc = DocumentLoader.Parse(node.ToJsonString());
         try
         {
@@ -307,50 +307,50 @@ public class OutcomeTests
     public void The_last_alternative_must_have_no_condition()
     {
         var errors = MappingErrors(s => s["outcomes"]![1]!["when"] = "hand");
-        Assert.Contains(errors, e => e.Contains("log-entry-slice") && e.Contains("the last outcome") && e.Contains("no when"));
+        Assert.Contains(errors, e => e.Contains("make-booking-slice") && e.Contains("the last outcome") && e.Contains("no when"));
     }
 
     [Fact]
     public void Every_alternative_but_the_last_must_have_a_condition()
     {
-        var errors = MappingErrors(s => s["outcomes"]!.AsArray().Insert(1, JsonNode.Parse("""{"eventIds": ["entry-logged"]}""")));
-        Assert.Contains(errors, e => e.Contains("log-entry-slice") && e.Contains("outcome 1") && e.Contains("needs a when"));
+        var errors = MappingErrors(s => s["outcomes"]!.AsArray().Insert(1, JsonNode.Parse("""{"eventIds": ["booking-made"]}""")));
+        Assert.Contains(errors, e => e.Contains("make-booking-slice") && e.Contains("outcome 1") && e.Contains("needs a when"));
     }
 
     [Fact]
     public void Alternatives_without_conditions_are_still_refused()
     {
         // 3.3.0's form says which alternatives exist, not which applies: nothing to generate.
-        var errors = MappingErrors(s => s["outcomes"] = JsonNode.Parse("""[["entry-logged", "entry-flagged"], ["entry-logged"]]"""));
-        Assert.Contains(errors, e => e.Contains("log-entry-slice") && e.Contains("say when each applies"));
+        var errors = MappingErrors(s => s["outcomes"] = JsonNode.Parse("""[["booking-made", "booking-flagged"], ["booking-made"]]"""));
+        Assert.Contains(errors, e => e.Contains("make-booking-slice") && e.Contains("say when each applies"));
     }
 
     [Fact]
     public void A_single_alternative_without_a_condition_emits_all_its_events()
     {
         var node = JsonNode.Parse(Example)!;
-        Slice(node, "log-entry-slice")["outcomes"] = JsonNode.Parse("""[["entry-logged", "entry-flagged"]]""");
+        Slice(node, "make-booking-slice")["outcomes"] = JsonNode.Parse("""[["booking-made", "booking-flagged"]]""");
         var result = DocumentMapper.Map(DocumentLoader.Parse(node.ToJsonString()));
 
         Assert.Empty(result.Report.Errors);
-        var log = result.Domains.SelectMany(d => d.Commands).Single(c => c.Name == "LogEntry");
-        Assert.Equal(["EntryLogged", "EntryFlagged"], Assert.Single(log.Outcomes).EventNames);
+        var log = result.Domains.SelectMany(d => d.Commands).Single(c => c.Name == "MakeBooking");
+        Assert.Equal(["BookingMade", "BookingFlagged"], Assert.Single(log.Outcomes).EventNames);
     }
 
     [Fact]
     public void An_alternatives_events_must_be_the_slices_own()
     {
-        var errors = MappingErrors(s => s["outcomes"]![1]!["eventIds"] = JsonNode.Parse("""["expense-submitted"]"""));
-        Assert.Contains(errors, e => e.Contains("log-entry-slice") && e.Contains("\"expense-submitted\"") && e.Contains("eventIds"));
+        var errors = MappingErrors(s => s["outcomes"]![1]!["eventIds"] = JsonNode.Parse("""["refund-requested"]"""));
+        Assert.Contains(errors, e => e.Contains("make-booking-slice") && e.Contains("\"refund-requested\"") && e.Contains("eventIds"));
     }
 
     [Fact]
     public void Set_must_name_an_event_of_its_alternative_and_a_field_that_event_carries()
     {
-        var notInAlternative = MappingErrors(s => s["outcomes"]![1]!["set"] = JsonNode.Parse("""{"entry-flagged": {"reason": "x"}}"""));
-        Assert.Contains(notInAlternative, e => e.Contains("set") && e.Contains("\"entry-flagged\"") && e.Contains("not one of this outcome's events"));
+        var notInAlternative = MappingErrors(s => s["outcomes"]![1]!["set"] = JsonNode.Parse("""{"booking-flagged": {"reason": "x"}}"""));
+        Assert.Contains(notInAlternative, e => e.Contains("set") && e.Contains("\"booking-flagged\"") && e.Contains("not one of this outcome's events"));
 
-        var noSuchField = MappingErrors(s => s["outcomes"]![0]!["set"] = JsonNode.Parse("""{"entry-flagged": {"severity": "x"}}"""));
+        var noSuchField = MappingErrors(s => s["outcomes"]![0]!["set"] = JsonNode.Parse("""{"booking-flagged": {"severity": "x"}}"""));
         Assert.Contains(noSuchField, e => e.Contains("set") && e.Contains("\"severity\"") && e.Contains("does not carry"));
     }
 
@@ -358,6 +358,6 @@ public class OutcomeTests
     public void A_condition_names_fields_that_exist()
     {
         var errors = MappingErrors(s => s["outcomes"]![0]!["when"]![0]!["all"]![0]!["command"] = "minutes");
-        Assert.Contains(errors, e => e.Contains("LogEntry") && e.Contains("\"minutes\"") && e.Contains("does not declare"));
+        Assert.Contains(errors, e => e.Contains("MakeBooking") && e.Contains("\"minutes\"") && e.Contains("does not declare"));
     }
 }

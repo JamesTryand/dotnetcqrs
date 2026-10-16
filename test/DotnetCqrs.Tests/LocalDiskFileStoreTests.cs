@@ -68,9 +68,9 @@ public class LocalDiskFileStoreTests : IDisposable
     [Fact]
     public async Task A_nested_key_creates_the_needed_subdirectories()
     {
-        await _store.PutAsync("orders/o1/invoice.pdf", ContentOf("pdf-bytes"));
+        await _store.PutAsync("orders/o1/receipt.pdf", ContentOf("pdf-bytes"));
 
-        var content = await _store.GetAsync("orders/o1/invoice.pdf");
+        var content = await _store.GetAsync("orders/o1/receipt.pdf");
         Assert.Equal("pdf-bytes", await ReadAllAsync(content!));
     }
 

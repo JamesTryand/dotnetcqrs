@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <!-- Npgsql is the only PackageReference: this is the Postgres implementation of the
-       provider-neutral contracts in DotnetCqrs.Abstractions (Milestone 6), the sibling of
+       provider-neutral contracts in DotnetCqrs.Abstractions, the sibling of
        DotnetCqrs (SQLite). Nothing else in the solution references Npgsql. -->
   <ItemGroup>
     <PackageReference Include="Npgsql" Version="10.0.3" />

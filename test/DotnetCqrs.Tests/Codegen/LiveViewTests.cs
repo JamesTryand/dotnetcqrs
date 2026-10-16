@@ -12,7 +12,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace DotnetCqrs.Tests.Codegen;
 
-/// <summary>D27 live views, L2: the generated live route. A viewer gets the current result, then a new one each
+/// <summary>Live views: the generated live route. A viewer gets the current result, then a new one each
 /// time a projection changes what that viewer may see, with the viewer's own access rules applied every time.
 /// Nothing polls: the engine's fallback tick is an hour in these hosts, so every push follows a commit.</summary>
 public class LiveViewTests
@@ -22,25 +22,25 @@ public class LiveViewTests
 
     // The read-access example's generated routes over a real engine. /test/append stands in for a decider: it
     // commits events to the store, which is exactly what a command's handler does once decided (the example's
-    // generated deciders are scaffolds that can't create a project). The commit nudges the engine, the projection
+    // generated deciders are scaffolds that can't assign a team lead). The commit nudges the engine, the projection
     // applies, the change feed fires, and live viewers are pushed the new result.
     private const string ProgramCsTemplate = """"
         using System.Security.Claims;
         using DotnetCqrs.Consumers;
         using DotnetCqrs.EventStore;
         using DotnetCqrs.ReadModels;
-        using Generated.Project;
-        using Generated.TimeEntry;
+        using Generated.Team;
+        using Generated.Ticket;
 
         var eventStore = await SqliteEventStore.OpenAsync(":memory:");
         IReadModelStore store = await SqliteReadModelStore.OpenAsync(":memory:");
-        var entries = new TimeEntriesProjection(store);
-        await entries.InitAsync();
-        var managers = new ProjectManagersProjection(store);
-        await managers.InitAsync();
+        var tickets = new TicketsProjection(store);
+        await tickets.InitAsync();
+        var leads = new TeamLeadsProjection(store);
+        await leads.InitAsync();
         var engine = new ConsumerEngine(eventStore, eventStore, tick: TimeSpan.FromHours(1));
-        engine.Register(entries);
-        engine.Register(managers);
+        engine.Register(tickets);
+        engine.Register(leads);
         var feed = new CountingFeed(engine);
 
         var builder = WebApplication.CreateBuilder(args);
@@ -68,10 +68,10 @@ public class LiveViewTests
         // Answers once no live view is subscribed any more: a callback from the subscription's disposal, not a poll.
         app.MapGet("/test/no-subscribers", () => feed.NoneAsync());
 
-        await eventStore.AppendAsync("project", "p2:s1", 0, [new NewEvent("ProjectManagerAssigned", """{"assignmentId":"p2:s1","projectId":"p2","staffId":"s1"}""")]);
-        await eventStore.AppendAsync("timeEntry", "e1", 0, [new NewEvent("TimeLogged", """{"entryId":"e1","projectId":"p1","staffId":"s1","hours":1}""")]);
-        await eventStore.AppendAsync("timeEntry", "e2", 0, [new NewEvent("TimeLogged", """{"entryId":"e2","projectId":"p2","staffId":"s2","hours":2}""")]);
-        await eventStore.AppendAsync("timeEntry", "e3", 0, [new NewEvent("TimeLogged", """{"entryId":"e3","projectId":"p3","staffId":"s3","hours":3}""")]);
+        await eventStore.AppendAsync("team", "g2:a1", 0, [new NewEvent("TeamLeadAssigned", """{"assignmentId":"g2:a1","teamId":"g2","agentId":"a1"}""")]);
+        await eventStore.AppendAsync("ticket", "t1", 0, [new NewEvent("TicketOpened", """{"ticketId":"t1","teamId":"g1","agentId":"a1","estimatedEffort":1}""")]);
+        await eventStore.AppendAsync("ticket", "t2", 0, [new NewEvent("TicketOpened", """{"ticketId":"t2","teamId":"g2","agentId":"a2","estimatedEffort":2}""")]);
+        await eventStore.AppendAsync("ticket", "t3", 0, [new NewEvent("TicketOpened", """{"ticketId":"t3","teamId":"g3","agentId":"a3","estimatedEffort":3}""")]);
         await engine.RunOnceAsync(); // seeded before serving; from here on only commits move the engine
         using var stop = new CancellationTokenSource();
         var loop = engine.StartAsync(stop.Token);
@@ -122,7 +122,7 @@ public class LiveViewTests
         """";
 
     private const string WiredMapCall =
-        "app.MapTimeEntriesLiveRoute(resolveOwnRole: ResolveOwnRole, resolveSubjectId: ResolveSubjectId);";
+        "app.MapTicketsLiveRoute(resolveOwnRole: ResolveOwnRole, resolveSubjectId: ResolveSubjectId);";
 
     private static GeneratedFile[] GenerateReadAccessHost()
     {
@@ -143,12 +143,12 @@ public class LiveViewTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
-    private static Task LogTimeAsync(HttpClient client, string entry, string project, string staff) =>
-        AppendAsync(client, "timeEntry", entry, 0, "TimeLogged",
-            $$"""{"entryId":"{{entry}}","projectId":"{{project}}","staffId":"{{staff}}","hours":1}""");
+    private static Task OpenTicketAsync(HttpClient client, string ticket, string team, string agent) =>
+        AppendAsync(client, "ticket", ticket, 0, "TicketOpened",
+            $$"""{"ticketId":"{{ticket}}","teamId":"{{team}}","agentId":"{{agent}}","estimatedEffort":1}""");
 
-    private static string[] EntryIds(JsonElement view) =>
-        view.GetProperty("rows").EnumerateArray().Select(r => r.GetProperty("entry_id").GetString()!).Order().ToArray();
+    private static string[] TicketIds(JsonElement view) =>
+        view.GetProperty("rows").EnumerateArray().Select(r => r.GetProperty("ticket_id").GetString()!).Order().ToArray();
 
     /// <summary>An open live view, read as Server-Sent Events.</summary>
     private sealed class LiveStream : IAsyncDisposable
@@ -165,7 +165,7 @@ public class LiveViewTests
         public static async Task<(HttpStatusCode Status, LiveStream? Stream)> OpenAsync(
             HttpClient client, string? role, string? subject, string query = "", string? exp = null)
         {
-            var request = new HttpRequestMessage(HttpMethod.Get, "/api/query/timeEntries/live" + query);
+            var request = new HttpRequestMessage(HttpMethod.Get, "/api/query/tickets/live" + query);
             if (role is not null) request.Headers.Add("X-Test-Role", role);
             if (subject is not null) request.Headers.Add("X-Test-Subject", subject);
             if (exp is not null) request.Headers.Add("X-Test-Exp", exp);
@@ -222,35 +222,35 @@ public class LiveViewTests
         await using var host = await InMemoryHost.StartAsync(GenerateReadAccessHost(), ProgramCsTemplate.Replace("{{MAP_CALL}}", WiredMapCall));
         var client = host.Client;
 
-        var (status, opened) = await LiveStream.OpenAsync(client, "staff", "s1");
+        var (status, opened) = await LiveStream.OpenAsync(client, "agent", "a1");
         Assert.Equal(HttpStatusCode.OK, status);
-        await using var staff = opened!;
-        var (_, managerOpened) = await LiveStream.OpenAsync(client, "manager", "m1");
-        await using var manager = managerOpened!;
+        await using var agent = opened!;
+        var (_, supervisorOpened) = await LiveStream.OpenAsync(client, "supervisor", "sup1");
+        await using var supervisor = supervisorOpened!;
 
-        // The current result straight away: s1's own entry, plus e2 on p2, which s1 manages. Never e3.
-        var first = await staff.NextViewAsync();
+        // The current result straight away: a1's own ticket, plus t2 in g2, which a1 leads. Never t3.
+        var first = await agent.NextViewAsync();
         Assert.Equal(JsonValueKind.Null, first.GetProperty("position").ValueKind);
-        Assert.Equal(["e1", "e2"], EntryIds(first));
-        Assert.Equal(["e1", "e2", "e3"], EntryIds(await manager.NextViewAsync()));
+        Assert.Equal(["t1", "t2"], TicketIds(first));
+        Assert.Equal(["t1", "t2", "t3"], TicketIds(await supervisor.NextViewAsync()));
 
-        // Someone else's entry, on a project s1 doesn't manage: the manager is pushed it, s1 is pushed nothing.
-        await LogTimeAsync(client, "e4", "p3", "s3");
-        Assert.Equal(["e1", "e2", "e3", "e4"], EntryIds(await manager.NextViewAsync()));
-        // s1's own entry: s1's next push is this one, so the e4 change above sent s1 nothing.
-        await LogTimeAsync(client, "e5", "p1", "s1");
-        var own = await staff.NextViewAsync();
-        Assert.Equal(["e1", "e2", "e5"], EntryIds(own));
+        // Someone else's ticket, in a team a1 doesn't lead: the supervisor is pushed it, a1 is pushed nothing.
+        await OpenTicketAsync(client, "t4", "g3", "a3");
+        Assert.Equal(["t1", "t2", "t3", "t4"], TicketIds(await supervisor.NextViewAsync()));
+        // a1's own ticket: a1's next push is this one, so the t4 change above sent a1 nothing.
+        await OpenTicketAsync(client, "t5", "g1", "a1");
+        var own = await agent.NextViewAsync();
+        Assert.Equal(["t1", "t2", "t5"], TicketIds(own));
         Assert.True(own.GetProperty("position").GetInt64() > 0);
 
-        // A grant change is re-evaluated: unassigning s1 from p2 changes only projectManagers, yet s1 loses e2.
-        await AppendAsync(client, "project", "p2:s1", 1, "ProjectManagerUnassigned",
-            """{"assignmentId":"p2:s1","projectId":"p2","staffId":"s1"}""");
-        Assert.Equal(["e1", "e5"], EntryIds(await staff.NextViewAsync()));
-        // And a new grant adds a project's entries.
-        await AppendAsync(client, "project", "p3:s1", 0, "ProjectManagerAssigned",
-            """{"assignmentId":"p3:s1","projectId":"p3","staffId":"s1"}""");
-        Assert.Equal(["e1", "e3", "e4", "e5"], EntryIds(await staff.NextViewAsync()));
+        // A grant change is re-evaluated: unassigning a1 from g2 changes only teamLeads, yet a1 loses t2.
+        await AppendAsync(client, "team", "g2:a1", 1, "TeamLeadUnassigned",
+            """{"assignmentId":"g2:a1","teamId":"g2","agentId":"a1"}""");
+        Assert.Equal(["t1", "t5"], TicketIds(await agent.NextViewAsync()));
+        // And a new grant adds a team's tickets.
+        await AppendAsync(client, "team", "g3:a1", 0, "TeamLeadAssigned",
+            """{"assignmentId":"g3:a1","teamId":"g3","agentId":"a1"}""");
+        Assert.Equal(["t1", "t3", "t4", "t5"], TicketIds(await agent.NextViewAsync()));
     }
 
     [Fact(Timeout = 300000)]
@@ -258,25 +258,25 @@ public class LiveViewTests
     public async Task A_live_view_is_refused_exactly_as_the_query_would_be_and_ends_with_the_viewer()
     {
         await using var host = await InMemoryHost.StartAsync(GenerateReadAccessHost(), ProgramCsTemplate.Replace("{{MAP_CALL}}",
-            WiredMapCall + "\napp.MapTimeEntriesLiveRoute(prefix: \"/unwired\", resolveOwnRole: ResolveOwnRole);"));
+            WiredMapCall + "\napp.MapTicketsLiveRoute(prefix: \"/unwired\", resolveOwnRole: ResolveOwnRole);"));
         var client = host.Client;
 
         // A param that names no column is the query route's 400, before any stream starts.
-        Assert.Equal(HttpStatusCode.BadRequest, (await LiveStream.OpenAsync(client, "staff", "s1", "?nope=1")).Status);
+        Assert.Equal(HttpStatusCode.BadRequest, (await LiveStream.OpenAsync(client, "agent", "a1", "?nope=1")).Status);
         // No resolveSubjectId wired: a restricted viewer is refused (fail closed), not streamed every row.
-        using (var unwired = await client.SendAsync(new HttpRequestMessage(HttpMethod.Get, "/unwired/timeEntries/live")
+        using (var unwired = await client.SendAsync(new HttpRequestMessage(HttpMethod.Get, "/unwired/tickets/live")
                {
-                   Headers = { { "X-Test-Role", "staff" }, { "X-Test-Subject", "s1" } },
+                   Headers = { { "X-Test-Role", "agent" }, { "X-Test-Subject", "a1" } },
                }))
             Assert.Equal(HttpStatusCode.Forbidden, unwired.StatusCode);
         // A token that has already expired gets no stream.
         var past = DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeSeconds().ToString();
-        Assert.Equal(HttpStatusCode.Unauthorized, (await LiveStream.OpenAsync(client, "staff", "s1", exp: past)).Status);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await LiveStream.OpenAsync(client, "agent", "a1", exp: past)).Status);
         // None of those left a subscription behind.
         await client.GetAsync("/test/no-subscribers").WaitAsync(TimeSpan.FromSeconds(15));
 
         // The viewer going away ends the subscription.
-        var (_, opened) = await LiveStream.OpenAsync(client, "staff", "s1");
+        var (_, opened) = await LiveStream.OpenAsync(client, "agent", "a1");
         var stream = opened!;
         await stream.NextViewAsync();
         var none = client.GetAsync("/test/no-subscribers");
@@ -287,7 +287,7 @@ public class LiveViewTests
 
         // A token expiring ends the stream, saying so; the client reconnects with a fresh one.
         var soon = DateTimeOffset.UtcNow.AddSeconds(2).ToUnixTimeSeconds().ToString();
-        var (_, expiring) = await LiveStream.OpenAsync(client, "staff", "s1", exp: soon);
+        var (_, expiring) = await LiveStream.OpenAsync(client, "agent", "a1", exp: soon);
         await using var expiringStream = expiring!;
         await expiringStream.NextViewAsync();
         var end = await expiringStream.NextAsync();

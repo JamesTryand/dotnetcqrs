@@ -216,7 +216,7 @@ public class DeciderRegistryPiiTests
         Assert.Equal(2, decides); // pending -> reveal -> redacted on the re-run, then stop
         Assert.Equal(1, handler.DecryptBatchCallCount);
     }
-    // ---- P6: erasure is terminal, and coming back means a new subject ----
+    // ---- Erasure is terminal, and coming back means a new subject ----
 
     [Fact]
     public async Task Storing_new_PII_for_an_erased_subject_is_refused_and_nothing_is_appended()

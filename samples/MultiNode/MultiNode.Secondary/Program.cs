@@ -1,10 +1,10 @@
-// dotnetcqrs-multi-node Milestone 3: the read + forwarding side of the cross-host
+// The read + forwarding side of the cross-host
 // replication smoke test. Opens the SAME events.db path LiteFS replicates into this
-// host's own FUSE mount -- Milestone 1's SqliteEventStore.OpenReadOnlyAsync, byte for
-// byte unchanged. The only thing that differs between "same host" (Milestone 1) and
-// "cross host" (this milestone) is how the shared file gets onto this filesystem;
+// host's own FUSE mount -- SqliteEventStore.OpenReadOnlyAsync, byte for
+// byte unchanged. The only thing that differs between "same host" and
+// "cross host" is how the shared file gets onto this filesystem;
 // LiteFS owns that, this app has no LiteFS-specific code at all. Writes are forwarded
-// to the primary over a real network hop via Milestone 2's
+// to the primary over a real network hop via
 // CqrsGatewayEndpoints.ForwardTo, also unchanged. See docs/cross-host-replication.md.
 using System.Data.Common;
 using System.Text.Json;

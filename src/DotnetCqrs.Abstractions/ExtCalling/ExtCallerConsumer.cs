@@ -24,15 +24,14 @@ public sealed class ExtCallerConfig
     /// <see cref="InProcessFollowUpDispatcher"/> to keep dispatching straight into a
     /// local <see cref="Deciders.DeciderRegistry"/> (this baseline's original mode), or
     /// <see cref="GatewayFollowUpDispatcher"/> to POST them to a configured command
-    /// gateway — another dotnetcqrs instance or a pocketcqrs one
-    /// (dotnetcqrs-multi-node Milestone 4).</summary>
+    /// gateway — another dotnetcqrs instance or a pocketcqrs one.</summary>
     public required IFollowUpDispatcher Dispatcher { get; init; }
 
     /// <summary>Records permanent per-event failures. Point this at a store this
     /// component owns outright.</summary>
     public required IDeadLetterStore DeadLetters { get; init; }
 
-    /// <summary>Where the consumer records the calls to make, for <see cref="ExtCallOutboxWorker"/> (D40): the event
+    /// <summary>Where the consumer records the calls to make, for <see cref="ExtCallOutboxWorker"/>: the event
     /// stores implement it, beside their dead letters.</summary>
     public required IExtCallOutbox Outbox { get; init; }
 
@@ -55,7 +54,7 @@ public sealed class ExtCallerConfig
 /// pocketcqrs's <c>extcaller</c> package. The dispatcher is either
 /// <see cref="InProcessFollowUpDispatcher"/> (this baseline's original mode, straight
 /// into a local <see cref="DeciderRegistry"/>) or <see cref="GatewayFollowUpDispatcher"/>
-/// (dotnetcqrs-multi-node Milestone 4 — an HTTP POST to a remote command gateway,
+/// (an HTTP POST to a remote command gateway,
 /// matching pocketcqrs's own <c>extcaller.Gateway</c>).
 ///
 /// <para><see cref="ApplyAsync"/> makes no call: it records the event in the
@@ -64,7 +63,7 @@ public sealed class ExtCallerConfig
 /// Run the worker beside the engine (<c>_ = consumer.Worker.RunAsync(ct)</c>). A permanently failing rule dead-letters,
 /// as before.</para>
 ///
-/// Known gap, deliberately deferred (see Milestone 5's scope note on <c>HandleWithMeta</c>):
+/// Known gap, deliberately deferred (it would need <c>HandleWithMeta</c> to carry the key):
 /// pocketcqrs additionally derives a stable idempotency key per follow-up and has its
 /// remote gateway de-duplicate by it, so a redelivered source event's follow-up never
 /// even reaches the target decider a second time. This baseline has no such dedup index

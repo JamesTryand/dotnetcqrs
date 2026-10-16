@@ -27,13 +27,13 @@ public class RefusalTests
 
         var domain = Assert.Single(DocumentMapper.Map(doc).Domains);
 
-        var claim = domain.Commands.Single(c => c.Name == "ClaimEntryForInvoice");
-        var refusal = Assert.Single(claim.Refusals);
-        Assert.Equal("entry is on another invoice", refusal.Message);
+        var hold = domain.Commands.Single(c => c.Name == "HoldBookingForEventPlan");
+        var refusal = Assert.Single(hold.Refusals);
+        Assert.Equal("booking is held by another event plan", refusal.Message);
         Assert.Equal(2, refusal.All.Count);
 
-        var update = domain.Commands.Single(c => c.Name == "UpdateEntry");
-        Assert.Equal(["entry is on an invoice", "hours must be positive", "a day has at most 24 hours"], update.Refusals.Select(r => r.Message));
+        var change = domain.Commands.Single(c => c.Name == "ChangeBooking");
+        Assert.Equal(["booking is held by an event plan", "duration must be positive", "a booking lasts at most one day"], change.Refusals.Select(r => r.Message));
     }
 
     [Fact(Timeout = VerifyTimeoutMs)]
@@ -264,7 +264,7 @@ public class RefusalTests
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task A_date_or_number_an_event_does_not_carry_is_unset_not_a_default()
     {
-        // An entry logged without invoicedBeforeCutOver must not read as "invoiced". The
+        // An item logged without closedOn must not read as "closed". The
         // generated payload record held a date (and a number, and a bool) as a non-nullable value, so a field
         // the event did not carry folded into state as 0001-01-01 (or 0, or false) and "is set" held for it.
         const string json = """

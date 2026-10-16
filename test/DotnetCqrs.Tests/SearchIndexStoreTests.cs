@@ -6,7 +6,7 @@ using DotnetCqrs.ReadModels;
 namespace DotnetCqrs.Tests;
 
 /// <summary>
-/// Milestone D5: the separate search store keeps its consumers' checkpoints inside itself,
+/// The separate search store keeps its consumers' checkpoints inside itself,
 /// so losing the file (deleted, excluded from a backup, not restored) means a rebuild from
 /// the start of the log, never an index that silently stops short.
 /// </summary>

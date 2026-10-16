@@ -79,7 +79,7 @@ public static class ScenarioVerifier
         return results;
     }
 
-    /// <summary>Verifies a document against a host's own deciders (D30, T3): command scenarios
+    /// <summary>Verifies a document against a host's own deciders: command scenarios
     /// run in-process against what <paramref name="host"/> registers, so the values a scenario
     /// declares check the host's real arithmetic and rules, not a generated stand-in that only
     /// copies the command's payload. View scenarios run against the generated projections, or the host's own

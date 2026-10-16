@@ -105,11 +105,11 @@ public class CqrsGatewayAuthorizeHookTests : IAsyncDisposable
             return Task.FromResult(true);
         };
 
-        var response = await _client.PostAsJsonAsync("/api/cqrs/task/t2/CreateTask", new { role = "manager" });
+        var response = await _client.PostAsJsonAsync("/api/cqrs/task/t2/CreateTask", new { role = "supervisor" });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.True(wasObject);
-        Assert.Equal("manager", role);
+        Assert.Equal("supervisor", role);
     }
 
     [Fact]

@@ -5,12 +5,12 @@ using DotnetCqrs.EventStore;
 namespace DotnetCqrs.Tests;
 
 /// <summary>
-/// dotnetcqrs-multi-node Milestone 6 acceptance: the whole write + read path
+/// The provider-neutral abstraction's acceptance test: the whole write + read path
 /// (<see cref="DeciderRegistry"/> deciding and appending, <see cref="ConsumerEngine"/>
 /// polling and checkpointing, a consumer applying) runs end to end against a
 /// hand-rolled in-memory <see cref="IEventStore"/> — there is no SQLite anywhere in
 /// this file. That is the standing evidence that the abstraction really is
-/// provider-neutral, so Milestone 7's Npgsql backend has a seam to slot into rather
+/// provider-neutral, so the Npgsql backend has a seam to slot into rather
 /// than a SQLite-shaped hole. "104 tests still pass" proves nothing broke; this
 /// proves the interface abstracts.
 /// </summary>

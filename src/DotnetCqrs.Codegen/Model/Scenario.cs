@@ -8,7 +8,7 @@ namespace DotnetCqrs.Codegen.Model;
 /// <c>if kind == X then requires ...</c> rules — modeled as a discriminated union
 /// (via <see cref="ScenarioConverter"/>, see <see cref="SliceConverter"/>'s doc comment
 /// for why not the native <c>[JsonPolymorphic]</c> attribute) rather than one flat
-/// record with every field nullable, since the very next milestone (mapping) needs to
+/// record with every field nullable, since the next stage (mapping) needs to
 /// switch on exactly this shape.
 /// </summary>
 [JsonConverter(typeof(ScenarioConverter))]

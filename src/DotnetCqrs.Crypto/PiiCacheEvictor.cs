@@ -12,7 +12,7 @@ namespace DotnetCqrs.Crypto;
 /// <see cref="PiiCacheEvictorRegistration.RegisterPiiCacheEvictorAsync"/>, which gives it an
 /// in-memory checkpoint.</para>
 ///
-/// <para><b>Live views (D27):</b> once a subject is marked erased here, this process reveals their
+/// <para><b>Live views:</b> once a subject is marked erased here, this process reveals their
 /// personal data as redacted, so every view holding personal data has changed although no table
 /// did. Given those tables (<paramref name="viewTables"/>), the evictor reports them after a
 /// batch with an erasure in it, and their live viewers are pushed the redacted result.</para></summary>

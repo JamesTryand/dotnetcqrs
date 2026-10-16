@@ -51,11 +51,11 @@ public sealed record KmsBatchHmacItem(string? Hmac, string? Error)
 /// once (a retried destroy is recorded again).</summary>
 public sealed record KmsErasurePage(IReadOnlyList<string> SubjectIds, long Next);
 
-/// <summary>Thin HTTP client over <c>platform/key-management-service</c>'s facade —
-/// see that repo's <c>docs/facade-api-contract.md</c> for the exact contract this
+/// <summary>Thin HTTP client over the key-management service's facade —
+/// see that service's <c>docs/facade-api-contract.md</c> for the exact contract this
 /// implements against. Deliberately carries no caller→facade auth of its own: the
-/// facade's own contract doc states that layer is still an open design question on
-/// that issue, not this one's job to invent — see <c>findings.md</c>.</summary>
+/// facade's own contract doc states that layer is still an open design question for
+/// the service, not this client's job to invent.</summary>
 public interface IKmsClient
 {
     /// <summary>Idempotent. Ensures a Transit key exists for <paramref name="subjectId"/>

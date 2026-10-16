@@ -131,7 +131,7 @@ internal static class GenerationSupport
     public static string MatchIndexTable(string collection, string fieldName, string normalize) =>
         $"{collection}__match_{SnakeCase(fieldName)}_{SnakeCase(normalize)}";
 
-    /// <summary>The keyed-hash index table for a pii <c>exact</c>/<c>prefix</c> filter (D6), in
+    /// <summary>The keyed-hash index table for a pii <c>exact</c>/<c>prefix</c> filter, in
     /// the separate search store. One per (field, normalizer, mode); rows of every key version
     /// share it, tagged with <c>key_version</c>.</summary>
     public static string HashIndexTable(string collection, string fieldName, string normalize, string mode) =>
@@ -141,7 +141,7 @@ internal static class GenerationSupport
     public static string HashedIndexName(string collection) => $"{collection}:hashed";
 
     /// <summary>Whether a <c>match</c> filter searches a keyed-hash index: a pii field in
-    /// mode <c>exact</c> or <c>prefix</c> (D6). Its parameter is the facade's HMAC of the
+    /// mode <c>exact</c> or <c>prefix</c>. Its parameter is the facade's HMAC of the
     /// normalized term, not a pattern.</summary>
     public static bool IsHashedMatch(Domain.ReadModel readModel, Domain.ReadModelFilter filter) =>
         filter.IsMatch && filter.Mode != "contains" && readModel.Fields.Any(f => f.Name == filter.Field && f.Pii);

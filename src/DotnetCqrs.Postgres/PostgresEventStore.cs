@@ -28,7 +28,7 @@ namespace DotnetCqrs.Postgres;
 /// <c>WHERE position &gt; checkpoint ORDER BY position</c> would then step over the
 /// lower position for good. The advisory lock makes commit order equal position order,
 /// reproducing SQLite's single-writer append semantics while still allowing concurrent
-/// reads and pooled connections. Milestone 7 deliberately does <b>not</b> deliver
+/// reads and pooled connections. This backend deliberately does <b>not</b> deliver
 /// unrestricted concurrent multi-writer append; see <c>docs/postgres-backend.md</c>.</para>
 /// </summary>
 public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbeatStore, IExtCallOutbox, IOutbox
@@ -45,7 +45,7 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
             metadata     text NOT NULL DEFAULT '{}',
             -- Deliberately text, in the same ...T...Z shape SqliteEventStore's
             -- strftime default produces, so the Event envelope is byte-identical
-            -- across providers (Milestone 5's cross-runtime format finding).
+            -- across providers (the cross-runtime timestamp format must match exactly).
             created      text NOT NULL DEFAULT to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
             UNIQUE (aggregate, aggregate_id, sequence)
         );
@@ -68,7 +68,7 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
             resolved     boolean NOT NULL DEFAULT false
         );
 
-        -- The external caller's outbox (D40): events waiting for ExtCallOutboxWorker, one per consumer and event.
+        -- The external caller's outbox: events waiting for ExtCallOutboxWorker, one per consumer and event.
         CREATE TABLE IF NOT EXISTS extcall_outbox (
             id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             consumer        text NOT NULL,
@@ -453,7 +453,7 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
             throw new KeyNotFoundException($"dead letter {id} not found");
     }
 
-    // ---- IExtCallOutbox (D40) ----
+    // ---- IExtCallOutbox ----
 
     /// <summary>The one timestamp format the outbox uses, so text order is time order.</summary>
     private static string OutboxTime(DateTimeOffset value) =>

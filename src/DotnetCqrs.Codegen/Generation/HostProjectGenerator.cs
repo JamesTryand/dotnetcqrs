@@ -12,9 +12,8 @@ namespace DotnetCqrs.Codegen.Generation;
 /// decider per aggregate), one projection per read model, a combined
 /// <c>IReadModelStore.InstallWriteGuardAsync</c>, a <c>ConsumerEngine</c> (every projection plus one
 /// <c>ReactorConsumer</c> per reactor), and an unauthenticated <c>MapCqrsGateway()</c> —
-/// the exact pattern <c>samples/OrderFulfillment/Program.cs</c> hand-wires. See
-/// README.md's "Host scaffolding" milestone for the resolved design questions
-/// (two SQLite files, no auth/file-storage, a baked-in <c>--verify</c> mode).
+/// the exact pattern <c>samples/OrderFulfillment/Program.cs</c> hand-wires. Its design:
+/// two SQLite files, no auth/file-storage, a baked-in <c>--verify</c> mode.
 ///
 /// <para><b>SQLite or Postgres, chosen at startup:</b> with <c>DOTNETCQRS_POSTGRES</c> set to a
 /// connection string, the host keeps its event log (the database's default schema), read models
@@ -30,9 +29,9 @@ namespace DotnetCqrs.Codegen.Generation;
 /// <see cref="Verification.ScenarioVerifier.VerifyAsync"/> and
 /// <see cref="Verification.ScenarioReport.Print"/> exactly as the CLI's own <c>verify</c>
 /// command does — reusing that print/exit-code helper is the entire reason it lives in
-/// this project rather than DotnetCqrs.Codegen.Cli (see README's Milestone 7 note).
+/// this project rather than DotnetCqrs.Codegen.Cli (which a generated host cannot reference).
 ///
-/// <para><b>PII (Milestone D4):</b> when any event carries <c>field.pii</c>, the generated
+/// <para><b>PII:</b> when any event carries <c>field.pii</c>, the generated
 /// host reads <c>KMS_FACADE_URL</c> and refuses to start without it (exit 1, before
 /// opening anything; <c>--verify</c> is unaffected). It registers one <c>KmsClient</c> and
 /// one <c>PiiRevealCache</c> in DI for the query routes, and registers each PII aggregate's
@@ -41,7 +40,7 @@ namespace DotnetCqrs.Codegen.Generation;
 /// /api/cqrs/dataSubject/{id}/EraseSubject</c>, plus <c>SubjectKeyDestroyer</c> and the
 /// per-process <c>PiiCacheEvictor</c>.</para>
 ///
-/// <para><b>Hashed search (D6):</b> when a read model has pii <c>exact</c>/<c>prefix</c> match
+/// <para><b>Hashed search:</b> when a read model has pii <c>exact</c>/<c>prefix</c> match
 /// filters, the host ensures the application's HMAC index key at startup (named by
 /// <c>KMS_INDEX_KEY</c>, default the project name), reads its latest version, registers one
 /// <c>HashedIndexKey</c> in DI for the routes, and registers each <c>{Collection}HashedIndex</c>
@@ -207,7 +206,7 @@ public static class HostProjectGenerator
         b.AppendLine("var postgres = Environment.GetEnvironmentVariable(\"DOTNETCQRS_POSTGRES\") is { Length: > 0 } configuredPostgres ? configuredPostgres : null;");
         b.AppendLine("var dataDir = Path.Combine(AppContext.BaseDirectory, \"data\");");
         b.AppendLine();
-        // The single-writer/multi-reader topology (dotnetcqrs-multi-node; the health/telemetry
+        // The single-writer/multi-reader topology (the health/telemetry
         // contract's writer and reader roles). One generated host runs as either: a reader reads
         // the writer's event log read-only, keeps everything else node-local, runs no side
         // effects, and forwards or refuses commands.
@@ -445,7 +444,7 @@ public static class HostProjectGenerator
             }
             b.AppendLine("}");
         }
-        // D27: the live routes subscribe to the engine's read-model change feed.
+        // Live views: the live routes subscribe to the engine's read-model change feed.
         b.AppendLine("builder.Services.AddSingleton<IReadModelChangeFeed>(engine);");
         var searchIndexed = mapped.Domains
             .SelectMany(d => d.ReadModels.Where(rm => GenerationSupport.IndexedMatchFilters(rm).Any()).Select(rm => (Domain: d, ReadModel: rm)))
@@ -502,7 +501,7 @@ public static class HostProjectGenerator
         }
         if (hashIndexed.Count > 0)
         {
-            // pii exact/prefix filters keep keyed hashes (D6), in the same search.db. The
+            // pii exact/prefix filters keep keyed hashes, in the same search.db. The
             // application has one HMAC index key at the facade, named by KMS_INDEX_KEY or, by
             // default, this project's name. Its version is read once, here: if ops has rotated
             // it, RegisterHashedSearchIndexAsync rebuilds each index at the new version while
@@ -533,7 +532,7 @@ public static class HostProjectGenerator
             // starts; any position at or behind the destroyer's is safe.
             // Destroying a key is the writer's; every node empties its own reveal cache.
             b.AppendLine("if (!isReader) engine.Register(new SubjectKeyDestroyer(kms));");
-            // D27: the read models holding personal data, so their live viewers are pushed the redacted result.
+            // Live views: the read models holding personal data, so their live viewers are pushed the redacted result.
             var piiTables = mapped.Domains.SelectMany(d => d.ReadModels).Where(rm => rm.Fields.Any(f => f.Pii))
                 .Select(rm => rm.Collection).Distinct().ToList();
             b.AppendLine($"await engine.RegisterPiiCacheEvictorAsync(piiCache, consumerState, viewTables: {GenerationSupport.QuotedArray(piiTables)});");
@@ -642,7 +641,7 @@ public static class HostProjectGenerator
                     b.AppendLine($"// {readModel.Collection}: declares who may read which rows (schema 3.8.0), so it refuses every query " +
                         "until resolveOwnRole and resolveSubjectId are both wired.");
                 b.AppendLine($"app.Map{typeName}Route();");
-                // D27: the same query as a live view (SSE), wired with the same hooks.
+                // The same query as a live view (SSE), wired with the same hooks.
                 b.AppendLine($"app.Map{typeName}LiveRoute();");
             }
         }

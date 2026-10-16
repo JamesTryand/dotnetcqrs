@@ -10,7 +10,7 @@ using Microsoft.Data.Sqlite;
 namespace DotnetCqrs.Tests;
 
 /// <summary>
-/// dotnetcqrs-multi-node Milestone 1: a same-host secondary opens the master's real
+/// A same-host secondary opens the master's real
 /// events.db read-only and runs its own local projections against it -- the "single
 /// master, multiple read models" story, with no replication tooling, that
 /// journal_mode=WAL concurrent readers already make safe. Uses real files on disk

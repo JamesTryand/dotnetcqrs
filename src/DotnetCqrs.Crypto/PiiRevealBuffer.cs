@@ -1,7 +1,6 @@
 namespace DotnetCqrs.Crypto;
 
-/// <summary>The batching half of the lazy/batched design (see
-/// <c>platform/key-management-service/findings.md</c>'s "Phase 4 design" section). A
+/// <summary>The batching half of the lazy/batched read design. A
 /// <see cref="Pii{T}.RevealAsync"/> call enqueues into this buffer and returns a task
 /// that only completes once <see cref="FlushAsync"/> runs — nothing hits the facade
 /// until then. Reveals sharing a subject collapse into one <c>decrypt-batch</c> call

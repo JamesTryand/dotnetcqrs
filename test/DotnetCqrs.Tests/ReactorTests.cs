@@ -9,7 +9,7 @@ public class ReactorTests
 {
     // A minimal order decider — just enough to produce OrderConfirmed — and a
     // minimal task decider, used only to exercise the reactor pattern; not a
-    // shipped domain example (that's Milestone 8's worked example).
+    // shipped domain example (that's samples/OrderFulfillment).
     private static Decider<bool> OrderDecider() => new()
     {
         InitialState = () => false,

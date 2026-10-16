@@ -10,7 +10,7 @@ namespace DotnetCqrs.Codegen.Generation;
 /// Postgres). <c>term</c> is the field's value,
 /// revealed and normalized, which is the one place plaintext PII is kept at rest.
 ///
-/// <para>Why that is acceptable, and the rules it follows (findings, "D5 decisions"):
+/// <para>Why that is acceptable, and the rules it follows:
 /// the store is excluded from backups and rebuilt from the log; <c>SubjectErased</c>
 /// deletes the subject's entries, so "no match" is then the right answer; a value whose
 /// key is already destroyed is never indexed; and the index's checkpoint lives in the same

@@ -4,8 +4,8 @@ namespace DotnetCqrs.Codegen.Generation;
 
 /// <summary>
 /// Generates one read-side HTTP query route per read model — the first generated
-/// counterpart to <see cref="ProjectionGenerator"/>'s write side. Closes the gap this
-/// project's own Group C item 4 execution plan found: <c>DotnetCqrs.Host</c>'s
+/// counterpart to <see cref="ProjectionGenerator"/>'s write side. Closes a gap:
+/// <c>DotnetCqrs.Host</c>'s
 /// <c>CqrsGatewayEndpoints</c> maps command dispatch only, and <c>readModel.scopes</c>
 /// had zero production consumers before this — only the scenario-verify harness's own
 /// SIMULATION of what a real query would do (<c>Verification/HarnessProgram.txt</c>'s
@@ -67,15 +67,15 @@ namespace DotnetCqrs.Codegen.Generation;
 /// into the SQL as-is, which was injectable. With pii columns revealed by name, a
 /// <c>UNION ... AS email</c> would also have had another table's ciphertext decrypted.</para>
 ///
-/// <para><b>PII (Milestone D3):</b> a read model with <c>field.pii</c> columns gets a route
+/// <para><b>PII:</b> a read model with <c>field.pii</c> columns gets a route
 /// that takes <c>IKmsClient</c> (required) and <c>PiiRevealCache</c> (optional) from DI.
 /// After the SQL runs, every pii cell on the page is revealed through
 /// <c>PiiColumnRevealer</c>: one buffer, one flush, so at most one <c>decrypt-batch</c> per
 /// subject. An erased subject's cell comes back as <c>{"$redacted":true}</c>. A plain
 /// query param naming a pii column is a 400: the column holds non-deterministic
 /// ciphertext, so equality could never match. Searching PII is the job of
-/// <c>match</c> filters (D5/D6), not plain params. A pii <c>exact</c>/<c>prefix</c> filter
-/// (D6) also takes <c>HashedIndexKey</c> from DI, hashes the normalized term through the
+/// <c>match</c> filters, not plain params. A pii <c>exact</c>/<c>prefix</c> filter
+/// also takes <c>HashedIndexKey</c> from DI, hashes the normalized term through the
 /// facade at the index's active key version, and answers 503 if the facade can't.</para>
 /// </summary>
 public static class ReadModelQueryGenerator
@@ -83,7 +83,7 @@ public static class ReadModelQueryGenerator
     public static GeneratedFile Generate(Domain.Domain domain, Domain.ReadModel readModel)
     {
         var typeName = GenerationSupport.ExportName(readModel.Collection);
-        // A pii column holds the {"$pii":...} envelope at rest (P4). The route reveals it
+        // A pii column holds the {"$pii":...} envelope at rest. The route reveals it
         // just before responding and refuses to filter on it, since ciphertext is
         // non-deterministic and can never match a query value.
         var piiColumns = readModel.Fields.Where(f => f.Pii).Select(f => ToSnakeCase(f.Name)).ToList();
@@ -122,11 +122,11 @@ public static class ReadModelQueryGenerator
         b.AppendLine("    /// <summary>This table's own columns: the only names a plain query param may use.</summary>");
         b.AppendLine($"    private static readonly string[] Columns = {GenerationSupport.QuotedArray(columns)};");
         b.AppendLine();
-        // D27 live views: the result changes when this table changes, and when a scope's via-table does (for a
+        // Live views: the result changes when this table changes, and when a scope's via-table does (for a
         // granting scope, a change there changes what the caller may see at all).
         var liveTables = new[] { readModel.Collection }.Concat(readModel.Scopes.Select(s => s.ViaCollection))
             .Distinct().ToList();
-        b.AppendLine("    /// <summary>The tables this view's result depends on: its own, and each scope's via-table (D27 live views).</summary>");
+        b.AppendLine("    /// <summary>The tables this view's result depends on: its own, and each scope's via-table (for live views).</summary>");
         b.AppendLine($"    private static readonly string[] LiveTables = {GenerationSupport.QuotedArray(liveTables)};");
         b.AppendLine();
         if (columnKinds.Count > 0)
@@ -174,7 +174,7 @@ public static class ReadModelQueryGenerator
         var piiParams = hasPii ? ", [FromServices] IKmsClient kms, [FromServices] PiiRevealCache? cache" : "";
         var piiDecl = hasPii ? ", IKmsClient kms, PiiRevealCache? cache" : "";
         var piiArgs = hasPii ? ", kms, cache" : "";
-        // A hashed match filter (pii exact/prefix, D6) hashes its term with the application's
+        // A hashed match filter (pii exact/prefix) hashes its term with the application's
         // index key, at the version its index is currently built with.
         if (readModel.Filters.Any(f => GenerationSupport.IsHashedMatch(readModel, f)))
         {
@@ -192,9 +192,9 @@ public static class ReadModelQueryGenerator
         b.AppendLine("        });");
         b.AppendLine("    }");
         b.AppendLine();
-        // D27: the same query, kept current for one viewer. Same hooks, so a host wires both routes alike, and
+        // Live view: the same query, kept current for one viewer. Same hooks, so a host wires both routes alike, and
         // it is a separate route builder so a host's .RequireAuthorization() is chained onto it explicitly too.
-        b.AppendLine("    /// <summary>The live view of this read model (D27): the same query, with the same access rules, as a");
+        b.AppendLine("    /// <summary>The live view of this read model: the same query, with the same access rules, as a");
         b.AppendLine("    /// Server-Sent Events stream that pushes a new result whenever a projection changes one of its tables.");
         b.AppendLine("    /// See LiveView. Wire it with the same hooks as the query route.</summary>");
         b.AppendLine($"    public static RouteHandlerBuilder Map{typeName}LiveRoute(this IEndpointRouteBuilder endpoints, string prefix = \"/api/query\", {hooks})");
@@ -260,7 +260,7 @@ public static class ReadModelQueryGenerator
             // Schema 3.1.0 match: the raw param value is the search term, normalized exactly as
             // the stored side was. A non-pii field searches its shadow column; a pii field
             // resolves row keys through its index in the attached "search" store: the
-            // plaintext index for contains, or the keyed-hash index for exact/prefix (D6),
+            // plaintext index for contains, or the keyed-hash index for exact/prefix,
             // where the parameter is the HMAC of the whole term (one facade call).
             b.AppendLine($"                    case \"{filter.Param}\":");
             b.AppendLine("                    {");

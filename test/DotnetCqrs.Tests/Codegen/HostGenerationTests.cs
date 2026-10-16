@@ -13,7 +13,7 @@ using Npgsql;
 namespace DotnetCqrs.Tests.Codegen;
 
 /// <summary>
-/// Proves Milestone 9's `generate --host` for real: the generated project actually
+/// Proves `generate --host` for real: the generated project actually
 /// builds, its own baked-in `--verify` mode reports the document's real scenario
 /// results (the same PASS/FAIL/exit-code shape CliTests already proves for the CLI's
 /// own `verify` command), and a real HTTP request through the generated
@@ -390,7 +390,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
 
             // auto-ship-pending-orders is a same-aggregate reactor (order-placed ->
             // ship-order, both "order"): it must dispatch back into the SAME order's
-            // stream, not a derived one nothing created (the Milestone 5 finding this
+            // stream, not a derived one nothing created (a past bug this
             // regression-tests). ConsumerEngine polls every ~1s, so poll the host's real
             // event store for OrderShipped to land on stream ("order", "o1").
             var shipped = false;
@@ -696,7 +696,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             File.Copy(file, file.Replace(from, to, StringComparison.Ordinal));
     }
 
-    // Milestone D4: a document whose only aggregate stores PII, and whose read model
+    // A document whose only aggregate stores PII, and whose read model
     // shows it.
     private const string PiiHostJson = """
         {
@@ -863,7 +863,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
                     "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'search' AND c.relkind = 'r' AND c.relpersistence <> 'u'")));
             }
 
-            // Milestone D6: the pii exact filter is a keyed-hash index in the same search.db, under
+            // The pii exact filter is a keyed-hash index in the same search.db, under
             // the index key the host ensured at startup.
             Assert.Equal(1, facade.Handler.IndexKeyVersion("pii-host-test"));
             async Task<int> ExactHitsAsync(string term) =>

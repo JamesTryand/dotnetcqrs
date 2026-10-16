@@ -3,11 +3,10 @@ namespace DotnetCqrs.Codegen.Verification;
 /// <summary>
 /// Formats <see cref="ScenarioVerifier"/>'s results as pass/fail/skip lines and turns
 /// them into a process exit code. Lives here, not in DotnetCqrs.Codegen.Cli, because
-/// Milestone 9's generated project needs the exact same print/exit-code logic from its
+/// the generated host project needs the exact same print/exit-code logic from its
 /// own <c>--verify</c> mode and cannot reference the CLI project (it's a separately
 /// compiled project that only references DotnetCqrs.Codegen, which it needs anyway to
-/// call ScenarioVerifier itself). See README.md's Milestone 7 "Forward-looking
-/// constraint".
+/// call ScenarioVerifier itself).
 /// </summary>
 public static class ScenarioReport
 {

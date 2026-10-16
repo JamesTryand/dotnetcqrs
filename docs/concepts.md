@@ -290,8 +290,7 @@ hold blocks it whatever the policy says. See [Governed erasure](retention.md).
 - [Tutorial](tutorial.md) — the other direction: an EventModeling document, generated
   code, a running slice.
 
-This doc started as Milestone 1 of the build-out tracked in the
-`platform/dotnet-cqrs-baseline` delegation; everything it describes (write-side core,
-consumer/subscription plumbing, projections, reactors, write-guard, extcaller) is now
-built, along with a runnable host (`platform/dotnetcqrs-host`) and EventModeling
-codegen (`platform/eventmodeling-codegen`) on top of it.
+This doc started as the design for the library's first build-out; everything it describes
+(write-side core, consumer/subscription plumbing, projections, reactors, write-guard,
+extcaller) is now built, along with a runnable host (`DotnetCqrs.Host`) and EventModeling
+codegen (`DotnetCqrs.Codegen`) on top of it.

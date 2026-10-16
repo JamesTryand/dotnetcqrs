@@ -36,7 +36,7 @@ public sealed record FollowUpDispatch(
 /// Applies an <see cref="ExtCallerConsumer"/> follow-up command.
 /// <see cref="InProcessFollowUpDispatcher"/> is today's behaviour — straight into a
 /// local <see cref="DeciderRegistry"/>; <see cref="GatewayFollowUpDispatcher"/> is
-/// dotnetcqrs-multi-node Milestone 4 — an HTTP POST to a configured command gateway,
+/// an HTTP POST to a configured command gateway,
 /// which may be another dotnetcqrs instance or a pocketcqrs one. Mirrors pocketcqrs's
 /// <c>extcaller.Gateway</c> interface, widened to also cover the in-process case this
 /// baseline started from.
@@ -88,7 +88,7 @@ public sealed class GatewayDispatchException(int statusCode, string body)
 /// <see cref="DotnetCqrs.Host.CqrsGatewayEndpoints"/> and pocketcqrs's <c>gateway.go</c>
 /// serve. Hand-rolled on <see cref="HttpClient"/>, matching this project's established
 /// call on hand-rolled code over a dependency for a small surface (see
-/// <c>CqrsGatewayEndpoints.ForwardTo</c>, the same decision for Milestone 2's
+/// <c>CqrsGatewayEndpoints.ForwardTo</c>, the same decision for
 /// write-forwarding).
 ///
 /// <para>Sends <c>Causation-Id</c> and <c>Correlation-Id</c> headers: a dotnetcqrs
@@ -123,7 +123,7 @@ public sealed class GatewayFollowUpDispatcher : IFollowUpDispatcher
     /// <summary>Builds one against <paramref name="gatewayRoot"/>, sending
     /// <paramref name="token"/> (when non-empty) as <c>Authorization: Bearer</c> on
     /// every request. Minting the token — a shared-issuer JWT both ends validate, see
-    /// Milestone 5 — is an operator concern, out of scope here.</summary>
+    /// <c>docs/interop.md</c> — is an operator concern, out of scope here.</summary>
     public static GatewayFollowUpDispatcher Create(
         Uri gatewayRoot, string? token = null, TimeSpan? timeout = null, string pathPrefix = "api/cqrs")
     {

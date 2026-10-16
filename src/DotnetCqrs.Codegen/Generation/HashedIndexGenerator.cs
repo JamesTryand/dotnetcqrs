@@ -4,11 +4,11 @@ namespace DotnetCqrs.Codegen.Generation;
 
 /// <summary>
 /// Generates the keyed-hash search index for a read model's pii <c>exact</c>/<c>prefix</c>
-/// filters (schema 3.1.0 <c>match</c>, D6): an <c>IHashedSearchIndex</c> that keeps, per
+/// filters (schema 3.1.0 <c>match</c>): an <c>IHashedSearchIndex</c> that keeps, per
 /// filter, a table of <c>(row_key, key_version, hash, subject)</c> in the separate search store,
 /// beside the <c>contains</c> indexes (<see cref="SearchIndexGenerator"/>).
 ///
-/// <para>Pinned rules (platform/eventmodeling-codegen findings, "D6 decisions"): <c>hash</c> is
+/// <para>Pinned rules: <c>hash</c> is
 /// the key-management facade's HMAC of the UTF-8 bytes of the value after
 /// <see cref="MatchNormalizer"/>, with nothing added, stored as the whole <c>vault:vN:...</c>
 /// string. <c>exact</c> stores one row per record. <c>prefix</c> stores one per

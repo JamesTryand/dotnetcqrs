@@ -49,7 +49,7 @@ public sealed class SqliteEventStore : IEventStore, IDeadLetterStore, IHeartbeat
             resolved     INTEGER NOT NULL DEFAULT 0
         );
 
-        -- The external caller's outbox (D40): events waiting for ExtCallOutboxWorker, one per consumer and event.
+        -- The external caller's outbox: events waiting for ExtCallOutboxWorker, one per consumer and event.
         CREATE TABLE IF NOT EXISTS extcall_outbox (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             consumer        TEXT NOT NULL,
@@ -413,7 +413,7 @@ public sealed class SqliteEventStore : IEventStore, IDeadLetterStore, IHeartbeat
         }, ct);
     }
 
-    // ---- IExtCallOutbox (D40) ----
+    // ---- IExtCallOutbox ----
 
     /// <summary>The one timestamp format the outbox uses, so text order is time order.</summary>
     private static string OutboxTime(DateTimeOffset value) =>

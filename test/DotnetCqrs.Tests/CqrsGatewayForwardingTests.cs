@@ -13,9 +13,9 @@ using Microsoft.Extensions.DependencyInjection;
 namespace DotnetCqrs.Tests;
 
 /// <summary>
-/// dotnetcqrs-multi-node Milestone 2: a secondary's gateway proxies a command to the
-/// master instead of refusing it, and Milestone 1's read-only replica then picks up
-/// the resulting event on its next catch-up pass -- proving the two milestones
+/// Write-forwarding: a secondary's gateway proxies a command to the
+/// master instead of refusing it, and the read-only replica then picks up
+/// the resulting event on its next catch-up pass -- proving the two features
 /// compose, not just that each works alone. Two in-memory ASP.NET Core TestServers (no
 /// real listening ports, matching CqrsGatewayEndpointsTests' own established pattern):
 /// the secondary's forward HttpClient is wired straight to the master TestServer's own

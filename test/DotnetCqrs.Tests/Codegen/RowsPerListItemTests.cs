@@ -11,8 +11,8 @@ namespace DotnetCqrs.Tests.Codegen;
 /// <c>&lt;stream&gt;|&lt;group&gt;</c>, with <c>sumOfItems</c> (a subfield summed over the row's items, absent unless every
 /// item carries it) and <c>byEvent</c> (a literal per event). Such a projection used to be written by hand, so its view scenarios couldn't be
 /// checked against generated code.
-/// The worked values are D33's: p1's two lines of 306.00 are 612.00, p2's one is 136.00, and the 22.44 conversion margin
-/// has no project, so it is in neither.
+/// The worked values are the example's: d1's two parcels of 13.00 kg are 26.00 kg, d2's one is 6.00 kg, and the 40.50 kg
+/// of roll cages has no depot, so it is in neither.
 /// </summary>
 [Trait("Category", "Compiles")]
 public class RowsPerListItemTests
@@ -29,38 +29,38 @@ public class RowsPerListItemTests
         using System.Text.Json.Nodes;
         using DotnetCqrs.EventStore;
         using DotnetCqrs.ReadModels;
-        using Generated.Invoice;
+        using Generated.Delivery;
 
         var readModel = await SqliteReadModelStore.OpenAsync(":memory:");
-        var projection = new InvoicePartsProjection(readModel);
+        var projection = new DepotLoadsProjection(readModel);
         await projection.InitAsync();
         var position = 0L;
-        Event On(string stream, string type, string data) => new(++position, $"e{position}", "invoice", stream, position, type, data, "{}", "2026-10-01T00:00:00Z");
+        Event On(string stream, string type, string data) => new(++position, $"e{position}", "delivery", stream, position, type, data, "{}", "2026-10-01T00:00:00Z");
 
         async Task Show(string label)
         {
             await using var select = readModel.Connection.CreateCommand();
-            select.CommandText = "SELECT part_id, invoice_id, project_id, customer_id, invoice_number, status, subtotal, lines FROM invoiceParts ORDER BY part_id";
+            select.CommandText = "SELECT load_id, delivery_id, depot_id, customer_id, run_number, status, total_weight_kg, parcels FROM depotLoads ORDER BY load_id";
             await using var reader = await select.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
                 string Text(int i) => reader.IsDBNull(i) ? "-" : Convert.ToString(reader.GetValue(i), CultureInfo.InvariantCulture)!;
-                var subtotal = reader.IsDBNull(6) ? "null" : Convert.ToDecimal(reader.GetValue(6), CultureInfo.InvariantCulture).ToString("0.00", CultureInfo.InvariantCulture);
-                var entries = string.Join(",", JsonNode.Parse(reader.GetString(7))!.AsArray().Select(l => l!["entryId"]!.GetValue<string>()));
-                Console.WriteLine($"{label}: {Text(0)} {Text(1)} {Text(2)} {Text(3)} {Text(4)} {Text(5)} {subtotal} [{entries}]");
+                var weight = reader.IsDBNull(6) ? "null" : Convert.ToDecimal(reader.GetValue(6), CultureInfo.InvariantCulture).ToString("0.00", CultureInfo.InvariantCulture);
+                var parcels = string.Join(",", JsonNode.Parse(reader.GetString(7))!.AsArray().Select(l => l!["parcelId"]!.GetValue<string>()));
+                Console.WriteLine($"{label}: {Text(0)} {Text(1)} {Text(2)} {Text(3)} {Text(4)} {Text(5)} {weight} [{parcels}]");
             }
         }
 
-        await projection.ApplyAsync(On("inv-1", "InvoiceDrafted", """{"invoiceId":"inv-1","customerId":"c1","lines":[{"entryId":"t1","projectId":"p1","localAmount":225},{"entryId":"t2","projectId":"p1","localAmount":225},{"entryId":"t3","projectId":"p2","localAmount":100}]}"""), default);
-        await Show("drafted");
-        await projection.ApplyAsync(On("inv-2", "InvoiceDrafted", """{"invoiceId":"inv-2","customerId":"c2","lines":[{"entryId":"t4","projectId":"p1","localAmount":50}]}"""), default);
-        await projection.ApplyAsync(On("inv-1", "InvoiceIssued", """{"invoiceId":"inv-1","invoiceNumber":"SI-7","invoiceCurrency":"USD","lines":[{"entryId":"t1","projectId":"p1","localAmount":225,"convertedAmount":306},{"entryId":"t2","projectId":"p1","localAmount":225,"convertedAmount":306},{"entryId":"t3","projectId":"p2","localAmount":100,"convertedAmount":136},{"entryId":"currency-conversion","convertedAmount":22.44,"description":"Currency conversion"}]}"""), default);
-        await Show("issued");
+        await projection.ApplyAsync(On("del-1", "DeliveryPlanned", """{"deliveryId":"del-1","customerId":"c1","parcels":[{"parcelId":"pc1","depotId":"d1","declaredWeightKg":12},{"parcelId":"pc2","depotId":"d1","declaredWeightKg":12},{"parcelId":"pc3","depotId":"d2","declaredWeightKg":5}]}"""), default);
+        await Show("planned");
+        await projection.ApplyAsync(On("del-2", "DeliveryPlanned", """{"deliveryId":"del-2","customerId":"c2","parcels":[{"parcelId":"pc4","depotId":"d1","declaredWeightKg":4}]}"""), default);
+        await projection.ApplyAsync(On("del-1", "DeliveryDispatched", """{"deliveryId":"del-1","runNumber":"RUN-7","vehicleId":"van-3","parcels":[{"parcelId":"pc1","depotId":"d1","declaredWeightKg":12,"weighedWeightKg":13},{"parcelId":"pc2","depotId":"d1","declaredWeightKg":12,"weighedWeightKg":13},{"parcelId":"pc3","depotId":"d2","declaredWeightKg":5,"weighedWeightKg":6},{"parcelId":"roll-cages","weighedWeightKg":40.5,"description":"Roll cages"}]}"""), default);
+        await Show("dispatched");
         // Applied again (at-least-once delivery): the same rows, not doubled sums.
-        await projection.ApplyAsync(On("inv-1", "InvoiceIssued", """{"invoiceId":"inv-1","invoiceNumber":"SI-7","invoiceCurrency":"USD","lines":[{"entryId":"t1","projectId":"p1","localAmount":225,"convertedAmount":306},{"entryId":"t2","projectId":"p1","localAmount":225,"convertedAmount":306},{"entryId":"t3","projectId":"p2","localAmount":100,"convertedAmount":136},{"entryId":"currency-conversion","convertedAmount":22.44,"description":"Currency conversion"}]}"""), default);
+        await projection.ApplyAsync(On("del-1", "DeliveryDispatched", """{"deliveryId":"del-1","runNumber":"RUN-7","vehicleId":"van-3","parcels":[{"parcelId":"pc1","depotId":"d1","declaredWeightKg":12,"weighedWeightKg":13},{"parcelId":"pc2","depotId":"d1","declaredWeightKg":12,"weighedWeightKg":13},{"parcelId":"pc3","depotId":"d2","declaredWeightKg":5,"weighedWeightKg":6},{"parcelId":"roll-cages","weighedWeightKg":40.5,"description":"Roll cages"}]}"""), default);
         await Show("again");
-        await projection.ApplyAsync(On("inv-2", "InvoiceDiscarded", """{"invoiceId":"inv-2"}"""), default);
-        await Show("discarded");
+        await projection.ApplyAsync(On("del-2", "DeliveryCancelled", """{"deliveryId":"del-2"}"""), default);
+        await Show("cancelled");
         return 0;
         """";
 
@@ -79,19 +79,19 @@ public class RowsPerListItemTests
         var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         Assert.Equal(
         [
-            // A draft's lines are in pounds, not converted: its parts have no subtotal.
-            "drafted: inv-1|p1 inv-1 p1 c1 - draft null [t1,t2]",
-            "drafted: inv-1|p2 inv-1 p2 c1 - draft null [t3]",
-            // Issued: the customer still from the draft; the margin line has no project, so it is in no row.
-            "issued: inv-1|p1 inv-1 p1 c1 SI-7 issued 612.00 [t1,t2]",
-            "issued: inv-1|p2 inv-1 p2 c1 SI-7 issued 136.00 [t3]",
-            "issued: inv-2|p1 inv-2 p1 c2 - draft null [t4]",
-            "again: inv-1|p1 inv-1 p1 c1 SI-7 issued 612.00 [t1,t2]",
-            "again: inv-1|p2 inv-1 p2 c1 SI-7 issued 136.00 [t3]",
-            "again: inv-2|p1 inv-2 p1 c2 - draft null [t4]",
+            // A planned delivery's parcels are not weighed yet: its loads have no total weight.
+            "planned: del-1|d1 del-1 d1 c1 - planned null [pc1,pc2]",
+            "planned: del-1|d2 del-1 d2 c1 - planned null [pc3]",
+            // Dispatched: the customer still from the plan; the roll cages have no depot, so they are in no row.
+            "dispatched: del-1|d1 del-1 d1 c1 RUN-7 dispatched 26.00 [pc1,pc2]",
+            "dispatched: del-1|d2 del-1 d2 c1 RUN-7 dispatched 6.00 [pc3]",
+            "dispatched: del-2|d1 del-2 d1 c2 - planned null [pc4]",
+            "again: del-1|d1 del-1 d1 c1 RUN-7 dispatched 26.00 [pc1,pc2]",
+            "again: del-1|d2 del-1 d2 c1 RUN-7 dispatched 6.00 [pc3]",
+            "again: del-2|d1 del-2 d1 c2 - planned null [pc4]",
             // A removal takes every row of its own stream, and only those.
-            "discarded: inv-1|p1 inv-1 p1 c1 SI-7 issued 612.00 [t1,t2]",
-            "discarded: inv-1|p2 inv-1 p2 c1 SI-7 issued 136.00 [t3]",
+            "cancelled: del-1|d1 del-1 d1 c1 RUN-7 dispatched 26.00 [pc1,pc2]",
+            "cancelled: del-1|d2 del-1 d2 c1 RUN-7 dispatched 6.00 [pc3]",
         ], lines);
     }
 
@@ -100,32 +100,32 @@ public class RowsPerListItemTests
     {
         var files = DocumentMapper.Map(DocumentLoader.Parse(Example().ToJsonString())).Domains.SelectMany(CSharpGenerator.Generate).ToList();
 
-        var projection = files.Single(f => f.Name == "InvoicePartsProjection.cs").Source;
-        Assert.Contains("public IReadOnlyList<string> Tables => [\"invoiceParts\", \"invoiceParts_streams\"];", projection);
+        var projection = files.Single(f => f.Name == "DepotLoadsProjection.cs").Source;
+        Assert.Contains("public IReadOnlyList<string> Tables => [\"depotLoads\", \"depotLoads_streams\"];", projection);
     }
 
     [Fact]
-    public void The_query_route_reads_a_sum_of_items_as_money_not_a_float()
+    public void The_query_route_reads_a_sum_of_items_as_a_decimal_not_a_float()
     {
-        // D30.21: decimal end to end; SQLite holds NUMERIC as a float, so the route reads it back as a decimal.
+        // Decimal end to end; SQLite holds NUMERIC as a float, so the route reads it back as a decimal.
         var domain = Assert.Single(DocumentMapper.Map(DocumentLoader.Parse(Example().ToJsonString())).Domains);
 
-        var route = ReadModelQueryGenerator.Generate(domain, domain.ReadModels.Single(r => r.Collection == "invoiceParts")).Source;
-        Assert.Contains("reader.GetName(c) is \"subtotal\" ? reader.GetDecimal(c)", route);
+        var route = ReadModelQueryGenerator.Generate(domain, domain.ReadModels.Single(r => r.Collection == "depotLoads")).Source;
+        Assert.Contains("reader.GetName(c) is \"total_weight_kg\" ? reader.GetDecimal(c)", route);
     }
 
     [Fact]
     public void The_query_route_reads_a_decimal_by_event_value_as_money()
     {
         var node = Example();
-        node["readModels"]!["invoices"] = JsonNode.Parse("""
-            {"name": "Invoices", "builtFromEventIds": ["invoice-drafted", "invoice-issued"],
-             "fields": [{"name": "invoiceId", "type": "string", "idAttribute": true},
-                        {"name": "fee", "type": "decimal", "derivation": {"kind": "byEvent", "values": {"invoice-issued": 12.5}}}]}
+        node["readModels"]!["deliveries"] = JsonNode.Parse("""
+            {"name": "Deliveries", "builtFromEventIds": ["delivery-planned", "delivery-dispatched"],
+             "fields": [{"name": "deliveryId", "type": "string", "idAttribute": true},
+                        {"name": "fee", "type": "decimal", "derivation": {"kind": "byEvent", "values": {"delivery-dispatched": 12.5}}}]}
             """);
         var domain = Assert.Single(DocumentMapper.Map(DocumentLoader.Parse(node.ToJsonString())).Domains);
 
-        var route = ReadModelQueryGenerator.Generate(domain, domain.ReadModels.Single(r => r.Collection == "invoices")).Source;
+        var route = ReadModelQueryGenerator.Generate(domain, domain.ReadModels.Single(r => r.Collection == "deliveries")).Source;
         Assert.Contains("reader.GetName(c) is \"fee\" ? reader.GetDecimal(c)", route);
     }
 
@@ -141,21 +141,21 @@ public class RowsPerListItemTests
     }
 
     [Fact(Timeout = VerifyTimeoutMs)]
-    public async Task Two_invoices_in_one_view_scenario_stay_two_streams()
+    public async Task Two_deliveries_in_one_view_scenario_stay_two_streams()
     {
-        // The harness keys each given event by its own stream (its idAttribute), so two invoices aren't merged.
+        // The harness keys each given event by its own stream (its idAttribute), so two deliveries aren't merged.
         var node = Example();
-        var scenario = node["slices"]!.AsArray().Single(s => (string?)s!["id"] == "view-invoice-parts-slice")!["scenarios"]![1]!;
+        var scenario = node["slices"]!.AsArray().Single(s => (string?)s!["id"] == "view-depot-loads-slice")!["scenarios"]![1]!;
         scenario["given"]!.AsArray().Add(JsonNode.Parse("""
-            {"eventId": "invoice-drafted", "data": {"invoiceId": "inv-2", "customerId": "c2", "lines": [{"entryId": "t4", "projectId": "p1", "localAmount": 50}]}}
+            {"eventId": "delivery-planned", "data": {"deliveryId": "del-2", "customerId": "c2", "parcels": [{"parcelId": "pc4", "depotId": "d1", "declaredWeightKg": 4}]}}
             """));
-        scenario["then"]!["result"]!["entries"]!.AsArray().Add(JsonNode.Parse("""{"invoiceId": "inv-2", "projectId": "p1", "customerId": "c2"}"""));
+        scenario["then"]!["result"]!["entries"]!.AsArray().Add(JsonNode.Parse("""{"deliveryId": "del-2", "depotId": "d1", "customerId": "c2"}"""));
         scenario["then"]!["result"]!["entries"]![0]!["customerId"] = "c1";
         var doc = DocumentLoader.Parse(node.ToJsonString());
 
         var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
 
-        var result = results.Single(r => r.ScenarioId == "a-drafts-parts-have-no-subtotal");
+        var result = results.Single(r => r.ScenarioId == "a-planned-deliverys-loads-have-no-total-weight");
         Assert.True(result.Passed, result.Detail);
     }
 
@@ -164,15 +164,15 @@ public class RowsPerListItemTests
     {
         // The scenarios must be able to fail, or they prove nothing about the generated projection.
         var node = Example();
-        var parts = node["readModels"]!["invoice-parts"]!.AsObject();
-        parts.Remove("rowsPerListItem");
-        foreach (var field in parts["fields"]!.AsArray())
+        var loads = node["readModels"]!["depot-loads"]!.AsObject();
+        loads.Remove("rowsPerListItem");
+        foreach (var field in loads["fields"]!.AsArray())
             if ((string?)field!["derivation"]?["kind"] == "sumOfItems") field.AsObject().Remove("derivation");
         var doc = DocumentLoader.Parse(node.ToJsonString());
 
         var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
 
-        Assert.False(results.Single(r => r.ScenarioId == "issued-invoice-has-a-part-per-project").Passed);
+        Assert.False(results.Single(r => r.ScenarioId == "dispatched-delivery-has-a-load-per-depot").Passed);
     }
 
     // ---- byEvent on an ordinary read model (one row per stream) ----
@@ -180,26 +180,26 @@ public class RowsPerListItemTests
     private const string StatusProgramCs = """"
         using DotnetCqrs.EventStore;
         using DotnetCqrs.ReadModels;
-        using Generated.Invoice;
+        using Generated.Delivery;
 
         var readModel = await SqliteReadModelStore.OpenAsync(":memory:");
-        var projection = new InvoicesProjection(readModel);
+        var projection = new DeliveriesProjection(readModel);
         await projection.InitAsync();
         var position = 0L;
-        Event On(string type, string data) => new(++position, $"e{position}", "invoice", "inv-1", position, type, data, "{}", "2026-10-01T00:00:00Z");
+        Event On(string type, string data) => new(++position, $"e{position}", "delivery", "del-1", position, type, data, "{}", "2026-10-01T00:00:00Z");
         async Task Show(string label)
         {
             await using var select = readModel.Connection.CreateCommand();
-            select.CommandText = "SELECT invoice_id, status FROM invoices";
+            select.CommandText = "SELECT delivery_id, status FROM deliveries";
             await using var reader = await select.ExecuteReaderAsync();
             while (await reader.ReadAsync()) Console.WriteLine($"{label}: {reader.GetString(0)} {(reader.IsDBNull(1) ? "-" : reader.GetString(1))}");
         }
-        await projection.ApplyAsync(On("InvoiceDrafted", """{"invoiceId":"inv-1","customerId":"c1","lines":[]}"""), default);
-        await Show("drafted");
-        await projection.ApplyAsync(On("InvoiceIssued", """{"invoiceId":"inv-1","invoiceNumber":"SI-7","lines":[]}"""), default);
-        await Show("issued");
-        await projection.ApplyAsync(On("InvoiceDiscarded", """{"invoiceId":"inv-1"}"""), default);
-        await Show("discarded");
+        await projection.ApplyAsync(On("DeliveryPlanned", """{"deliveryId":"del-1","customerId":"c1","parcels":[]}"""), default);
+        await Show("planned");
+        await projection.ApplyAsync(On("DeliveryDispatched", """{"deliveryId":"del-1","runNumber":"RUN-7","parcels":[]}"""), default);
+        await Show("dispatched");
+        await projection.ApplyAsync(On("DeliveryCancelled", """{"deliveryId":"del-1"}"""), default);
+        await Show("cancelled");
         return 0;
         """";
 
@@ -207,37 +207,37 @@ public class RowsPerListItemTests
     public async Task By_event_sets_a_literal_per_event_and_an_event_not_named_leaves_it()
     {
         var node = Example();
-        node["readModels"]!["invoices"] = JsonNode.Parse("""
-            {"name": "Invoices", "builtFromEventIds": ["invoice-drafted", "invoice-issued", "invoice-discarded"],
-             "fields": [{"name": "invoiceId", "type": "string", "idAttribute": true},
-                        {"name": "status", "type": "string", "derivation": {"kind": "byEvent", "values": {"invoice-drafted": "draft", "invoice-issued": "issued"}}}]}
+        node["readModels"]!["deliveries"] = JsonNode.Parse("""
+            {"name": "Deliveries", "builtFromEventIds": ["delivery-planned", "delivery-dispatched", "delivery-cancelled"],
+             "fields": [{"name": "deliveryId", "type": "string", "idAttribute": true},
+                        {"name": "status", "type": "string", "derivation": {"kind": "byEvent", "values": {"delivery-planned": "planned", "delivery-dispatched": "dispatched"}}}]}
             """);
         var files = DocumentMapper.Map(DocumentLoader.Parse(node.ToJsonString())).Domains.SelectMany(CSharpGenerator.Generate).ToList();
 
         var (success, output) = await InMemoryProgram.RunAsync(files, StatusProgramCs);
 
         Assert.True(success, output);
-        Assert.Contains("drafted: inv-1 draft", output);
-        Assert.Contains("issued: inv-1 issued", output);
-        Assert.Contains("discarded: inv-1 issued", output);
+        Assert.Contains("planned: del-1 planned", output);
+        Assert.Contains("dispatched: del-1 dispatched", output);
+        Assert.Contains("cancelled: del-1 dispatched", output);
     }
 
     [Fact]
     public async Task By_event_reacts_to_the_events_it_names_as_a_toggle_does()
     {
-        // Built from the draft alone: the issue still sets the status, because byEvent names it.
+        // Built from the plan alone: the dispatch still sets the status, because byEvent names it.
         var node = Example();
-        node["readModels"]!["invoices"] = JsonNode.Parse("""
-            {"name": "Invoices", "builtFromEventIds": ["invoice-drafted"],
-             "fields": [{"name": "invoiceId", "type": "string", "idAttribute": true},
-                        {"name": "status", "type": "string", "derivation": {"kind": "byEvent", "values": {"invoice-drafted": "draft", "invoice-issued": "issued"}}}]}
+        node["readModels"]!["deliveries"] = JsonNode.Parse("""
+            {"name": "Deliveries", "builtFromEventIds": ["delivery-planned"],
+             "fields": [{"name": "deliveryId", "type": "string", "idAttribute": true},
+                        {"name": "status", "type": "string", "derivation": {"kind": "byEvent", "values": {"delivery-planned": "planned", "delivery-dispatched": "dispatched"}}}]}
             """);
         var files = DocumentMapper.Map(DocumentLoader.Parse(node.ToJsonString())).Domains.SelectMany(CSharpGenerator.Generate).ToList();
 
         var (success, output) = await InMemoryProgram.RunAsync(files, StatusProgramCs);
 
         Assert.True(success, output);
-        Assert.Contains("issued: inv-1 issued", output);
+        Assert.Contains("dispatched: del-1 dispatched", output);
     }
 
     // ---- what the mapper refuses ----
@@ -257,10 +257,10 @@ public class RowsPerListItemTests
         }
     }
 
-    private static JsonNode Parts(JsonNode node) => node["readModels"]!["invoice-parts"]!;
+    private static JsonNode Loads(JsonNode node) => node["readModels"]!["depot-loads"]!;
 
-    private static JsonNode PartsField(JsonNode node, string name) =>
-        Parts(node)["fields"]!.AsArray().Single(f => (string?)f!["name"] == name)!;
+    private static JsonNode LoadsField(JsonNode node, string name) =>
+        Loads(node)["fields"]!.AsArray().Single(f => (string?)f!["name"] == name)!;
 
     [Fact]
     public void The_example_maps_cleanly()
@@ -271,26 +271,26 @@ public class RowsPerListItemTests
     [Fact]
     public void Not_with_row_key_field()
     {
-        var errors = MappingErrors(n => Parts(n)["rowKeyField"] = "invoiceId");
-        Assert.Contains(errors, e => e.Contains("\"invoice-parts\"") && e.Contains("rowsPerListItem") && e.Contains("rowKeyField"));
+        var errors = MappingErrors(n => Loads(n)["rowKeyField"] = "deliveryId");
+        Assert.Contains(errors, e => e.Contains("\"depot-loads\"") && e.Contains("rowsPerListItem") && e.Contains("rowKeyField"));
     }
 
     [Fact]
     public void The_list_field_must_be_a_list_of_items_the_read_model_declares()
     {
-        var missing = MappingErrors(n => Parts(n)["rowsPerListItem"]!["listField"] = "items");
+        var missing = MappingErrors(n => Loads(n)["rowsPerListItem"]!["listField"] = "items");
         Assert.Contains(missing, e => e.Contains("rowsPerListItem") && e.Contains("\"items\""));
 
-        var scalar = MappingErrors(n => Parts(n)["rowsPerListItem"]!["listField"] = "invoiceNumber");
-        Assert.Contains(scalar, e => e.Contains("rowsPerListItem") && e.Contains("\"invoiceNumber\"") && e.Contains("must be a list field"));
+        var scalar = MappingErrors(n => Loads(n)["rowsPerListItem"]!["listField"] = "runNumber");
+        Assert.Contains(scalar, e => e.Contains("rowsPerListItem") && e.Contains("\"runNumber\"") && e.Contains("must be a list field"));
 
         // One object with subfields is not a list of items.
         var single = MappingErrors(n =>
         {
-            var address = JsonNode.Parse("""{"name": "address", "type": "custom", "subfields": [{"name": "projectId", "type": "string"}]}""");
-            n["events"]!["invoice-drafted"]!["fields"]!.AsArray().Add(address);
-            Parts(n)["fields"]!.AsArray().Add(address!.DeepClone());
-            Parts(n)["rowsPerListItem"]!["listField"] = "address";
+            var address = JsonNode.Parse("""{"name": "address", "type": "custom", "subfields": [{"name": "depotId", "type": "string"}]}""");
+            n["events"]!["delivery-planned"]!["fields"]!.AsArray().Add(address);
+            Loads(n)["fields"]!.AsArray().Add(address!.DeepClone());
+            Loads(n)["rowsPerListItem"]!["listField"] = "address";
         });
         Assert.Contains(single, e => e.Contains("rowsPerListItem") && e.Contains("\"address\"") && e.Contains("must be a list field"));
     }
@@ -298,53 +298,53 @@ public class RowsPerListItemTests
     [Fact]
     public void The_group_must_be_a_text_subfield_of_the_items_and_a_field_of_the_row()
     {
-        var notSubfield = MappingErrors(n => Parts(n)["rowsPerListItem"]!["groupBy"] = "customerId");
+        var notSubfield = MappingErrors(n => Loads(n)["rowsPerListItem"]!["groupBy"] = "customerId");
         Assert.Contains(notSubfield, e => e.Contains("rowsPerListItem") && e.Contains("\"customerId\"") && e.Contains("subfield"));
 
-        var number = MappingErrors(n => Parts(n)["rowsPerListItem"]!["groupBy"] = "localAmount");
-        Assert.Contains(number, e => e.Contains("rowsPerListItem") && e.Contains("\"localAmount\"") && e.Contains("text"));
+        var number = MappingErrors(n => Loads(n)["rowsPerListItem"]!["groupBy"] = "declaredWeightKg");
+        Assert.Contains(number, e => e.Contains("rowsPerListItem") && e.Contains("\"declaredWeightKg\"") && e.Contains("text"));
 
-        var noRowField = MappingErrors(n => Parts(n)["fields"]!.AsArray().Remove(PartsField(n, "projectId")));
-        Assert.Contains(noRowField, e => e.Contains("rowsPerListItem") && e.Contains("\"projectId\"") && e.Contains("field of the read model"));
+        var noRowField = MappingErrors(n => Loads(n)["fields"]!.AsArray().Remove(LoadsField(n, "depotId")));
+        Assert.Contains(noRowField, e => e.Contains("rowsPerListItem") && e.Contains("\"depotId\"") && e.Contains("field of the read model"));
     }
 
     [Fact]
     public void A_sum_of_items_needs_rows_per_list_item_and_a_numeric_subfield()
     {
-        var alone = MappingErrors(n => Parts(n).AsObject().Remove("rowsPerListItem"));
-        Assert.Contains(alone, e => e.Contains("\"subtotal\"") && e.Contains("sumOfItems") && e.Contains("rowsPerListItem"));
+        var alone = MappingErrors(n => Loads(n).AsObject().Remove("rowsPerListItem"));
+        Assert.Contains(alone, e => e.Contains("\"totalWeightKg\"") && e.Contains("sumOfItems") && e.Contains("rowsPerListItem"));
 
-        var text = MappingErrors(n => PartsField(n, "subtotal")["derivation"]!["subfield"] = "description");
-        Assert.Contains(text, e => e.Contains("\"subtotal\"") && e.Contains("\"description\"") && e.Contains("number"));
+        var text = MappingErrors(n => LoadsField(n, "totalWeightKg")["derivation"]!["subfield"] = "description");
+        Assert.Contains(text, e => e.Contains("\"totalWeightKg\"") && e.Contains("\"description\"") && e.Contains("number"));
 
-        var unknown = MappingErrors(n => PartsField(n, "subtotal")["derivation"]!["subfield"] = "vatAmount");
-        Assert.Contains(unknown, e => e.Contains("\"subtotal\"") && e.Contains("\"vatAmount\""));
+        var unknown = MappingErrors(n => LoadsField(n, "totalWeightKg")["derivation"]!["subfield"] = "volumeLitres");
+        Assert.Contains(unknown, e => e.Contains("\"totalWeightKg\"") && e.Contains("\"volumeLitres\""));
     }
 
     [Fact]
     public void A_by_event_value_must_suit_the_field_and_name_an_event()
     {
-        var number = MappingErrors(n => PartsField(n, "status")["derivation"]!["values"]!["invoice-issued"] = 2);
-        Assert.Contains(number, e => e.Contains("\"status\"") && e.Contains("byEvent") && e.Contains("\"invoice-issued\""));
+        var number = MappingErrors(n => LoadsField(n, "status")["derivation"]!["values"]!["delivery-dispatched"] = 2);
+        Assert.Contains(number, e => e.Contains("\"status\"") && e.Contains("byEvent") && e.Contains("\"delivery-dispatched\""));
 
-        var unknown = MappingErrors(n => PartsField(n, "status")["derivation"]!["values"]!["invoice-paid"] = "paid");
-        Assert.Contains(unknown, e => e.Contains("\"status\"") && e.Contains("byEvent") && e.Contains("\"invoice-paid\""));
+        var unknown = MappingErrors(n => LoadsField(n, "status")["derivation"]!["values"]!["delivery-returned"] = "returned");
+        Assert.Contains(unknown, e => e.Contains("\"status\"") && e.Contains("byEvent") && e.Contains("\"delivery-returned\""));
     }
 
     [Fact]
     public void Rollups_and_pii_are_refused_with_it()
     {
-        var count = MappingErrors(n => Parts(n)["fields"]!.AsArray().Add(JsonNode.Parse("""
-            {"name": "issues", "type": "integer", "derivation": {"kind": "count", "incrementOnEventIds": ["invoice-issued"], "rowKeyField": "invoiceId"}}
+        var count = MappingErrors(n => Loads(n)["fields"]!.AsArray().Add(JsonNode.Parse("""
+            {"name": "dispatches", "type": "integer", "derivation": {"kind": "count", "incrementOnEventIds": ["delivery-dispatched"], "rowKeyField": "deliveryId"}}
             """)));
-        Assert.Contains(count, e => e.Contains("\"invoice-parts\"") && e.Contains("rowsPerListItem") && e.Contains("\"issues\""));
+        Assert.Contains(count, e => e.Contains("\"depot-loads\"") && e.Contains("rowsPerListItem") && e.Contains("\"dispatches\""));
 
         var pii = MappingErrors(n =>
         {
             var name = JsonNode.Parse("""{"name": "contactName", "type": "string", "pii": true, "piiSubject": "customerId"}""");
-            n["events"]!["invoice-drafted"]!["fields"]!.AsArray().Add(name);
-            Parts(n)["fields"]!.AsArray().Add(name!.DeepClone());
+            n["events"]!["delivery-planned"]!["fields"]!.AsArray().Add(name);
+            Loads(n)["fields"]!.AsArray().Add(name!.DeepClone());
         });
-        Assert.Contains(pii, e => e.Contains("\"invoice-parts\"") && e.Contains("rowsPerListItem") && e.Contains("pii"));
+        Assert.Contains(pii, e => e.Contains("\"depot-loads\"") && e.Contains("rowsPerListItem") && e.Contains("pii"));
     }
 }

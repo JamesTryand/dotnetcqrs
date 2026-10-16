@@ -22,25 +22,25 @@ public class CommandAuthorizationCombinedTests
             "order-placed": {"name": "Order Placed", "swimlaneId": "s", "aggregate": "Order"},
             "order-closed": {"name": "Order Closed", "swimlaneId": "s", "aggregate": "Order"},
             "order-assigned": {"name": "Order Assigned", "swimlaneId": "s", "aggregate": "Order"},
-            "staff-promoted": {"name": "Staff Promoted", "swimlaneId": "s", "aggregate": "Staff"}
+            "member-promoted": {"name": "Member Promoted", "swimlaneId": "s", "aggregate": "Member"}
           },
           "commands": {
             "place-order": {"name": "Place Order", "aggregate": "Order"},
-            "close-order": {"name": "Close Order", "aggregate": "Order", "requiredRole": "staff",
+            "close-order": {"name": "Close Order", "aggregate": "Order", "requiredRole": "member",
               "requiredOwnership": {"via": {"readModelId": "orders", "keyField": "orderId", "ownerField": "ownerId"}}},
-            "assign-order": {"name": "Assign Order", "aggregate": "Order", "requiredRole": ["pm", "manager"],
+            "assign-order": {"name": "Assign Order", "aggregate": "Order", "requiredRole": ["lead", "supervisor"],
               "scope": {
-                "bypassRoles": ["manager"],
+                "bypassRoles": ["supervisor"],
                 "resolveVia": {"readModelId": "orders", "keyField": "orderId", "selectField": "regionId"},
-                "memberOfVia": {"readModelId": "region-managers", "matchField": "regionId", "actorField": "memberId"}
+                "memberOfVia": {"readModelId": "region-leads", "matchField": "regionId", "actorField": "memberId"}
               }},
-            "promote-staff": {"name": "Promote Staff", "aggregate": "Staff", "requiredRole": ["manager", "administrator"],
-              "fieldGatedRole": {"field": "role", "value": "manager", "requiredRole": "administrator"}}
+            "promote-member": {"name": "Promote Member", "aggregate": "Member", "requiredRole": ["supervisor", "administrator"],
+              "fieldGatedRole": {"field": "role", "value": "supervisor", "requiredRole": "administrator"}}
           },
           "readModels": {
             "orders": {"name": "Orders", "builtFromEventIds": ["order-placed"],
               "fields": [{"name": "orderId", "type": "string", "idAttribute": true}, {"name": "ownerId", "type": "string"}, {"name": "regionId", "type": "string"}]},
-            "region-managers": {"name": "Region Managers", "builtFromEventIds": ["order-placed"],
+            "region-leads": {"name": "Region Leads", "builtFromEventIds": ["order-placed"],
               "fields": [{"name": "memberId", "type": "string", "idAttribute": true}, {"name": "regionId", "type": "string"}]}
           },
           "screens": {"scr": {"name": "Screen"}},
@@ -51,8 +51,8 @@ public class CommandAuthorizationCombinedTests
               "screenId": "scr", "commandId": "close-order", "eventIds": ["order-closed"], "scenarios": []},
             {"id": "assign-order-slice", "name": "Assign Order", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
               "screenId": "scr", "commandId": "assign-order", "eventIds": ["order-assigned"], "scenarios": []},
-            {"id": "promote-staff-slice", "name": "Promote Staff", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
-              "screenId": "scr", "commandId": "promote-staff", "eventIds": ["staff-promoted"], "scenarios": []}
+            {"id": "promote-member-slice", "name": "Promote Member", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
+              "screenId": "scr", "commandId": "promote-member", "eventIds": ["member-promoted"], "scenarios": []}
           ]
         }
         """;
@@ -72,11 +72,11 @@ public class CommandAuthorizationCombinedTests
             await cmd.ExecuteNonQueryAsync();
         }
 
-        // Order o1 belongs to staff-1, in the north region; pm-1 manages the north region, pm-2 manages none.
+        // Order o1 belongs to member-1, in the north region; lead-1 leads the north region, lead-2 leads none.
         await ExecAsync("CREATE TABLE orders (order_id TEXT, owner_id TEXT, region_id TEXT)");
-        await ExecAsync("INSERT INTO orders (order_id, owner_id, region_id) VALUES ('o1', 'staff-1', 'north')");
-        await ExecAsync("CREATE TABLE regionManagers (member_id TEXT, region_id TEXT)");
-        await ExecAsync("INSERT INTO regionManagers (member_id, region_id) VALUES ('pm-1', 'north')");
+        await ExecAsync("INSERT INTO orders (order_id, owner_id, region_id) VALUES ('o1', 'member-1', 'north')");
+        await ExecAsync("CREATE TABLE regionLeads (member_id TEXT, region_id TEXT)");
+        await ExecAsync("INSERT INTO regionLeads (member_id, region_id) VALUES ('lead-1', 'north')");
 
         ClaimsPrincipal Actor(string role, string subjectId) =>
             new(new ClaimsIdentity([new Claim("role", role), new Claim("subject", subjectId)], "test"));
@@ -84,34 +84,34 @@ public class CommandAuthorizationCombinedTests
         string ResolveSubjectId(ClaimsPrincipal u) => u.Claims.FirstOrDefault(c => c.Type == "subject")?.Value ?? "";
 
         var empty = JsonDocument.Parse("{}").RootElement;
-        var toManager = JsonDocument.Parse("""{"role":"manager"}""").RootElement;
-        var toStaff = JsonDocument.Parse("""{"role":"staff"}""").RootElement;
+        var toSupervisor = JsonDocument.Parse("""{"role":"supervisor"}""").RootElement;
+        var toMember = JsonDocument.Parse("""{"role":"member"}""").RootElement;
 
         var failures = 0;
-        async Task CheckAsync(string name, bool expected, string role, string staffId, string aggregate, string command, JsonElement payload)
+        async Task CheckAsync(string name, bool expected, string role, string subjectId, string aggregate, string command, JsonElement payload)
         {
-            var actual = await CommandAuthorization.AuthorizeAsync(Actor(role, staffId), aggregate, command, "o1", payload, store, ResolveRole, ResolveSubjectId);
+            var actual = await CommandAuthorization.AuthorizeAsync(Actor(role, subjectId), aggregate, command, "o1", payload, store, ResolveRole, ResolveSubjectId);
             var ok = actual == expected;
             Console.WriteLine($"{(ok ? "PASS" : "FAIL")} {name} (expected {expected}, got {actual})");
             if (!ok) failures++;
         }
 
         // requiredRole + requiredOwnership
-        await CheckAsync("role and owner: the owning staff member closes it", true, "staff", "staff-1", "order", "CloseOrder", empty);
-        await CheckAsync("role, not owner: another staff member is refused", false, "staff", "staff-2", "order", "CloseOrder", empty);
-        await CheckAsync("owner, not role: the owner as a pm is refused", false, "pm", "staff-1", "order", "CloseOrder", empty);
+        await CheckAsync("role and owner: the owning member closes it", true, "member", "member-1", "order", "CloseOrder", empty);
+        await CheckAsync("role, not owner: another member is refused", false, "member", "member-2", "order", "CloseOrder", empty);
+        await CheckAsync("owner, not role: the owner as a lead is refused", false, "lead", "member-1", "order", "CloseOrder", empty);
 
-        // requiredRole + scope (bypass manager)
-        await CheckAsync("role and scope: the region's pm assigns it", true, "pm", "pm-1", "order", "AssignOrder", empty);
-        await CheckAsync("role and bypass: a manager assigns it", true, "manager", "m-1", "order", "AssignOrder", empty);
-        await CheckAsync("role, not scope: another region's pm is refused", false, "pm", "pm-2", "order", "AssignOrder", empty);
-        await CheckAsync("scope, not role: the region's member as staff is refused", false, "staff", "pm-1", "order", "AssignOrder", empty);
+        // requiredRole + scope (bypass supervisor)
+        await CheckAsync("role and scope: the region's lead assigns it", true, "lead", "lead-1", "order", "AssignOrder", empty);
+        await CheckAsync("role and bypass: a supervisor assigns it", true, "supervisor", "sup-1", "order", "AssignOrder", empty);
+        await CheckAsync("role, not scope: another region's lead is refused", false, "lead", "lead-2", "order", "AssignOrder", empty);
+        await CheckAsync("scope, not role: the region's lead as a member is refused", false, "member", "lead-1", "order", "AssignOrder", empty);
 
         // requiredRole + fieldGatedRole
-        await CheckAsync("role, gate applies, gated role: an administrator promotes to manager", true, "administrator", "a-1", "staff", "PromoteStaff", toManager);
-        await CheckAsync("role, gate applies, not gated role: a manager promoting to manager is refused", false, "manager", "m-1", "staff", "PromoteStaff", toManager);
-        await CheckAsync("role, gate doesn't apply: a manager promotes to staff", true, "manager", "m-1", "staff", "PromoteStaff", toStaff);
-        await CheckAsync("gate doesn't apply, not role: staff is refused", false, "staff", "s-1", "staff", "PromoteStaff", toStaff);
+        await CheckAsync("role, gate applies, gated role: an administrator promotes to supervisor", true, "administrator", "a-1", "member", "PromoteMember", toSupervisor);
+        await CheckAsync("role, gate applies, not gated role: a supervisor promoting to supervisor is refused", false, "supervisor", "sup-1", "member", "PromoteMember", toSupervisor);
+        await CheckAsync("role, gate doesn't apply: a supervisor promotes to member", true, "supervisor", "sup-1", "member", "PromoteMember", toMember);
+        await CheckAsync("gate doesn't apply, not role: a member is refused", false, "member", "member-3", "member", "PromoteMember", toMember);
 
         Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILURE(S)");
         return failures == 0 ? 0 : 1;

@@ -12,7 +12,7 @@ public class ProjectionTests
 {
     // A minimal projection — folds task events into a "tasks" read-model table —
     // used only to exercise the IProjection/ConsumerEngine pattern; not a shipped
-    // domain example (that's Milestone 8's worked example).
+    // domain example (that's samples/OrderFulfillment).
     private sealed class TasksProjection(IReadModelStore store) : IProjection
     {
         public string Name => "tasks";

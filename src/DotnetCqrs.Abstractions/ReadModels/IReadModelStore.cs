@@ -7,12 +7,12 @@ namespace DotnetCqrs.ReadModels;
 /// freely rewritable/rebuildable tables that are never the source of truth. Exposes
 /// the ADO.NET <see cref="DbConnection"/> so a projection writes ordinary SQL without
 /// naming a provider — <c>SqliteReadModelStore</c> is the SQLite implementation, a
-/// Postgres one (Milestone 7) is a second.
+/// Postgres one is a second.
 ///
 /// <para>The write-guard — which rejects out-of-band writes on projection-owned
 /// tables — is part of this contract rather than a free-standing helper, because its
 /// bypass state is per-connection state this store owns. SQLite enforces it with
-/// connection-scoped triggers; Postgres (Milestone 7) will use a least-privilege role
+/// connection-scoped triggers; Postgres uses a least-privilege role
 /// and <see cref="BeginBypassAsync"/> becomes a no-op scope, leaving projection
 /// bodies byte-identical across providers.</para>
 /// </summary>

@@ -7,7 +7,7 @@ namespace DotnetCqrs.Codegen.Model;
 /// COMPUTED as a fold over named events instead of copied from a same-named payload
 /// key. Shaped by <c>kind</c> per the schema's <c>allOf</c>/<c>if</c>/<c>then</c> rules,
 /// so modeled as a discriminated union (see <see cref="ScenarioConverter"/>'s doc
-/// comment on <c>Scenario</c> for why: the very next milestone (mapping) needs to
+/// comment on <c>Scenario</c> for why: the next stage (mapping) needs to
 /// switch on exactly this shape).
 /// </summary>
 [JsonConverter(typeof(FieldDerivationConverter))]

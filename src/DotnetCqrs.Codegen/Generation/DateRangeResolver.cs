@@ -14,7 +14,7 @@ namespace DotnetCqrs.Codegen.Generation;
 /// both reference this project directly (the harness's own scratch project takes a
 /// <c>ProjectReference</c> to it, the same way <see cref="HostProjectGenerator"/>'s
 /// generated host already does for its baked-in <c>--verify</c> mode). This is the
-/// concrete answer to the risk this project's own Group C item 4 execution plan named:
+/// concrete answer to a known risk:
 /// <c>readModel.scopes</c> has zero production consumers today because the real query
 /// path and the harness's simulation of it were never the same code, so they were
 /// always free to drift; the actual date-preset arithmetic for <c>filters</c> living in

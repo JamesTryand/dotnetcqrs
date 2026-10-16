@@ -10,7 +10,7 @@ namespace DotnetCqrs.EventStore;
 /// pointed straight at one.
 ///
 /// <para>The provider-neutral contract <c>DeciderRegistry</c> depends on;
-/// <c>SqliteEventStore</c> is the SQLite implementation, a Postgres one (Milestone 7)
+/// <c>SqliteEventStore</c> is the SQLite implementation, a Postgres one
 /// is a second. Dead-letter capture is a separate concern — see
 /// <see cref="IDeadLetterStore"/>.</para>
 /// </summary>

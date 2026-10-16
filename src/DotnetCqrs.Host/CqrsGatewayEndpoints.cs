@@ -28,9 +28,9 @@ namespace DotnetCqrs.Host;
 /// (a pluggable delegate, default below) and stamps the result into
 /// <c>meta["actor"]</c> before calling <see cref="DeciderRegistry.HandleWithMetaAsync"/>
 /// — the same seam <c>ReactorConsumer</c>/<c>ExtCallerConsumer</c> already use. No auth
-/// configured at all (the Milestone 1 shape) means an unauthenticated
+/// configured at all (the original, open shape) means an unauthenticated
 /// <see cref="ClaimsPrincipal"/>, <see cref="DefaultResolveActor"/> returns "", and
-/// behavior is unchanged from before this milestone.
+/// behavior is unchanged from before authorization existed.
 /// </summary>
 public static class CqrsGatewayEndpoints
 {
@@ -40,8 +40,7 @@ public static class CqrsGatewayEndpoints
     /// the route builder so the caller can chain <c>.RequireAuthorization()</c> and
     /// friends.
     ///
-    /// <para><paramref name="forward"/> is dotnetcqrs-multi-node Milestone 2's
-    /// write-forwarding: when set, every request is handed to it and proxied whole
+    /// <para><paramref name="forward"/> is write-forwarding: when set, every request is handed to it and proxied whole
     /// instead of decided locally — the shape a same-host secondary
     /// (<see cref="DotnetCqrs.EventStore.SqliteEventStore.OpenReadOnlyAsync"/>) uses to
     /// reach its master, matching pocketcqrs's own <c>Config.Forward http.Handler</c>
@@ -51,9 +50,9 @@ public static class CqrsGatewayEndpoints
     /// not suppress <c>.RequireAuthorization()</c> when <paramref name="forward"/> is
     /// set: dotnetcqrs's auth is a provider-agnostic bearer token validated
     /// independently against an external issuer's OIDC metadata, not a
-    /// per-node-signed token only the master can verify (pocketcqrs's F-13), so a
+    /// per-node-signed token only the master can verify (as pocketcqrs's is), so a
     /// secondary validating its own inbound request locally before forwarding is
-    /// correct, not broken — see this issue's README for the finding.</para>
+    /// correct, not broken.</para>
     ///
     /// <para><paramref name="authorize"/> is the pluggable hook a generated
     /// <c>Generated.CommandAuthorization.AuthorizeAsync</c> (schema 2.5.0's command
@@ -111,8 +110,7 @@ public static class CqrsGatewayEndpoints
     /// node — see <see cref="MapCqrsGateway"/>'s doc comment), copying the response back
     /// verbatim. No reverse-proxy package for one route shape, matching this project's
     /// own established call on hand-rolled code over a dependency for a small surface
-    /// (<c>System.CommandLine</c> aside, which is stdlib-adjacent) — see
-    /// dotnetcqrs-multi-node's Milestone 2 note.
+    /// (<c>System.CommandLine</c> aside, which is stdlib-adjacent).
     ///
     /// <para>When the master can't be reached this node answers for it: <c>502</c> if the
     /// request couldn't be delivered (connection refused, DNS, TLS), <c>504</c> if it
@@ -247,8 +245,8 @@ public static class CqrsGatewayEndpoints
         if (!string.IsNullOrEmpty(actor))
             meta["actor"] = actor;
 
-        // Provenance headers an out-of-process dispatcher sends -- dotnetcqrs-multi-node
-        // Milestone 4's GatewayFollowUpDispatcher, or pocketcqrs's gatewayclient -- so a
+        // Provenance headers an out-of-process dispatcher sends --
+        // GatewayFollowUpDispatcher, or pocketcqrs's gatewayclient -- so a
         // reaction chain keeps its causation/correlation across the HTTP hop. Honoured
         // for any authenticated caller: dotnetcqrs has no ExternalCallerCollection
         // allow-list the way pocketcqrs gates this (see its gateway.actorMeta), and this

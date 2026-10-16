@@ -1,10 +1,10 @@
-// dotnetcqrs-multi-node Milestone 3: the write side of the cross-host replication
+// The write side of the cross-host replication
 // smoke test. Deliberately minimal -- this exists to prove LiteFS plus the
-// already-built Milestone 1 (SqliteEventStore.OpenReadOnlyAsync) and Milestone 2
+// existing read-only replica (SqliteEventStore.OpenReadOnlyAsync) and write-forwarding
 // (CqrsGatewayEndpoints.ForwardTo) machinery compose across two real network hosts,
 // not to demo a feature. Run inside ops/litefs/'s docker-compose pair; see
 // docs/cross-host-replication.md for how the two nodes fit together and why nothing
-// here is LiteFS-aware -- the app talks to an ordinary file path, same as Milestone 1.
+// here is LiteFS-aware -- the app talks to an ordinary file path, same as on one host.
 using DotnetCqrs.Deciders;
 using DotnetCqrs.EventStore;
 using DotnetCqrs.Host;

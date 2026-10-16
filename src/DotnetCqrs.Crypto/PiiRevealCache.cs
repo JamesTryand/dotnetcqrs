@@ -1,15 +1,14 @@
 namespace DotnetCqrs.Crypto;
 
-/// <summary>Option A of the read-side design (<c>findings.md</c>, "Principles and
-/// decisions"): decrypted values held in this process's memory, so a warm read makes no
-/// round trip to the key service and keeps working while it is down (P5).
+/// <summary>The read side's reveal cache: decrypted values held in this process's memory, so a warm read makes no
+/// round trip to the key service and keeps working while it is down.
 ///
 /// <para>Keyed by (subject, ciphertext), so an entry can only ever answer for the exact
 /// ciphertext the facade decrypted. Holds the raw plaintext bytes rather than a typed
 /// value: the same ciphertext decodes the same way for any <c>Pii&lt;T&gt;</c>, so one
 /// cache serves every field type. Bounded by entry count and evicted least recently used.</para>
 ///
-/// <para><b>Per-process and never shared or persisted</b> (P4: what can't forget holds
+/// <para><b>Per-process and never shared or persisted</b> (what can't forget holds
 /// ciphertext). Register it as a singleton for the process, and never back it with a
 /// distributed cache.</para>
 ///

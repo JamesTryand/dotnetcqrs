@@ -10,8 +10,7 @@ namespace DotnetCqrs.Codegen.Generation;
 /// shadow column or the search index), the generated query routes (which normalize the
 /// term) and the scenario-verify harness, the same way <see cref="DateRangeResolver"/> is.
 ///
-/// <para><b>Pinned rules</b> (user, 2026-09-23; <c>platform/eventmodeling-codegen</c>
-/// findings, "D5 decisions"). Schema 3.1.1's design notes pin the same rules, with test
+/// <para><b>Pinned rules.</b> Schema 3.1.1's design notes pin the same rules, with test
 /// vectors generated from this class:</para>
 /// <list type="bullet">
 /// <item><c>none</c>: unchanged.</item>
@@ -24,11 +23,11 @@ namespace DotnetCqrs.Codegen.Generation;
 /// is inferred, so a local and an international form of one number do not match.</item>
 /// </list>
 ///
-/// <para><b>Hashed modes (D6, pinned):</b> a pii <c>exact</c> or <c>prefix</c> index stores the
+/// <para><b>Hashed modes (pinned):</b> a pii <c>exact</c> or <c>prefix</c> index stores the
 /// facade's HMAC of the UTF-8 bytes of the normalized value, with nothing added; <c>prefix</c>
 /// stores one per <see cref="Prefixes"/>, cut in code points.</para>
 ///
-/// <para><b>Watch this before hashing (D6) or porting (pocketcqrs).</b> "Lowercase" here
+/// <para><b>Watch this before hashing or porting (pocketcqrs).</b> "Lowercase" here
 /// is .NET's simple, per-character mapping, not full Unicode case folding: Go's
 /// <c>cases.Fold</c> maps <c>ß</c> to <c>ss</c>, and this does not. A hashed index only
 /// matches if every implementation produces the same bytes, so another implementation must
@@ -47,7 +46,7 @@ public static class MatchNormalizer
     };
 
     /// <summary>The length of <paramref name="term"/> in Unicode code points, the unit
-    /// <c>minPrefixLength</c> counts in (pinned, D6): not UTF-16 units, so a character outside
+    /// <c>minPrefixLength</c> counts in (pinned): not UTF-16 units, so a character outside
     /// the BMP counts once, as a Go rune does.</summary>
     public static int CodePointLength(string term)
     {
@@ -57,7 +56,7 @@ public static class MatchNormalizer
     }
 
     /// <summary>The prefixes a hashed <c>prefix</c> index stores for one normalized value
-    /// (pinned, D6): every prefix from <paramref name="minLength"/> code points up to the
+    /// (pinned): every prefix from <paramref name="minLength"/> code points up to the
     /// whole value, shortest first. Empty when the value is shorter than
     /// <paramref name="minLength"/>. A query then hashes its whole term, so it matches a stored
     /// value exactly when the term is one of that value's prefixes. Cuts fall between code

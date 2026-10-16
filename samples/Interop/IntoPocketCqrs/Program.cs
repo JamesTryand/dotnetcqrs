@@ -1,7 +1,7 @@
-// dotnetcqrs-multi-node Milestone 5, direction A: a dotnetcqrs process dispatches a
-// command into a *pocketcqrs* gateway, using Milestone 4's GatewayFollowUpDispatcher
+// dotnetcqrs <-> pocketcqrs interop, direction A: a dotnetcqrs process dispatches a
+// command into a *pocketcqrs* gateway, using GatewayFollowUpDispatcher
 // exactly as ExtCallerConsumer would -- no pocketcqrs-specific code. This is the
-// "first-class supported pattern" the milestone is about: the same IFollowUpDispatcher
+// "first-class supported pattern" the sample is about: the same IFollowUpDispatcher
 // a reaction chain uses in-process, pointed at another runtime's gateway.
 //
 // Auth: pocketcqrs's gateway only accepts a PocketBase-minted token. To get

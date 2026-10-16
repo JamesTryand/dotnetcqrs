@@ -1,7 +1,7 @@
-// dotnetcqrs-multi-node Milestone 5: the dotnetcqrs end of the dotnetcqrs <-> pocketcqrs
+// The dotnetcqrs end of the dotnetcqrs <-> pocketcqrs
 // interop worked example. A minimal DotnetCqrs.Host gateway for the `task` aggregate --
-// same decider shape MultiNode.Primary (Milestone 3) and ExtCallerRemoteDispatchTests
-// (Milestone 4) already use -- with one thing those don't have: a real auth check on the
+// same decider shape MultiNode.Primary and ExtCallerRemoteDispatchTests
+// already use -- with one thing those don't have: a real auth check on the
 // command route, so direction B of the round trip (pocketcqrs -> dotnetcqrs) proves an
 // actual token was validated, not just that the bytes were accepted.
 //

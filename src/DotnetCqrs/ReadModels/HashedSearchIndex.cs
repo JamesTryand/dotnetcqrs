@@ -59,7 +59,7 @@ public sealed class HashedIndexKey(string name)
 
 /// <summary>
 /// Registers a hashed search index with a <see cref="ConsumerEngine"/>, handling index key
-/// rotation (platform/eventmodeling-codegen, "D6 decisions" item 7).
+/// rotation.
 ///
 /// <para>The key version is checked once, at startup. The store records which version each
 /// index searches with. When the key's latest version is higher, a second consumer rebuilds the

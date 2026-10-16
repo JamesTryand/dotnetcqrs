@@ -19,7 +19,7 @@ namespace DotnetCqrs.Codegen.Mapping;
 /// <c>TryGetValue</c> check at every access point regardless, so folding the check into
 /// mapping itself is a deliberate simplification, not an oversight. Per-pattern property
 /// legality and per-pattern scenario-kind legality are also NOT re-checked here (unlike
-/// <c>emschema.Lint</c>'s <c>lintSlice</c>/<c>lintScenarios</c>): Milestone 1's JSON
+/// <c>emschema.Lint</c>'s <c>lintSlice</c>/<c>lintScenarios</c>): the loader's JSON
 /// Schema validation already enforces both via the schema's own conditional
 /// <c>allOf</c>/<c>if</c>/<c>then</c> shapes, and the discriminated-union deserialization
 /// can't even construct a <see cref="StateChangeSlice"/> missing a required field.
@@ -753,7 +753,7 @@ public sealed class DocumentMapper
     }
 
     /// <summary>Erasure is terminal per subject id, so a person who is erased and later
-    /// returns is a NEW subject with a NEW id (see this issue's findings, P6). That only
+    /// returns is a NEW subject with a NEW id. That only
     /// works if subject ids are opaque: a model that uses the email address itself as the
     /// subject id reuses the id on a rejoin, and either hits the terminal erased state or
     /// silently re-links the new person to the erased one's history.
@@ -1070,7 +1070,7 @@ public sealed class DocumentMapper
                 readModel.Filters.Add(new Domain.ReadModelFilter(
                     filterDef.Param, Names.SanitizeName(filterDef.Field), filterDef.Kind, filterDef.Presets));
             }
-            // A pii column holds non-deterministic ciphertext (P4), so a SQL comparison
+            // A pii column holds non-deterministic ciphertext, so a SQL comparison
             // against it can never match: a scope or range filter on one is a modelling
             // error, not something to discover as an always-empty result at query time.
             var piiColumns = readModel.Fields.Where(f => f.Pii).Select(f => f.Name).ToHashSet(StringComparer.Ordinal);
@@ -1121,7 +1121,7 @@ public sealed class DocumentMapper
     /// exists or check its type (its own design notes leave those to generators), so they
     /// are checked here. For a pii field the technique follows data minimisation:
     /// <c>contains</c> needs a readable-at-rest index, so it is allowed but warned about.
-    /// <c>exact</c>/<c>prefix</c> use keyed hashes from the key service (D6); <c>prefix</c>
+    /// <c>exact</c>/<c>prefix</c> use keyed hashes from the key service; <c>prefix</c>
     /// must declare <c>minPrefixLength</c> and is warned about, because stored prefix hashes
     /// let anyone with <c>hmac</c> access enumerate a value.</summary>
     private Domain.ReadModelFilter? MapMatchFilter(string id, Domain.ReadModel readModel, ReadModelFilterDef def)
@@ -1193,7 +1193,7 @@ public sealed class DocumentMapper
     /// event's payload, and after the decider generator's PII work that payload carries a
     /// <c>{"$pii":…}</c> envelope for a pii field, not a scalar. So a read-model field's
     /// own <c>pii</c> flag must agree with every contributing event field it is copied
-    /// from, in both directions -- an error, never inferred (user's call, 2026-09-22):
+    /// from, in both directions -- an error, never inferred:
     /// the document has to say what the generated code does. The key column is exempt
     /// (written from <c>ev.AggregateId</c>, never the payload). A derived field is never
     /// copied, so it can't itself be pii, and the payload fields a derivation reads as
@@ -1501,7 +1501,7 @@ public sealed class DocumentMapper
     /// This replaces the earlier "any own-stream event disqualifies create" scan: a
     /// re-assign-after-unassign scenario's `given` legitimately contains an own-stream
     /// event (the original assign) yet nets back to "doesn't exist," and must count as
-    /// create evidence, not update evidence -- see the design proposal's Q5 (option c).</summary>
+    /// create evidence, not update evidence.</summary>
     private bool ScenarioNetExists(Scenario scenario, string aggregate)
     {
         var exists = false;

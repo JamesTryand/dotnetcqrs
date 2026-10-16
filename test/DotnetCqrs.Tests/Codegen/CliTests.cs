@@ -134,7 +134,7 @@ public class CliTests : IDisposable, IClassFixture<CliUnderTestFixture>
     /// scenario per slice, and "view-order-summary-after-placement" is EXPECTED to
     /// fail (see that test's own comment -- "status" isn't literally carried by any
     /// event's JSON, so the generic field-merge projection can't produce it without an
-    /// author writing the real rule). Milestone 7's whole point is reporting that
+    /// author writing the real rule). The point of <c>verify</c> is reporting that
     /// failure, not hiding it, so a non-zero exit here IS the passing assertion.</summary>
     // 300s, not 120s: `verify` is two nested builds (this test's `dotnet run` of the CLI,
     // then the CLI's own scratch build of the harness, which since the field.pii work also

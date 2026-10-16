@@ -1,16 +1,16 @@
-# Cross-host replication (dotnetcqrs-multi-node Milestone 3)
+# Cross-host replication
 
 > **Status: verified 2026-08-28** on two separate physical machines — see
 > "Verification run" at the bottom for the environment, what was checked, the observed
 > replication lag, and the three things that had to change from the compose-only draft.
 
-Milestones 1-2 built the app-level pieces of a single-master, multiple-reader
+The library already has the app-level pieces of a single-master, multiple-reader
 topology — `SqliteEventStore.OpenReadOnlyAsync` (a same-host secondary reads the
 master's `events.db` directly) and `CqrsGatewayEndpoints.ForwardTo` (a secondary
 proxies writes to the master). Both only needed one machine: the "replication" was
 just two processes opening the same file path.
 
-Milestone 3 is what happens once the two nodes are on **separate hosts** with separate
+Cross-host replication is what happens once the two nodes are on **separate hosts** with separate
 filesystems — something has to actually copy `events.db` (well-formed, WAL-consistent,
 continuously) from the master's disk onto the secondary's. That something is
 [LiteFS](https://github.com/superfly/litefs): a FUSE filesystem that intercepts writes
@@ -20,13 +20,13 @@ typically with 1-2 second lag.
 **Reused, not re-derived**: `pocketcqrs` already evaluated Litestream for this and
 rejected it (its `restore -f` follow mode stalled 30-90+ seconds under a
 continuously-polling reader — exactly what a live secondary does) before landing on
-LiteFS. This issue's README carries that decision forward rather than re-running the
+LiteFS. This carries that decision forward rather than re-running the
 evaluation.
 
 ## The shape
 
 Nothing in `dotnetcqrs` is LiteFS-aware. `samples/MultiNode/MultiNode.Primary` and
-`MultiNode.Secondary` are Milestones 1-2's own mechanisms, unmodified, pointed at a
+`MultiNode.Secondary` are those same-host mechanisms, unmodified, pointed at a
 path that happens to live inside a LiteFS FUSE mount:
 
 - **Primary**: `SqliteEventStore.OpenAsync("/litefs/events.db")` — LiteFS intercepts
@@ -35,7 +35,7 @@ path that happens to live inside a LiteFS FUSE mount:
   host, `/litefs/events.db` is LiteFS's continuously-updated replicated copy, not the
   same inode as the primary's. Everything downstream (`ConsumerEngine`, the local
   `tasks` projection, `CqrsGatewayEndpoints.ForwardTo` proxying writes back to the
-  primary over HTTP) is identical to Milestone 1/2's same-host code.
+  primary over HTTP) is identical to the same-host code.
 
 A **generated host** does the same without hand-written code: run it with `DOTNETCQRS_ROLE=reader`,
 `DOTNETCQRS_EVENTS_PATH=/litefs/events.db` and `DOTNETCQRS_WRITER_URL` pointing at the writer (see
@@ -93,7 +93,7 @@ The master's own `events.db` must be opened from *inside* the FUSE mount
 
 LiteFS ships its own reverse-proxy/write-redirect feature (`proxy:` in `litefs.yml`,
 using `primary-redirect-timeout` to hold a write until the primary is reachable). This
-setup does not configure it — `dotnetcqrs`'s own Milestone 2 gateway-level forwarding
+setup does not configure it — `dotnetcqrs`'s own gateway-level forwarding
 (`CqrsGatewayEndpoints.ForwardTo`) already fills that role, and using both at once
 would proxy the same request twice through two different mechanisms for no benefit.
 Keeping the write path at the application layer also keeps it visible to
@@ -112,7 +112,7 @@ the reader's views follow within LiteFS's lag plus the tick.
 ## Static lease, not consul
 
 `lease.type: static` in both `litefs-primary.yml`/`litefs-secondary.yml` — one fixed
-primary, no automatic failover, matching this issue's README (`dotnetcqrs` has no
+primary, no automatic failover (`dotnetcqrs` has no
 multi-node failover story to begin with; `static` is the honest choice, not a shortcut
 around building `consul` support). Both files point `lease.advertise-url` at the
 primary's address — that's how a static-lease replica finds the primary; only
@@ -134,8 +134,8 @@ secondary), Docker 28.3.3, LiteFS 0.5.14, .NET 10 images.
   networking): the two loaded images run as two containers on `m4` with a user-defined
   bridge network, reproducing `docker-compose.yml`. `verify.sh` → PASS. Confirms the
   FUSE mount works under Docker + AppArmor on 24.04 with `--privileged` alone (no
-  `apparmor=unconfined` needed), Milestone 1's `OpenReadOnlyAsync` reads the
-  LiteFS-replicated copy, Milestone 2's forward + the `400` domain rejection survive a
+  `apparmor=unconfined` needed), `OpenReadOnlyAsync` reads the
+  LiteFS-replicated copy, `ForwardTo`'s forward + the `400` domain rejection survive a
   real HTTP hop.
 - **Two hosts**: `run-primary.sh` on `m4`, `run-secondary.sh` on `m5`, `verify.sh`
   with `PRIMARY_URL`/`SECONDARY_URL` at the two node addresses → PASS. `events.db` on

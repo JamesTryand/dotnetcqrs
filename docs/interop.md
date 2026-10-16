@@ -1,17 +1,17 @@
-# dotnetcqrs ↔ pocketcqrs interop (dotnetcqrs-multi-node Milestone 5)
+# dotnetcqrs ↔ pocketcqrs interop
 
 > **Status: verified 2026-08-28** on one machine (both runtimes build and run locally) —
 > see "Verification run" at the bottom for the environment, the exact assertions, and two
 > behavioural asymmetries the run surfaced.
 
-Milestone 4 gave `ExtCallerConsumer` a second dispatch mode: a follow-up command can be
+`ExtCallerConsumer` has a second dispatch mode: a follow-up command can be
 POSTed to a configured command gateway instead of applied into a local
 `DeciderRegistry` (`GatewayFollowUpDispatcher`). That gateway can be *another runtime*.
-This milestone is the worked example proving it both ways against a real `pocketcqrs`,
+This is the worked example proving it both ways against a real `pocketcqrs`,
 and — more usefully — writing down what actually has to line up for it to work, which is
 almost entirely **auth**, not protocol.
 
-**Since D40 (after 0.28.0), the call is made outside the engine.** `ExtCallerConsumer` only records the event in
+**Since after 0.28.0, the call is made outside the engine.** `ExtCallerConsumer` only records the event in
 its `Outbox` (the event stores implement `IExtCallOutbox`); run `consumer.Worker.RunAsync(ct)` beside the engine. The
 worker calls out, retries after `RetryPolicy.Backoff` up to `MaxAttempts`, keeps the response's follow-ups, and
 dispatches them in order. A follow-up refused for a concurrency conflict (`ConcurrencyException`, or a gateway's 409)
@@ -39,8 +39,8 @@ Checked directly, not assumed:
   secondary forwarding writes answers `502` when the primary can't be reached and `504`
   when it times out.)
 - **The `task` aggregate.** Both ship a `task` decider with `CreateTask` →
-  `TaskCreated`, payload `{"title": "..."}`. `samples/MultiNode` (Milestone 3) and
-  `ExtCallerRemoteDispatchTests` (Milestone 4) already use exactly this shape on the
+  `TaskCreated`, payload `{"title": "..."}`. `samples/MultiNode` and
+  `ExtCallerRemoteDispatchTests` already use exactly this shape on the
   dotnetcqrs side; `pocketcqrs`'s `aggregates/task.go` is byte-compatible.
 - **Provenance headers.** Both read `Causation-Id` / `Correlation-Id` request headers
   into the resulting event's metadata. `GatewayFollowUpDispatcher` already sends them.
@@ -194,7 +194,7 @@ ALL PASS  (dotnetcqrs @ c7e7988, pocketcqrs @ ec60915)
 
 What each direction actually exercised:
 
-- **A**: `GatewayFollowUpDispatcher` (Milestone 4, unmodified) POSTed `CreateTask` into
+- **A**: `GatewayFollowUpDispatcher` (unmodified) POSTed `CreateTask` into
   `pocketcqrs`'s gateway authenticated as the `service_accounts` record `dotnetcqrs`.
   The event on `pocketcqrs`'s `events.db` carried `actor: "extcall:dotnetcqrs"`,
   `causationId: "interop-cause-A1"`, `correlationId: "interop-corr-A1"`. A second
@@ -212,6 +212,6 @@ found during this run, not designed around in advance — an earlier `verify.sh`
 direction A's duplicate would `400` with the *same* idempotency key and got a replayed
 `200` instead.
 
-No change to `src/` or the 104-test suite — Milestone 5 is `samples/Interop/` + this
-doc, the same "harness, not in-suite test" shape Milestone 3 used for its cross-runtime
+No change to `src/` or the 104-test suite — the interop work is `samples/Interop/` + this
+doc, the same "harness, not in-suite test" shape the cross-host replication used for its
 verification.

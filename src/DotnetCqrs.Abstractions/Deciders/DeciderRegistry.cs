@@ -12,7 +12,7 @@ public sealed class UnknownAggregateException(string aggregate)
 }
 
 /// <summary>Maps aggregate names to their deciders and executes commands against an
-/// <see cref="IEventStore"/> (SQLite today, Postgres under Milestone 7 — this type
+/// <see cref="IEventStore"/> (SQLite or Postgres — this type
 /// no longer names a provider).</summary>
 public sealed class DeciderRegistry(IEventStore store)
 {

@@ -2,8 +2,8 @@ using System.Text.Json;
 
 namespace DotnetCqrs.Crypto;
 
-/// <summary>The query-time half of the read path (D3): a read model's pii columns hold
-/// the <c>{"$pii":…}</c> envelope at rest (P4), and this reveals them for one page of
+/// <summary>The query-time half of the read path: a read model's pii columns hold
+/// the <c>{"$pii":…}</c> envelope at rest, and this reveals them for one page of
 /// rows just before the rows leave the process. Every pending cell on the page goes
 /// through ONE <see cref="PiiRevealBuffer"/> and ONE flush, so a page costs at most one
 /// <c>decrypt-batch</c> per distinct subject, and none at all for cells the

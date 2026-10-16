@@ -6,7 +6,7 @@ using DotnetCqrs.EventStore;
 namespace DotnetCqrs.Tests.Crypto;
 
 /// <summary>
-/// Milestone D2: the per-process reveal cache (Option A). A warm read makes no call to
+/// The per-process reveal cache. A warm read makes no call to
 /// the key service. Erasure empties the cache and keeps it empty, including against a
 /// flush that was already in flight when the erasure landed.
 /// </summary>
@@ -112,7 +112,7 @@ public class PiiRevealCacheTests
         cache.MarkErased("s1");                  // erasure lands mid-flight
         await buffer.FlushAsync();
 
-        // The caller that asked before the erasure gets its answer (bounded lag, P3),
+        // The caller that asked before the erasure gets its answer (bounded lag),
         // but the plaintext is not kept.
         Assert.Equal("secret", (await inFlight).Value);
         Assert.Equal(0, cache.Count);

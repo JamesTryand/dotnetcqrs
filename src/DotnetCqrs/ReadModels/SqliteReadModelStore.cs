@@ -18,7 +18,7 @@ namespace DotnetCqrs.ReadModels;
 /// has that function registered — any other connection, including a fresh one against
 /// the same file, fails with "no such function" the moment its own write fires the
 /// trigger. That is the direct analogue of pocketcqrs's per-request context marker
-/// that "never crosses the API boundary." Milestone 7's Postgres store replaces this
+/// that "never crosses the API boundary." The Postgres store replaces this
 /// with a least-privilege role and makes <see cref="BeginBypassAsync"/> a no-op.</para>
 ///
 /// <para><b>Two kinds of connection.</b> <see cref="Connection"/> is the projections' (the one writer). Reads go

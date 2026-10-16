@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <!-- BCL only (System.Net.Http.Json, System.Text.Json) plus the provider-neutral
-       contract: this talks to platform/key-management-service's facade over plain
+       contract: this talks to the key-management service's facade over plain
        HTTPS/JSON, no Vault SDK. The Abstractions reference exists for
        RevealRequiredException, the one type Pii<T> and DeciderRegistry must agree on. -->
 

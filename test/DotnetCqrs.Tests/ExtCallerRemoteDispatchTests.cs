@@ -11,7 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace DotnetCqrs.Tests;
 
 /// <summary>
-/// dotnetcqrs-multi-node Milestone 4: <see cref="ExtCallerConsumer"/> dispatches its
+/// <see cref="ExtCallerConsumer"/> dispatches its
 /// follow-up command over HTTP to a <em>separate</em> instance's command gateway
 /// instead of a local <see cref="DeciderRegistry"/> — and the causation/correlation
 /// metadata survives the hop. One in-memory ASP.NET Core TestServer is the target

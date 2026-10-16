@@ -6,7 +6,7 @@ using DotnetCqrs.EventStore;
 namespace DotnetCqrs.Tests.Crypto;
 
 /// <summary>
-/// Milestone D1: the data subject's own lifecycle. Erasure is a new FACT on the
+/// The data subject's own lifecycle. Erasure is a new FACT on the
 /// subject's own stream plus a destroyed key — the domain log is never rewritten — and
 /// the erased state is terminal, so a returning person is a new subject with a new id.
 /// </summary>

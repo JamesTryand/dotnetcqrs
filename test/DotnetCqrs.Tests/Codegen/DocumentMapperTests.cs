@@ -262,9 +262,9 @@ public class DocumentMapperTests
         Assert.Contains(ex.Report.Errors, e => e.Contains("customerEmail") && e.Contains("is not pii"));
     }
 
-    // Milestone D: a projection copies a plain column from any same-named field on its
+    // A projection copies a plain column from any same-named field on its
     // seed events, so a read-model field's pii flag must agree with the event field it
-    // copies -- a mapping error in both directions, never inferred (user's call, 2026-09-22).
+    // copies -- a mapping error in both directions, never inferred.
     private static readonly MappingOptions OrderFulfillmentOptions =
         new() { AggregateOverrides = new Dictionary<string, string> { ["notify-shipping-partner"] = "ShippingNotification" } };
 
@@ -320,7 +320,7 @@ public class DocumentMapperTests
         Assert.False(summary.Fields.Single(f => f.Name == "customerId").Pii);
     }
 
-    // Milestone D3: ciphertext is non-deterministic, so SQL can never match a pii column.
+    // Ciphertext is non-deterministic, so SQL can never match a pii column.
     private static DotnetCqrs.Codegen.Model.Document WithPiiOrderSummary(
         Func<DotnetCqrs.Codegen.Model.ReadModelDef, DotnetCqrs.Codegen.Model.ReadModelDef> change)
     {
@@ -388,7 +388,7 @@ public class DocumentMapperTests
     [Fact]
     public void A_piiSubject_that_looks_like_personal_data_is_warned_about_not_rejected()
     {
-        // P6: erasure is terminal per subject id, so a returning person needs a NEW id.
+        // Erasure is terminal per subject id, so a returning person needs a NEW id.
         // A natural key like an email is reused on their return, which re-links them to
         // erased history. A warning, not an error: the signal is only the field's name.
         var doc = DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json"));
@@ -425,9 +425,9 @@ public class DocumentMapperTests
     [Fact]
     public void A_reassign_scenario_after_endsStream_nets_to_create_evidence_not_update()
     {
-        // Design proposal's Q5 (option c): a `given` that seeds the own stream (an
+        // A `given` that seeds the own stream (an
         // earlier assign) but then ENDS on an endsStream event (the unassign) nets back
-        // to "doesn't exist" -- create evidence, not update. The scanning Findings 1/2
+        // to "doesn't exist" -- create evidence, not update. The earlier scanning
         // code would have called this update evidence (an own-stream event IS present)
         // and wrongly flipped the command to an upsert, dropping the guard against
         // double-assigning a currently-active pair.
@@ -436,39 +436,39 @@ public class DocumentMapperTests
               "eventModelingSchemaVersion": "2.2.0", "id": "reassign-test", "name": "Reassign Test",
               "swimlanes": [{"id":"s","name":"S","kind":"team"}],
               "events": {
-                "staff-assigned": {"name": "Staff Assigned", "swimlaneId": "s", "aggregate": "ProjectStaffAssignment"},
-                "staff-unassigned": {"name": "Staff Unassigned", "swimlaneId": "s", "aggregate": "ProjectStaffAssignment", "endsStream": true}
+                "courier-assigned": {"name": "Courier Assigned", "swimlaneId": "s", "aggregate": "RegionCourierAssignment"},
+                "courier-unassigned": {"name": "Courier Unassigned", "swimlaneId": "s", "aggregate": "RegionCourierAssignment", "endsStream": true}
               },
               "commands": {
-                "assign-staff": {"name": "Assign Staff", "aggregate": "ProjectStaffAssignment"},
-                "unassign-staff": {"name": "Unassign Staff", "aggregate": "ProjectStaffAssignment"}
+                "assign-courier": {"name": "Assign Courier", "aggregate": "RegionCourierAssignment"},
+                "unassign-courier": {"name": "Unassign Courier", "aggregate": "RegionCourierAssignment"}
               },
               "screens": {"scr": {"name": "Screen"}},
               "slices": [
                 {
-                  "id": "assign-staff-slice", "name": "Assign Staff", "pattern": "stateChange",
+                  "id": "assign-courier-slice", "name": "Assign Courier", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr", "commandId": "assign-staff", "eventIds": ["staff-assigned"],
+                  "screenId": "scr", "commandId": "assign-courier", "eventIds": ["courier-assigned"],
                   "scenarios": [
                     {
                       "id": "create-scenario", "name": "First assignment", "kind": "stateChange",
-                      "given": [], "when": {"commandId": "assign-staff"}, "then": {"events": [{"eventId": "staff-assigned"}]}
+                      "given": [], "when": {"commandId": "assign-courier"}, "then": {"events": [{"eventId": "courier-assigned"}]}
                     },
                     {
                       "id": "reassign-scenario", "name": "Reassign after unassign", "kind": "stateChange",
-                      "given": [{"eventId": "staff-assigned"}, {"eventId": "staff-unassigned"}],
-                      "when": {"commandId": "assign-staff"}, "then": {"events": [{"eventId": "staff-assigned"}]}
+                      "given": [{"eventId": "courier-assigned"}, {"eventId": "courier-unassigned"}],
+                      "when": {"commandId": "assign-courier"}, "then": {"events": [{"eventId": "courier-assigned"}]}
                     }
                   ]
                 },
                 {
-                  "id": "unassign-staff-slice", "name": "Unassign Staff", "pattern": "stateChange",
+                  "id": "unassign-courier-slice", "name": "Unassign Courier", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr", "commandId": "unassign-staff", "eventIds": ["staff-unassigned"],
+                  "screenId": "scr", "commandId": "unassign-courier", "eventIds": ["courier-unassigned"],
                   "scenarios": [{
                     "id": "unassign-scenario", "name": "Unassign an existing pair", "kind": "stateChange",
-                    "given": [{"eventId": "staff-assigned"}], "when": {"commandId": "unassign-staff"},
-                    "then": {"events": [{"eventId": "staff-unassigned"}]}
+                    "given": [{"eventId": "courier-assigned"}], "when": {"commandId": "unassign-courier"},
+                    "then": {"events": [{"eventId": "courier-unassigned"}]}
                   }]
                 }
               ]
@@ -478,7 +478,7 @@ public class DocumentMapperTests
 
         var result = DocumentMapper.Map(doc);
 
-        var command = Assert.Single(result.Domains).Commands.Single(c => c.Name == "AssignStaff");
+        var command = Assert.Single(result.Domains).Commands.Single(c => c.Name == "AssignCourier");
         Assert.True(command.Once, "still a create: a redundant assign of a currently-active pair must be refused");
         Assert.False(command.RequiresExisting);
         Assert.True(command.CanBeginAgain, "the reassign scenario creates again after the stream's end");
@@ -487,7 +487,7 @@ public class DocumentMapperTests
     [Fact]
     public void A_create_with_no_scenario_after_the_end_cannot_begin_again()
     {
-        // A deleted time entry ends its stream (endsStream), but no
+        // A deleted entry ends its stream (endsStream), but no
         // scenario logs it again afterwards. Unlike an unassign, the end is final, so the
         // create must not be able to begin the stream again.
         const string json = """
@@ -553,34 +553,34 @@ public class DocumentMapperTests
               "eventModelingSchemaVersion": "2.2.0", "id": "foreign-endsstream-test", "name": "Foreign EndsStream Test",
               "swimlanes": [{"id":"s","name":"S","kind":"team"}],
               "events": {
-                "project-created": {"name": "Project Created", "swimlaneId": "s", "aggregate": "Project"},
-                "project-closed": {"name": "Project Closed", "swimlaneId": "s", "aggregate": "Project", "endsStream": true},
-                "invoice-staged": {"name": "Invoice Staged", "swimlaneId": "s", "aggregate": "Invoice"}
+                "warehouse-opened": {"name": "Warehouse Opened", "swimlaneId": "s", "aggregate": "Warehouse"},
+                "warehouse-closed": {"name": "Warehouse Closed", "swimlaneId": "s", "aggregate": "Warehouse", "endsStream": true},
+                "shipment-staged": {"name": "Shipment Staged", "swimlaneId": "s", "aggregate": "Shipment"}
               },
               "commands": {
-                "close-project": {"name": "Close Project", "aggregate": "Project"},
-                "stage-invoice": {"name": "Stage Invoice", "aggregate": "Invoice"}
+                "close-warehouse": {"name": "Close Warehouse", "aggregate": "Warehouse"},
+                "stage-shipment": {"name": "Stage Shipment", "aggregate": "Shipment"}
               },
               "screens": {"scr": {"name": "Screen"}},
               "slices": [
                 {
-                  "id": "close-project-slice", "name": "Close Project", "pattern": "stateChange",
+                  "id": "close-warehouse-slice", "name": "Close Warehouse", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr", "commandId": "close-project", "eventIds": ["project-closed"],
+                  "screenId": "scr", "commandId": "close-warehouse", "eventIds": ["warehouse-closed"],
                   "scenarios": [{
-                    "id": "close-scenario", "name": "Close an existing project", "kind": "stateChange",
-                    "given": [{"eventId": "project-created"}], "when": {"commandId": "close-project"},
-                    "then": {"events": [{"eventId": "project-closed"}]}
+                    "id": "close-scenario", "name": "Close an existing warehouse", "kind": "stateChange",
+                    "given": [{"eventId": "warehouse-opened"}], "when": {"commandId": "close-warehouse"},
+                    "then": {"events": [{"eventId": "warehouse-closed"}]}
                   }]
                 },
                 {
-                  "id": "stage-invoice-slice", "name": "Stage Invoice", "pattern": "stateChange",
+                  "id": "stage-shipment-slice", "name": "Stage Shipment", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr", "commandId": "stage-invoice", "eventIds": ["invoice-staged"],
+                  "screenId": "scr", "commandId": "stage-shipment", "eventIds": ["shipment-staged"],
                   "scenarios": [{
-                    "id": "stage-after-project-closed", "name": "Stage after the project closed", "kind": "stateChange",
-                    "given": [{"eventId": "project-closed"}],
-                    "when": {"commandId": "stage-invoice"}, "then": {"events": [{"eventId": "invoice-staged"}]}
+                    "id": "stage-after-warehouse-closed", "name": "Stage after the warehouse closed", "kind": "stateChange",
+                    "given": [{"eventId": "warehouse-closed"}],
+                    "when": {"commandId": "stage-shipment"}, "then": {"events": [{"eventId": "shipment-staged"}]}
                   }]
                 }
               ]
@@ -590,7 +590,7 @@ public class DocumentMapperTests
 
         var result = DocumentMapper.Map(doc);
 
-        var command = result.Domains.Single(d => d.Aggregate == "invoice").Commands.Single();
+        var command = result.Domains.Single(d => d.Aggregate == "shipment").Commands.Single();
         Assert.True(command.Once, "a foreign-aggregate given (endsStream or not) is an ordinary cross-aggregate precondition, not update evidence");
         Assert.False(command.RequiresExisting);
     }
@@ -616,41 +616,41 @@ public class DocumentMapperTests
         Assert.Contains(ex.Report.Errors, e => e.Contains("also-missing"));
     }
 
-    // A minimal payroll-periods.staffTotals shape (schema 2.3.0): "hours-logged" events
-    // live on a different aggregate ("TimeEntry") than the read model they roll up into
-    // ("PayrollPeriod"), same cross-stream shape as the count-derivation precedent
+    // A minimal reporting-periods.sellerTotals shape (schema 2.3.0): "sale-recorded" events
+    // live on a different aggregate ("Sale") than the read model they roll up into
+    // ("ReportingPeriod"), same cross-stream shape as the count-derivation precedent
     // (ScenarioVerifierTests's "A_count_derivation_rolls_up_across_streams") -- groupBy
-    // additionally nests one row per distinct staffId inside each period's own row.
+    // additionally nests one row per distinct sellerId inside each period's own row.
     private const string GroupByDocumentJson = """
         {
           "eventModelingSchemaVersion": "2.3.0", "id": "groupby-test", "name": "GroupBy Test",
           "swimlanes": [{"id":"s","name":"S","kind":"team"}],
           "events": {
-            "period-created": {"name": "Period Created", "swimlaneId": "s", "aggregate": "PayrollPeriod",
+            "period-created": {"name": "Period Created", "swimlaneId": "s", "aggregate": "ReportingPeriod",
               "fields": [{"name": "periodId", "type": "string", "idAttribute": true}]},
-            "hours-logged": {"name": "Hours Logged", "swimlaneId": "s", "aggregate": "TimeEntry",
+            "sale-recorded": {"name": "Sale Recorded", "swimlaneId": "s", "aggregate": "Sale",
               "fields": [
                 {"name": "periodId", "type": "string"},
-                {"name": "staffId", "type": "string"},
-                {"name": "hours", "type": "double"}
+                {"name": "sellerId", "type": "string"},
+                {"name": "units", "type": "double"}
               ]}
           },
           "commands": {
-            "create-period": {"name": "Create Period", "aggregate": "PayrollPeriod"},
-            "log-hours": {"name": "Log Hours", "aggregate": "TimeEntry"}
+            "create-period": {"name": "Create Period", "aggregate": "ReportingPeriod"},
+            "record-sale": {"name": "Record Sale", "aggregate": "Sale"}
           },
           "readModels": {
-            "payroll-periods": {
-              "name": "Payroll Periods",
+            "reporting-periods": {
+              "name": "Reporting Periods",
               "builtFromEventIds": ["period-created"],
               "fields": [
                 {"name": "periodId", "type": "string", "idAttribute": true},
-                {"name": "staffTotals", "type": "custom", "cardinality": "list",
-                  "derivation": {"kind": "groupBy", "groupByField": "staffId"},
+                {"name": "sellerTotals", "type": "custom", "cardinality": "list",
+                  "derivation": {"kind": "groupBy", "groupByField": "sellerId"},
                   "subfields": [
-                    {"name": "staffId", "type": "string"},
-                    {"name": "outOfHoursHours", "type": "double",
-                      "derivation": {"kind": "sum", "addOnEventIds": ["hours-logged"], "amountField": "hours"}}
+                    {"name": "sellerId", "type": "string"},
+                    {"name": "weekendUnits", "type": "double",
+                      "derivation": {"kind": "sum", "addOnEventIds": ["sale-recorded"], "amountField": "units"}}
                   ]}
               ]
             }
@@ -664,23 +664,23 @@ public class DocumentMapperTests
               "scenarios": [{"id":"create-scenario","name":"Create","kind":"stateChange","given":[],"when":{"commandId":"create-period"},"then":{"events":[{"eventId":"period-created"}]}}]
             },
             {
-              "id": "log-hours-slice", "name": "Log Hours", "pattern": "stateChange",
+              "id": "record-sale-slice", "name": "Record Sale", "pattern": "stateChange",
               "swimlaneId": "s", "status": "created",
-              "screenId": "scr2", "commandId": "log-hours", "eventIds": ["hours-logged"],
-              "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"log-hours"},"then":{"events":[{"eventId":"hours-logged"}]}}]
+              "screenId": "scr2", "commandId": "record-sale", "eventIds": ["sale-recorded"],
+              "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"record-sale"},"then":{"events":[{"eventId":"sale-recorded"}]}}]
             },
             {
               "id": "view-periods-slice", "name": "View Periods", "pattern": "stateView",
               "swimlaneId": "s", "status": "created",
-              "screenId": "scr3", "readModelId": "payroll-periods",
+              "screenId": "scr3", "readModelId": "reporting-periods",
               "scenarios": [{
-                "id": "view-after-log", "name": "Staff totals reflect logged hours", "kind": "stateView",
+                "id": "view-after-log", "name": "Seller totals reflect recorded sales", "kind": "stateView",
                 "given": [
                   {"eventId": "period-created", "data": {"periodId": "p1"}},
-                  {"eventId": "hours-logged", "data": {"periodId": "p1", "staffId": "s1", "hours": 5}}
+                  {"eventId": "sale-recorded", "data": {"periodId": "p1", "sellerId": "s1", "units": 5}}
                 ],
-                "when": {"readModelId": "payroll-periods"},
-                "then": {"result": {"staffTotals": [{"staffId": "s1", "outOfHoursHours": 5}]}}
+                "when": {"readModelId": "reporting-periods"},
+                "then": {"result": {"sellerTotals": [{"sellerId": "s1", "weekendUnits": 5}]}}
               }]
             }
           ]
@@ -694,25 +694,25 @@ public class DocumentMapperTests
 
         var result = DocumentMapper.Map(doc);
 
-        var readModel = result.Domains.Single(d => d.Aggregate == "payrollPeriod").ReadModels.Single();
-        var staffTotals = readModel.Fields.Single(f => f.Name == "staffTotals");
-        var groupBy = Assert.IsType<GroupByDerivation>(staffTotals.Derivation);
-        Assert.Equal("staffId", groupBy.GroupByField);
+        var readModel = result.Domains.Single(d => d.Aggregate == "reportingPeriod").ReadModels.Single();
+        var sellerTotals = readModel.Fields.Single(f => f.Name == "sellerTotals");
+        var groupBy = Assert.IsType<GroupByDerivation>(sellerTotals.Derivation);
+        Assert.Equal("sellerId", groupBy.GroupByField);
 
-        var staffIdSubfield = groupBy.Subfields.Single(f => f.Name == "staffId");
-        Assert.Null(staffIdSubfield.Derivation);
+        var sellerIdSubfield = groupBy.Subfields.Single(f => f.Name == "sellerId");
+        Assert.Null(sellerIdSubfield.Derivation);
 
-        var hoursSubfield = groupBy.Subfields.Single(f => f.Name == "outOfHoursHours");
-        var sum = Assert.IsType<SumDerivation>(hoursSubfield.Derivation);
-        Assert.Equal(["HoursLogged"], sum.AddOnEvents);
+        var unitsSubfield = groupBy.Subfields.Single(f => f.Name == "weekendUnits");
+        var sum = Assert.IsType<SumDerivation>(unitsSubfield.Derivation);
+        Assert.Equal(["SaleRecorded"], sum.AddOnEvents);
         // defaulted from the read model's own key, exactly like a top-level sum/count's
         // own rowKeyField default -- the contributing event's payload names it "periodId".
         Assert.Equal("periodId", sum.RowKeyField);
 
-        // hours-logged lives on a DIFFERENT stream (TimeEntry, not PayrollPeriod) --
+        // sale-recorded lives on a DIFFERENT stream (Sale, not ReportingPeriod) --
         // reacted to (On) but not seed-eligible (SeedOn), same rule as count/sum.
-        Assert.Contains("HoursLogged", readModel.On);
-        Assert.DoesNotContain("HoursLogged", readModel.SeedOn);
+        Assert.Contains("SaleRecorded", readModel.On);
+        Assert.DoesNotContain("SaleRecorded", readModel.SeedOn);
     }
 
     [Fact]
@@ -724,63 +724,63 @@ public class DocumentMapperTests
         // is foreign-stream by construction. See DocumentMapper.BuildDerivation's own
         // doc comment on the groupBy case.
         var json = GroupByDocumentJson.Replace(
-            """{"name": "staffId", "type": "string"},""",
+            """{"name": "sellerId", "type": "string"},""",
             """
-            {"name": "staffId", "type": "string"},
-            {"name": "everLoggedOvertime", "type": "boolean",
-              "derivation": {"kind": "toggle", "onEventIds": ["hours-logged"], "offEventIds": ["hours-logged"]}},
+            {"name": "sellerId", "type": "string"},
+            {"name": "everSoldAtWeekend", "type": "boolean",
+              "derivation": {"kind": "toggle", "onEventIds": ["sale-recorded"], "offEventIds": ["sale-recorded"]}},
             """);
         var doc = DocumentLoader.Parse(json);
 
         var ex = Assert.Throws<DocumentMappingException>(() => DocumentMapper.Map(doc));
         Assert.Contains(ex.Report.Errors, e =>
-            e.Contains("everLoggedOvertime") && e.Contains("toggle") && e.Contains("not supported"));
+            e.Contains("everSoldAtWeekend") && e.Contains("toggle") && e.Contains("not supported"));
     }
 
-    // Group C item 3/4's shape (a time-entries read model with several export
-    // slices): a taskDate-scoped
+    // A shipments read model with several export
+    // slices: a shipDate-scoped
     // dateRange filter (schema 2.4.0), sibling to readModel.scopes.
     private const string DateRangeFilterDocumentJson = """
         {
           "eventModelingSchemaVersion": "2.4.0", "id": "daterange-test", "name": "DateRange Test",
           "swimlanes": [{"id":"s","name":"S","kind":"team"}],
           "events": {
-            "time-entry-logged": {"name": "Time Entry Logged", "swimlaneId": "s", "aggregate": "TimeEntry",
+            "shipment-logged": {"name": "Shipment Logged", "swimlaneId": "s", "aggregate": "Shipment",
               "fields": [
-                {"name": "entryId", "type": "string", "idAttribute": true},
-                {"name": "taskDate", "type": "date"},
-                {"name": "hours", "type": "double"}
+                {"name": "shipmentId", "type": "string", "idAttribute": true},
+                {"name": "shipDate", "type": "date"},
+                {"name": "weightKg", "type": "double"}
               ]}
           },
           "commands": {
-            "log-time-entry": {"name": "Log Time Entry", "aggregate": "TimeEntry"}
+            "log-shipment": {"name": "Log Shipment", "aggregate": "Shipment"}
           },
           "readModels": {
-            "time-entries": {
-              "name": "Time Entries",
-              "builtFromEventIds": ["time-entry-logged"],
+            "shipments": {
+              "name": "Shipments",
+              "builtFromEventIds": ["shipment-logged"],
               "fields": [
-                {"name": "entryId", "type": "string", "idAttribute": true},
-                {"name": "taskDate", "type": "date"},
-                {"name": "hours", "type": "double"}
+                {"name": "shipmentId", "type": "string", "idAttribute": true},
+                {"name": "shipDate", "type": "date"},
+                {"name": "weightKg", "type": "double"}
               ],
               "filters": [
-                {"param": "dateRange", "field": "taskDate", "kind": "dateRange", "presets": ["last7Days", "lastCalendarMonth", "custom"]}
+                {"param": "dateRange", "field": "shipDate", "kind": "dateRange", "presets": ["last7Days", "lastCalendarMonth", "custom"]}
               ]
             }
           },
           "screens": {"scr1": {"name": "Log Screen"}, "scr2": {"name": "View Screen"}},
           "slices": [
             {
-              "id": "log-time-entry-slice", "name": "Log Time Entry", "pattern": "stateChange",
+              "id": "log-shipment-slice", "name": "Log Shipment", "pattern": "stateChange",
               "swimlaneId": "s", "status": "created",
-              "screenId": "scr1", "commandId": "log-time-entry", "eventIds": ["time-entry-logged"],
-              "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"log-time-entry"},"then":{"events":[{"eventId":"time-entry-logged"}]}}]
+              "screenId": "scr1", "commandId": "log-shipment", "eventIds": ["shipment-logged"],
+              "scenarios": [{"id":"log-scenario","name":"Log","kind":"stateChange","given":[],"when":{"commandId":"log-shipment"},"then":{"events":[{"eventId":"shipment-logged"}]}}]
             },
             {
-              "id": "view-time-entries-slice", "name": "View Time Entries", "pattern": "stateView",
+              "id": "view-shipments-slice", "name": "View Shipments", "pattern": "stateView",
               "swimlaneId": "s", "status": "created",
-              "screenId": "scr2", "readModelId": "time-entries",
+              "screenId": "scr2", "readModelId": "shipments",
               "scenarios": []
             }
           ]
@@ -794,10 +794,10 @@ public class DocumentMapperTests
 
         var result = DocumentMapper.Map(doc);
 
-        var readModel = result.Domains.Single(d => d.Aggregate == "timeEntry").ReadModels.Single();
+        var readModel = result.Domains.Single(d => d.Aggregate == "shipment").ReadModels.Single();
         var filter = Assert.Single(readModel.Filters);
         Assert.Equal("dateRange", filter.Param);
-        Assert.Equal("taskDate", filter.Field);
+        Assert.Equal("shipDate", filter.Field);
         Assert.Equal("dateRange", filter.Kind);
         Assert.Equal(["last7Days", "lastCalendarMonth", "custom"], filter.Presets);
     }
@@ -814,11 +814,11 @@ public class DocumentMapperTests
         // Mirrors the toggle-subfield rejection test above: a defensive mapper-level
         // check for a shape the schema also happens to forbid.
         var doc = DocumentLoader.Parse(DateRangeFilterDocumentJson);
-        var readModel = doc.ReadModels!["time-entries"];
+        var readModel = doc.ReadModels!["shipments"];
         var malformedFilter = readModel.Filters!.Single() with { Presets = null };
         var mutatedReadModels = new Dictionary<string, DotnetCqrs.Codegen.Model.ReadModelDef>(doc.ReadModels!)
         {
-            ["time-entries"] = readModel with { Filters = [malformedFilter] },
+            ["shipments"] = readModel with { Filters = [malformedFilter] },
         };
         var mutatedDoc = doc with { ReadModels = mutatedReadModels };
 
@@ -827,10 +827,10 @@ public class DocumentMapperTests
             e.Contains("dateRange") && e.Contains("presets"));
     }
 
-    // platform/command-authorization's signed-off design proposal (schema 2.5.0):
+    // Command authorization (schema 2.5.0):
     // requiredRole (both single-value and array form), fieldGatedRole,
     // requiredOwnership, and scope on a real-shaped command set (an ownership-only
-    // update, a Manager-bypass-else-PM-scoped flag, a Manager-only setup command, and
+    // update, a supervisor-bypass-else-region-scoped flag, a supervisor-only setup command, and
     // an Administrator-field-gated onboarding command).
     private const string CommandAuthorizationDocumentJson = """
         {
@@ -840,28 +840,28 @@ public class DocumentMapperTests
             "order-placed": {"name": "Order Placed", "swimlaneId": "s", "aggregate": "Order"},
             "order-updated": {"name": "Order Updated", "swimlaneId": "s", "aggregate": "Order"},
             "order-flagged": {"name": "Order Flagged", "swimlaneId": "s", "aggregate": "Order"},
-            "staff-onboarded": {"name": "Staff Onboarded", "swimlaneId": "s", "aggregate": "Staff"}
+            "member-onboarded": {"name": "Member Onboarded", "swimlaneId": "s", "aggregate": "Member"}
           },
           "commands": {
-            "place-order": {"name": "Place Order", "aggregate": "Order", "requiredRole": ["manager", "administrator"]},
+            "place-order": {"name": "Place Order", "aggregate": "Order", "requiredRole": ["supervisor", "administrator"]},
             "update-order": {"name": "Update Order", "aggregate": "Order",
               "requiredOwnership": {"via": {"readModelId": "orders", "keyField": "orderId", "ownerField": "ownerId"}}},
             "flag-order": {"name": "Flag Order", "aggregate": "Order",
               "scope": {
-                "bypassRoles": ["manager"],
+                "bypassRoles": ["supervisor"],
                 "resolveVia": {"readModelId": "orders", "keyField": "orderId", "selectField": "regionId"},
-                "memberOfVia": {"readModelId": "region-managers", "matchField": "regionId", "actorField": "memberId"}
+                "memberOfVia": {"readModelId": "region-supervisors", "matchField": "regionId", "actorField": "memberId"}
               }},
-            "onboard-staff": {"name": "Onboard Staff", "aggregate": "Staff",
-              "fieldGatedRole": {"field": "role", "value": "manager", "requiredRole": "administrator"}}
+            "onboard-member": {"name": "Onboard Member", "aggregate": "Member",
+              "fieldGatedRole": {"field": "role", "value": "supervisor", "requiredRole": "administrator"}}
           },
           "readModels": {
             "orders": {"name": "Orders", "builtFromEventIds": ["order-placed"],
               "fields": [{"name": "orderId", "type": "string", "idAttribute": true}, {"name": "ownerId", "type": "string"}, {"name": "regionId", "type": "string"}],
-              "requiredRole": "manager"},
-            "region-managers": {"name": "Region Managers", "builtFromEventIds": ["order-placed"],
+              "requiredRole": "supervisor"},
+            "region-supervisors": {"name": "Region Supervisors", "builtFromEventIds": ["order-placed"],
               "fields": [{"name": "memberId", "type": "string", "idAttribute": true}, {"name": "regionId", "type": "string"}],
-              "requiredRole": ["manager", "administrator"]}
+              "requiredRole": ["supervisor", "administrator"]}
           },
           "screens": {"scr": {"name": "Screen"}},
           "slices": [
@@ -871,8 +871,8 @@ public class DocumentMapperTests
               "screenId": "scr", "commandId": "update-order", "eventIds": ["order-updated"], "scenarios": []},
             {"id": "flag-order-slice", "name": "Flag Order", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
               "screenId": "scr", "commandId": "flag-order", "eventIds": ["order-flagged"], "scenarios": []},
-            {"id": "onboard-staff-slice", "name": "Onboard Staff", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
-              "screenId": "scr", "commandId": "onboard-staff", "eventIds": ["staff-onboarded"], "scenarios": []}
+            {"id": "onboard-member-slice", "name": "Onboard Member", "pattern": "stateChange", "swimlaneId": "s", "status": "created",
+              "screenId": "scr", "commandId": "onboard-member", "eventIds": ["member-onboarded"], "scenarios": []}
           ]
         }
         """;
@@ -897,7 +897,7 @@ public class DocumentMapperTests
 
         var order = result.Domains.Single(d => d.Aggregate == "order");
         var placeOrder = order.Commands.Single(c => c.Name == "PlaceOrder");
-        Assert.Equal(["manager", "administrator"], placeOrder.RequiredRole);
+        Assert.Equal(["supervisor", "administrator"], placeOrder.RequiredRole);
     }
 
     [Fact]
@@ -911,9 +911,9 @@ public class DocumentMapperTests
 
         var order = result.Domains.Single(d => d.Aggregate == "order");
         var orders = order.ReadModels.Single(rm => rm.Collection == "orders");
-        Assert.Equal(["manager"], orders.RequiredRole);
-        var regionManagers = order.ReadModels.Single(rm => rm.Collection == "regionManagers");
-        Assert.Equal(["manager", "administrator"], regionManagers.RequiredRole);
+        Assert.Equal(["supervisor"], orders.RequiredRole);
+        var regionSupervisors = order.ReadModels.Single(rm => rm.Collection == "regionSupervisors");
+        Assert.Equal(["supervisor", "administrator"], regionSupervisors.RequiredRole);
     }
 
     [Fact]
@@ -944,11 +944,11 @@ public class DocumentMapperTests
         var flagOrder = order.Commands.Single(c => c.Name == "FlagOrder");
         Assert.NotNull(flagOrder.Scope);
         var scope = flagOrder.Scope!;
-        Assert.Equal(["manager"], scope.BypassRoles);
+        Assert.Equal(["supervisor"], scope.BypassRoles);
         Assert.Equal("orders", scope.ResolveViaCollection);
         Assert.Equal("orderId", scope.ResolveKeyField);
         Assert.Equal("regionId", scope.ResolveSelectField);
-        Assert.Equal("regionManagers", scope.MemberOfViaCollection);
+        Assert.Equal("regionSupervisors", scope.MemberOfViaCollection);
         Assert.Equal("regionId", scope.MemberOfMatchField);
         Assert.Equal("memberId", scope.MemberOfActorField);
     }
@@ -960,12 +960,12 @@ public class DocumentMapperTests
 
         var result = DocumentMapper.Map(doc);
 
-        var staff = result.Domains.Single(d => d.Aggregate == "staff");
-        var onboardStaff = staff.Commands.Single(c => c.Name == "OnboardStaff");
-        Assert.NotNull(onboardStaff.FieldGatedRole);
-        var fieldGated = onboardStaff.FieldGatedRole!;
+        var member = result.Domains.Single(d => d.Aggregate == "member");
+        var onboardMember = member.Commands.Single(c => c.Name == "OnboardMember");
+        Assert.NotNull(onboardMember.FieldGatedRole);
+        var fieldGated = onboardMember.FieldGatedRole!;
         Assert.Equal("role", fieldGated.Field);
-        Assert.Equal(new StringFieldValue("manager"), fieldGated.Value);
+        Assert.Equal(new StringFieldValue("supervisor"), fieldGated.Value);
         Assert.Equal(["administrator"], fieldGated.RequiredRole);
     }
 

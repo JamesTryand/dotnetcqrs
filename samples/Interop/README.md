@@ -1,8 +1,8 @@
-# Interop sample (dotnetcqrs-multi-node Milestone 5)
+# Interop sample
 
 The runnable proof that a `dotnetcqrs` gateway and a `pocketcqrs` gateway can dispatch
 commands into each other. Not a feature demo — a verification harness, the same shape
-Milestone 3 used for cross-host replication. The design notes (why it's almost entirely
+the cross-host replication sample uses. The design notes (why it's almost entirely
 an auth exercise, the two behavioural asymmetries) are in
 [`docs/interop.md`](../../docs/interop.md).
 
@@ -11,7 +11,7 @@ an auth exercise, the two behavioural asymmetries) are in
 | path | what it is |
 | --- | --- |
 | `DotnetCqrsHost/` | a minimal `DotnetCqrs.Host` gateway for the `task` aggregate, with a real auth check on the command route: a hand-rolled HS256 JWT verifier (`System.Security.Cryptography` only, no `Microsoft.AspNetCore.Authentication.JwtBearer`). Reads `EVENTS_DB_PATH`, `LISTEN_URL`, `INTEROP_JWT_{KEY,ISSUER,AUDIENCE}`. Also serves `GET /events/{aggregate}/{id}` and `GET /healthz`. |
-| `IntoPocketCqrs/` | direction A driver: uses Milestone 4's `GatewayFollowUpDispatcher` (unmodified) to POST `CreateTask` into a `pocketcqrs` gateway. Reads `POCKETCQRS_URL`, `SVC_TOKEN`, `CAUSATION_ID`, `CORRELATION_ID`. `--expect-reject` asserts a `400`. |
+| `IntoPocketCqrs/` | direction A driver: uses `GatewayFollowUpDispatcher` (unmodified) to POST `CreateTask` into a `pocketcqrs` gateway. Reads `POCKETCQRS_URL`, `SVC_TOKEN`, `CAUSATION_ID`, `CORRELATION_ID`. `--expect-reject` asserts a `400`. |
 | `into-dotnetcqrs/` | direction B driver: a stdlib-only Go program mirroring `pocketcqrs`'s `internal/gatewayclient.(*Client).Dispatch` request shape by hand (that package is `internal/` to the pocketcqrs module and can't be imported here). Mints the shared-key HS256 JWT. Reads `DOTNETCQRS_URL`, `INTEROP_JWT_*`, `CAUSATION_ID`, `CORRELATION_ID`. `--expect-reject` asserts a `400`. |
 | `verify.sh` | boots both gateways, provisions the `service_accounts` external-caller record in `pocketcqrs`, runs both directions, asserts against each `events.db` with `sqlite3`. |
 

@@ -85,7 +85,7 @@ public static class InMemoryHost
             .Append(("Program.cs", programCs));
         var program = InProcessHarness.RunAsync(sources, [], CancellationToken.None, alsoReference: [
             typeof(InMemoryHost).Assembly,
-            // Generated query routes run on DotnetCqrs.Host's LiveView (D27); a generated host references it anyway.
+            // Generated query routes run on DotnetCqrs.Host's LiveView; a generated host references it anyway.
             typeof(DotnetCqrs.Host.LiveView).Assembly,
         ]);
 

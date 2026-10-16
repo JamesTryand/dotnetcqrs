@@ -1,7 +1,7 @@
 # MultiNode sample
 
-The runnable pair for dotnetcqrs-multi-node Milestone 3 (cross-host replication via
-LiteFS). Not a feature demo -- a smoke test proving Milestones 1 and 2's app-level
+The runnable pair for cross-host replication via
+LiteFS. Not a feature demo -- a smoke test proving the app-level
 machinery (`SqliteEventStore.OpenReadOnlyAsync`, `CqrsGatewayEndpoints.ForwardTo`)
 keeps working unchanged once the shared `events.db` arrives over LiteFS replication
 between two real hosts instead of being one literal shared path on one host.
@@ -18,7 +18,7 @@ between two real hosts instead of being one literal shared path on one host.
 
 Neither project references LiteFS's SDK or config -- both just read/write an ordinary
 SQLite file path. That's the point: LiteFS's job is making the *file* show up
-correctly on both hosts; dotnetcqrs's job (Milestones 1-2, already done) is knowing
+correctly on both hosts; dotnetcqrs's job (already done) is knowing
 what to do once it's there.
 
 Not meant to be run directly with `dotnet run` for the cross-host story -- see

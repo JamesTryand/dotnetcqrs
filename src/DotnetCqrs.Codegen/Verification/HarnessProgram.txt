@@ -8,8 +8,8 @@
 // VM" (functions.DryRunDecide/DryRunProjectionOver): there is no equivalent to
 // evaluating source text without compiling it for C#, so verification here means
 // actually compiling this harness together with the generated code once (a real
-// `dotnet build`/`dotnet run`, same infrastructure Milestone 3's own tests proved
-// out) and driving every scenario through the resulting assembly via reflection.
+// `dotnet build`/`dotnet run`, the same infrastructure the codegen's own tests
+// use) and driving every scenario through the resulting assembly via reflection.
 
 using System.Data.Common;
 using System.Reflection;

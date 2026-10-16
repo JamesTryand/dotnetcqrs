@@ -1,6 +1,6 @@
 // One hand-built system, end to end: write side (deciders) -> event log ->
-// read side (projections) and a reactor, using every piece the dotnetcqrs
-// baseline built across Milestones 2-7. Run with `dotnet run` from this
+// read side (projections) and a reactor, using every piece of the dotnetcqrs
+// baseline. Run with `dotnet run` from this
 // directory; each run starts from a fresh pair of SQLite files.
 
 using System.Data.Common;

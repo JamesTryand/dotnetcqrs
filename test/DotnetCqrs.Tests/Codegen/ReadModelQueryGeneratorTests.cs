@@ -30,7 +30,7 @@ public class ReadModelQueryGeneratorTests : IClassFixture<PostgresFixture>
     public ReadModelQueryGeneratorTests(PostgresFixture pg) => _pg = pg;
 
     // Same shape as DocumentMapperTests/ScenarioVerifierTests' own dateRange fixture
-    // (a time-entries read model) -- no stateView scenarios
+    // (a shipments read model) -- no stateView scenarios
     // needed here, since this test drives the generated route over real HTTP rather
     // than through ScenarioVerifier's harness.
     private const string Json = """
@@ -38,38 +38,38 @@ public class ReadModelQueryGeneratorTests : IClassFixture<PostgresFixture>
           "eventModelingSchemaVersion": "2.4.0", "id": "query-route-test", "name": "Query Route Test",
           "swimlanes": [{"id":"s","name":"S","kind":"team"}],
           "events": {
-            "time-entry-logged": {"name": "Time Entry Logged", "swimlaneId": "s", "aggregate": "TimeEntry",
+            "shipment-logged": {"name": "Shipment Logged", "swimlaneId": "s", "aggregate": "Shipment",
               "fields": [
-                {"name": "entryId", "type": "string", "idAttribute": true},
-                {"name": "taskDate", "type": "date"},
-                {"name": "hours", "type": "double"},
-                {"name": "billable", "type": "boolean"}
+                {"name": "shipmentId", "type": "string", "idAttribute": true},
+                {"name": "shipDate", "type": "date"},
+                {"name": "weightKg", "type": "double"},
+                {"name": "insured", "type": "boolean"}
               ]}
           },
           "commands": {
-            "log-time-entry": {"name": "Log Time Entry", "aggregate": "TimeEntry"}
+            "log-shipment": {"name": "Log Shipment", "aggregate": "Shipment"}
           },
           "readModels": {
-            "time-entries": {
-              "name": "Time Entries",
-              "builtFromEventIds": ["time-entry-logged"],
+            "shipments": {
+              "name": "Shipments",
+              "builtFromEventIds": ["shipment-logged"],
               "fields": [
-                {"name": "entryId", "type": "string", "idAttribute": true},
-                {"name": "taskDate", "type": "date"},
-                {"name": "hours", "type": "double"},
-                {"name": "billable", "type": "boolean"}
+                {"name": "shipmentId", "type": "string", "idAttribute": true},
+                {"name": "shipDate", "type": "date"},
+                {"name": "weightKg", "type": "double"},
+                {"name": "insured", "type": "boolean"}
               ],
               "filters": [
-                {"param": "dateRange", "field": "taskDate", "kind": "dateRange", "presets": ["last7Days", "lastCalendarMonth", "custom"]}
+                {"param": "dateRange", "field": "shipDate", "kind": "dateRange", "presets": ["last7Days", "lastCalendarMonth", "custom"]}
               ]
             }
           },
           "screens": {"scr1": {"name": "Log Screen"}},
           "slices": [
             {
-              "id": "log-time-entry-slice", "name": "Log Time Entry", "pattern": "stateChange",
+              "id": "log-shipment-slice", "name": "Log Shipment", "pattern": "stateChange",
               "swimlaneId": "s", "status": "created",
-              "screenId": "scr1", "commandId": "log-time-entry", "eventIds": ["time-entry-logged"],
+              "screenId": "scr1", "commandId": "log-shipment", "eventIds": ["shipment-logged"],
               "scenarios": []
             }
           ]
@@ -86,18 +86,18 @@ public class ReadModelQueryGeneratorTests : IClassFixture<PostgresFixture>
         using DotnetCqrs.EventStore;
         using DotnetCqrs.Postgres;
         using DotnetCqrs.ReadModels;
-        using Generated.TimeEntry;
+        using Generated.Shipment;
 
         IReadModelStore store = DotnetCqrs.Tests.Codegen.InMemoryHost.Setting("TEST_PG") is { Length: > 0 } pg
             ? await PostgresReadModelStore.OpenAsync(pg)
             : await SqliteReadModelStore.OpenAsync(":memory:");
-        var projection = new TimeEntriesProjection(store);
+        var projection = new ShipmentsProjection(store);
         await projection.InitAsync();
 
-        async Task SeedAsync(string entryId, string taskDate, double hours, bool billable, long position)
+        async Task SeedAsync(string shipmentId, string shipDate, double weightKg, bool insured, long position)
         {
-            var data = System.Text.Json.JsonSerializer.Serialize(new { entryId, taskDate, hours, billable });
-            var ev = new Event(position, $"seed-{position}", "timeEntry", entryId, position, "TimeEntryLogged", data, "{}", "1970-01-01T00:00:00.000Z");
+            var data = System.Text.Json.JsonSerializer.Serialize(new { shipmentId, shipDate, weightKg, insured });
+            var ev = new Event(position, $"seed-{position}", "shipment", shipmentId, position, "ShipmentLogged", data, "{}", "1970-01-01T00:00:00.000Z");
             await projection.ApplyAsync(ev, CancellationToken.None);
         }
 
@@ -108,7 +108,7 @@ public class ReadModelQueryGeneratorTests : IClassFixture<PostgresFixture>
         var builder = WebApplication.CreateBuilder(args);
         builder.Services.AddSingleton<IReadModelStore>(store);
         var app = builder.Build();
-        app.MapTimeEntriesRoute();
+        app.MapShipmentsRoute();
         await DotnetCqrs.Tests.Codegen.InMemoryHost.ServeAsync(app);
         """;
 
@@ -134,8 +134,8 @@ public class ReadModelQueryGeneratorTests : IClassFixture<PostgresFixture>
         var readModel = Assert.Single(domain.ReadModels);
         // Pinned so the hand-written ProgramCs above (which names these literally) is
         // known to line up with what the generator actually produced.
-        Assert.Equal("timeEntry", domain.Aggregate);
-        Assert.Equal("timeEntries", readModel.Collection);
+        Assert.Equal("shipment", domain.Aggregate);
+        Assert.Equal("shipments", readModel.Collection);
 
         var files = new List<GeneratedFile>(CSharpGenerator.Generate(domain))
         {
@@ -157,33 +157,33 @@ public class ReadModelQueryGeneratorTests : IClassFixture<PostgresFixture>
                 }
                 throw new TimeoutException($"generated host never answered {path}");
             }
-            static List<string?> EntryIds(JsonElement rows) =>
-                rows.EnumerateArray().Select(r => r.GetProperty("entry_id").GetString()).OrderBy(x => x).ToList();
+            static List<string?> ShipmentIds(JsonElement rows) =>
+                rows.EnumerateArray().Select(r => r.GetProperty("shipment_id").GetString()).OrderBy(x => x).ToList();
 
-            var dateRangeQuery = "/api/query/timeEntries?dateRange=" +
+            var dateRangeQuery = "/api/query/shipments?dateRange=" +
                 Uri.EscapeDataString("""{"kind":"custom","from":"2026-08-01","to":"2026-08-31"}""");
             var byDateRange = await PollAsync(dateRangeQuery);
-            Assert.Equal(["e1", "e2"], EntryIds(byDateRange));
+            Assert.Equal(["e1", "e2"], ShipmentIds(byDateRange));
 
-            var byPlainField = await client.GetFromJsonAsync<JsonElement>("/api/query/timeEntries?entryId=e1");
+            var byPlainField = await client.GetFromJsonAsync<JsonElement>("/api/query/shipments?shipmentId=e1");
             var e1 = Assert.Single(byPlainField.EnumerateArray());
-            Assert.Equal("e1", e1.GetProperty("entry_id").GetString());
+            Assert.Equal("e1", e1.GetProperty("shipment_id").GetString());
             // Identical on both databases: full double precision, and a bool as 1/0.
-            Assert.Equal(1234567.89, e1.GetProperty("hours").GetDouble());
-            Assert.Equal(1, e1.GetProperty("billable").GetInt32());
+            Assert.Equal(1234567.89, e1.GetProperty("weight_kg").GetDouble());
+            Assert.Equal(1, e1.GetProperty("insured").GetInt32());
 
             // Typed plain params: parsed to the column's type before binding.
-            Assert.Equal(["e1"], EntryIds(await client.GetFromJsonAsync<JsonElement>("/api/query/timeEntries?hours=1234567.89")));
-            Assert.Equal(["e1", "e3"], EntryIds(await client.GetFromJsonAsync<JsonElement>("/api/query/timeEntries?billable=true")));
-            Assert.Equal(["e2"], EntryIds(await client.GetFromJsonAsync<JsonElement>("/api/query/timeEntries?billable=0")));
-            using (var notANumber = await client.GetAsync("/api/query/timeEntries?hours=lots"))
+            Assert.Equal(["e1"], ShipmentIds(await client.GetFromJsonAsync<JsonElement>("/api/query/shipments?weightKg=1234567.89")));
+            Assert.Equal(["e1", "e3"], ShipmentIds(await client.GetFromJsonAsync<JsonElement>("/api/query/shipments?insured=true")));
+            Assert.Equal(["e2"], ShipmentIds(await client.GetFromJsonAsync<JsonElement>("/api/query/shipments?insured=0")));
+            using (var notANumber = await client.GetAsync("/api/query/shipments?weightKg=lots"))
                 Assert.Equal(HttpStatusCode.BadRequest, notANumber.StatusCode);
-            using (var notABool = await client.GetAsync("/api/query/timeEntries?billable=maybe"))
+            using (var notABool = await client.GetAsync("/api/query/shipments?insured=maybe"))
                 Assert.Equal(HttpStatusCode.BadRequest, notABool.StatusCode);
 
             // Overlapping requests: each read gets a connection it can use.
             var responses = await Task.WhenAll(Enumerable.Range(0, 20)
-                .Select(_ => client.GetAsync("/api/query/timeEntries?billable=true")));
+                .Select(_ => client.GetAsync("/api/query/shipments?insured=true")));
             Assert.All(responses, r => Assert.Equal(HttpStatusCode.OK, r.StatusCode));
             foreach (var r in responses) r.Dispose();
         }
@@ -214,7 +214,7 @@ public class ReadModelQueryGeneratorTests : IClassFixture<PostgresFixture>
                 {"name": "widgetId", "type": "string", "idAttribute": true},
                 {"name": "name", "type": "string"}
               ],
-              "requiredRole": ["manager", "administrator"]
+              "requiredRole": ["supervisor", "administrator"]
             }
           },
           "screens": {"scr1": {"name": "Make Screen"}},
@@ -274,7 +274,7 @@ public class ReadModelQueryGeneratorTests : IClassFixture<PostgresFixture>
         var readModel = Assert.Single(domain.ReadModels);
         Assert.Equal("widget", domain.Aggregate);
         Assert.Equal("widgets", readModel.Collection);
-        Assert.Equal(["manager", "administrator"], readModel.RequiredRole);
+        Assert.Equal(["supervisor", "administrator"], readModel.RequiredRole);
 
         var files = new List<GeneratedFile>(CSharpGenerator.Generate(domain))
         {
@@ -309,15 +309,15 @@ public class ReadModelQueryGeneratorTests : IClassFixture<PostgresFixture>
                 throw new TimeoutException("generated host never answered /api/query/widgets");
             }
 
-            using var staffResponse = await PollAsync("staff");
-            Assert.Equal(HttpStatusCode.Forbidden, staffResponse.StatusCode);
+            using var memberResponse = await PollAsync("member");
+            Assert.Equal(HttpStatusCode.Forbidden, memberResponse.StatusCode);
 
             using var noRoleResponse = await client.GetAsync("/api/query/widgets");
             Assert.Equal(HttpStatusCode.Forbidden, noRoleResponse.StatusCode);
 
-            using var managerResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Get, "/api/query/widgets") { Headers = { { "X-Test-Role", "manager" } } });
-            Assert.Equal(HttpStatusCode.OK, managerResponse.StatusCode);
-            var rows = await managerResponse.Content.ReadFromJsonAsync<JsonElement>();
+            using var supervisorResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Get, "/api/query/widgets") { Headers = { { "X-Test-Role", "supervisor" } } });
+            Assert.Equal(HttpStatusCode.OK, supervisorResponse.StatusCode);
+            var rows = await supervisorResponse.Content.ReadFromJsonAsync<JsonElement>();
             Assert.Equal(1, rows.GetArrayLength());
             Assert.Equal("w1", rows[0].GetProperty("widget_id").GetString());
         }
@@ -355,7 +355,7 @@ public class ReadModelQueryGeneratorTests : IClassFixture<PostgresFixture>
         }
     }
 
-    // Milestone D3: a read model with a pii column. The event carries the {"$pii":...}
+    // A read model with a pii column. The event carries the {"$pii":...}
     // envelope, as the generated protector writes it; the projection stores it as-is.
     private const string PiiJson = """
         {
@@ -506,7 +506,7 @@ public class ReadModelQueryGeneratorTests : IClassFixture<PostgresFixture>
         }
     }
 
-    // Milestones D5/D6: schema 3.1.0 match filters. A plain `name` searched three ways (shadow
+    // Schema 3.1.0 match filters. A plain `name` searched three ways (shadow
     // columns) and a pii `email` searched by contains (the plaintext index) and by exact and
     // prefix (the keyed-hash index), all in the separate search store.
     private const string MatchJson = """

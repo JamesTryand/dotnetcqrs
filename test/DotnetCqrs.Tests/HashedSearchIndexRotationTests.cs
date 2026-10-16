@@ -5,9 +5,9 @@ using DotnetCqrs.ReadModels;
 namespace DotnetCqrs.Tests;
 
 /// <summary>
-/// Milestone D6: a keyed-hash index records the key version it was built with; after an
+/// A keyed-hash index records the key version it was built with; after an
 /// index key rotation, <c>RegisterHashedSearchIndexAsync</c> rebuilds at the new version while
-/// searches stay pinned to the old one, then switches over (findings, "D6 decisions" item 7).
+/// searches stay pinned to the old one, then switches over.
 /// </summary>
 public class HashedSearchIndexRotationTests : IAsyncLifetime
 {

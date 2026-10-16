@@ -1,4 +1,4 @@
-# Postgres backend (dotnetcqrs-multi-node Milestone 7)
+# Postgres backend
 
 > **Status: verified 2026-08-28** on one machine against `postgres:17-alpine` — 17
 > in-suite tests under `test/DotnetCqrs.Tests/Postgres/`, `[SkippableFact]`-gated on
@@ -8,16 +8,16 @@
 > Postgres, chosen at startup by `DOTNETCQRS_POSTGRES`, including PII (encrypt on write,
 > search, erasure). Its end-to-end tests run on both. See "Generated apps on Postgres".
 
-Milestone 6 extracted `src/DotnetCqrs.Abstractions/` — the provider-neutral contracts
+An earlier step extracted `src/DotnetCqrs.Abstractions/` — the provider-neutral contracts
 `IEventStore` / `IReadModelStore` / `IDeadLetterStore` (plus the already-abstract
 `IPollSource` / `ICheckpointStore` / `IProjection` / decider / reactor surface) — with
-`SqliteEventStore` + `SqliteReadModelStore` as the one implementation. This milestone is
+`SqliteEventStore` + `SqliteReadModelStore` as the one implementation. This backend is
 the **second implementation**: `src/DotnetCqrs.Postgres/` (`PostgresEventStore`,
 `PostgresReadModelStore`), backed by Npgsql, behind those exact interfaces, with no
 changes to the abstractions.
 
 It is deliberately **an alternative and complementary scaling path**, not a replacement
-for anything. SQLite-file replication (Milestones 1–3: one master, many read-only
+for anything. SQLite-file replication (one master, many read-only
 replicas over LiteFS) already delivers single-master / multi-read-model scaling with no
 server to run. Postgres instead buys managed-service operability (RDS / Cloud SQL /
 etc.), a client-server concurrency model, and native streaming replication as an eventual
@@ -73,14 +73,14 @@ position 1..60 with no gap. With the lock in place it passes every run; with the
 so `seen` advanced past it and 24 was gone for good. So the lock is load-bearing, not
 belt-and-braces.
 
-**Scope correction — stated plainly:** Milestone 7 does **not** deliver unrestricted
+**Scope correction — stated plainly:** this backend does **not** deliver unrestricted
 concurrent multi-writer append. Append throughput is single-writer, exactly as it is on
 SQLite — the gain over SQLite is the client-server model (many machines, managed
 service, concurrent *reads* and pooled connections), not parallel appends. A
 visibility-watermark poll (let appends run truly concurrently; make the consumer lag
 behind the oldest in-flight transaction so it never steps over a not-yet-committed
 position) *would* allow it, but it is more code, subtler, and changes the poll contract —
-so it is noted here as possible future work, its own milestone, not part of this one.
+so it is noted here as possible future work, not part of this backend.
 
 ### 2. The write-guard is the database's grant system, not triggers
 
@@ -155,8 +155,7 @@ index (schema `search`) all live in that database; leave it unset for the SQLite
 under `data/`. One application per database, as one set of files per application.
 
 What it took (found on 2026-09-24 by running the generators' SQL against
-`postgres:17-alpine`; notebook `platform/eventmodeling-codegen`, `NEEDS.md`, "Postgres
-parity"):
+`postgres:17-alpine`):
 
 1. **Column types valid on both.** A bool field is an `INTEGER` 0/1 on both databases and
    is now written as 0/1 (Postgres refused a boolean parameter for an integer column). A
@@ -212,8 +211,8 @@ parity"):
 
 ## Non-goals
 
-- **Postgres streaming replication** — that would be an alternative to Milestone 3's
-  LiteFS story, not part of this milestone.
+- **Postgres streaming replication** — that would be an alternative to the
+  LiteFS story, not part of this backend.
 - ~~**`LISTEN`/`NOTIFY`**~~ **Added 2026-10-14** (see
   "Commits wake every node" below).
 - **A migration framework** — the schema is one idempotent `CREATE TABLE IF NOT EXISTS`
@@ -254,7 +253,7 @@ a new event only on its one-second tick, because `IPollSource.Subscribe` is in-p
 Tests: `PostgresCommitPushTests` (an engine with a one-hour tick receives another store's
 commit; a terminated listening session listens again after the next pass; one channel per
 log; a 63-character schema name). Mutation-checked, 7 mutants. `PostgresExtCallOutboxTests`
-runs the external caller's outbox (D40) on Postgres for the first time (6 mutants).
+runs the external caller's outbox on Postgres for the first time (6 mutants).
 
 ## `created` is stored as text
 
@@ -262,7 +261,7 @@ The `events.created` column is `text NOT NULL DEFAULT to_char(now() AT TIME ZONE
 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')` — deliberately a string in the same `…T…Z` shape
 SQLite's `strftime` default produces, not `timestamptz`. `Event.Created` is a `string`
 on the envelope, and keeping the stored form identical across providers matters for the
-cross-runtime format sensitivity Milestone 5 documented.
+cross-runtime format sensitivity the interop work documented (`interop.md`).
 
 ## Running the tests
 

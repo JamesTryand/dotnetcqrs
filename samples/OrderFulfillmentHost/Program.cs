@@ -1,7 +1,7 @@
 // The runnable counterpart to samples/OrderFulfillment: the SAME domain code
 // (Orders/Tasks deciders), hosted for real over HTTP via DotnetCqrs.Host's gateway,
-// with JWT bearer auth and local-disk file storage wired in -- proving the pieces
-// this issue built (Milestones 1-3) actually compose, not just individually inside
+// with JWT bearer auth and local-disk file storage wired in -- proving the host's
+// pieces actually compose, not just individually inside
 // TestServer. Run with `dotnet run` from this directory; each run starts fresh.
 
 using System.IdentityModel.Tokens.Jwt;

@@ -11,7 +11,7 @@ namespace DotnetCqrs.Postgres;
 /// <c>search.db</c> is attached under that name. One application per database, as one
 /// <c>search.db</c> per application.
 ///
-/// <para><b>Why unlogged</b> (platform/eventmodeling-codegen, "Postgres parity" item 5). The
+/// <para><b>Why unlogged.</b> The
 /// index holds normalized plaintext personal data and must not come back from a backup after
 /// the person is erased. Unlogged rows never enter the write-ahead log, so physical backups
 /// (<c>pg_basebackup</c>, pgBackRest, Barman), point-in-time recovery and streaming replicas

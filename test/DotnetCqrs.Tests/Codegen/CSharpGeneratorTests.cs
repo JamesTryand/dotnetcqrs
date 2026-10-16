@@ -181,7 +181,7 @@ public class CSharpGeneratorTests
                 if ((await store.LoadStreamAsync("order", "o2")).Count != 0) { Console.WriteLine("FAIL: o2 was appended"); return 1; }
             }
 
-            // D1: erasure is a fact on the subject's own stream plus a destroyed key, and
+            // Erasure is a fact on the subject's own stream plus a destroyed key, and
             // the erased state is terminal -- so no new PII may be stored under that id.
             await registry.HandleAsync("dataSubject", "cust-1", new Command("EraseSubject", "{}"));
             await new SubjectKeyDestroyer(kms).ApplyAsync(
@@ -226,8 +226,8 @@ public class CSharpGeneratorTests
     [Fact]
     public async Task A_projection_stores_a_pii_column_as_the_ciphertext_envelope_instead_of_throwing()
     {
-        // Milestone D's first bug: the generic field-merge read a text column with
-        // GetString(), and after C2 a pii field arrives as the {"$pii":…} envelope (an
+        // An early bug: the generic field-merge read a text column with
+        // GetString(), and once events are sealed a pii field arrives as the {"$pii":…} envelope (an
         // object) -- so the projection threw on the first PII-bearing event. order-summary
         // gains customerId + customerEmail (pii, matching the event, which
         // DocumentMapper.CheckReadModelPii now requires); the real write path produces the
@@ -302,10 +302,10 @@ public class CSharpGeneratorTests
     [Fact]
     public async Task An_endsStream_event_lets_a_removed_link_be_reassigned()
     {
-        // Finding 3's Class 3 (findings.md §4): before this fix, Evolve only ever set
+        // Before this fix, Evolve only ever set
         // Exists = true, so the Once guard blocked a re-assign forever after an
-        // unassign. staff-unassigned-from-project is endsStream: true here, so Evolve
-        // must reset Exists to false on it, and assign-staff-to-project (Once=true,
+        // unassign. courier-unassigned-from-region is endsStream: true here, so Evolve
+        // must reset Exists to false on it, and assign-courier-to-region (Once=true,
         // per its "reassign" scenario nets to create evidence -- see
         // DocumentMapperTests) must succeed a second time after the unassign.
         const string json = """
@@ -313,41 +313,41 @@ public class CSharpGeneratorTests
               "eventModelingSchemaVersion": "2.2.0", "id": "reassign-runtime-test", "name": "Reassign Runtime Test",
               "swimlanes": [{"id":"s","name":"S","kind":"team"}],
               "events": {
-                "staff-assigned-to-project": {"name": "Staff Assigned To Project", "swimlaneId": "s", "aggregate": "ProjectStaffAssignment"},
-                "staff-unassigned-from-project": {"name": "Staff Unassigned From Project", "swimlaneId": "s", "aggregate": "ProjectStaffAssignment", "endsStream": true}
+                "courier-assigned-to-region": {"name": "Courier Assigned To Region", "swimlaneId": "s", "aggregate": "RegionCourierAssignment"},
+                "courier-unassigned-from-region": {"name": "Courier Unassigned From Region", "swimlaneId": "s", "aggregate": "RegionCourierAssignment", "endsStream": true}
               },
               "commands": {
-                "assign-staff-to-project": {"name": "Assign Staff To Project", "aggregate": "ProjectStaffAssignment"},
-                "unassign-staff-from-project": {"name": "Unassign Staff From Project", "aggregate": "ProjectStaffAssignment"}
+                "assign-courier-to-region": {"name": "Assign Courier To Region", "aggregate": "RegionCourierAssignment"},
+                "unassign-courier-from-region": {"name": "Unassign Courier From Region", "aggregate": "RegionCourierAssignment"}
               },
               "screens": {"scr": {"name": "Screen"}},
               "slices": [
                 {
                   "id": "assign-slice", "name": "Assign", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr", "commandId": "assign-staff-to-project", "eventIds": ["staff-assigned-to-project"],
+                  "screenId": "scr", "commandId": "assign-courier-to-region", "eventIds": ["courier-assigned-to-region"],
                   "scenarios": [
                     {
                       "id": "create-scenario", "name": "First assignment", "kind": "stateChange",
-                      "given": [], "when": {"commandId": "assign-staff-to-project"},
-                      "then": {"events": [{"eventId": "staff-assigned-to-project"}]}
+                      "given": [], "when": {"commandId": "assign-courier-to-region"},
+                      "then": {"events": [{"eventId": "courier-assigned-to-region"}]}
                     },
                     {
                       "id": "reassign-scenario", "name": "Reassign after unassign", "kind": "stateChange",
-                      "given": [{"eventId": "staff-assigned-to-project"}, {"eventId": "staff-unassigned-from-project"}],
-                      "when": {"commandId": "assign-staff-to-project"},
-                      "then": {"events": [{"eventId": "staff-assigned-to-project"}]}
+                      "given": [{"eventId": "courier-assigned-to-region"}, {"eventId": "courier-unassigned-from-region"}],
+                      "when": {"commandId": "assign-courier-to-region"},
+                      "then": {"events": [{"eventId": "courier-assigned-to-region"}]}
                     }
                   ]
                 },
                 {
                   "id": "unassign-slice", "name": "Unassign", "pattern": "stateChange",
                   "swimlaneId": "s", "status": "created",
-                  "screenId": "scr", "commandId": "unassign-staff-from-project", "eventIds": ["staff-unassigned-from-project"],
+                  "screenId": "scr", "commandId": "unassign-courier-from-region", "eventIds": ["courier-unassigned-from-region"],
                   "scenarios": [{
                     "id": "unassign-scenario", "name": "Unassign an existing pair", "kind": "stateChange",
-                    "given": [{"eventId": "staff-assigned-to-project"}], "when": {"commandId": "unassign-staff-from-project"},
-                    "then": {"events": [{"eventId": "staff-unassigned-from-project"}]}
+                    "given": [{"eventId": "courier-assigned-to-region"}], "when": {"commandId": "unassign-courier-from-region"},
+                    "then": {"events": [{"eventId": "courier-unassigned-from-region"}]}
                   }]
                 }
               ]
@@ -358,7 +358,7 @@ public class CSharpGeneratorTests
         var domain = Assert.Single(result.Domains);
 
         // Confirms the mapping side too, not just the generated runtime behavior below.
-        var assign = domain.Commands.Single(c => c.Name == "AssignStaffToProject");
+        var assign = domain.Commands.Single(c => c.Name == "AssignCourierToRegion");
         Assert.True(assign.Once);
         Assert.False(assign.RequiresExisting);
 
@@ -367,23 +367,23 @@ public class CSharpGeneratorTests
         const string programCs = """
             using DotnetCqrs.Deciders;
             using DotnetCqrs.EventStore;
-            using Generated.ProjectStaffAssignment;
+            using Generated.RegionCourierAssignment;
 
             var store = await SqliteEventStore.OpenAsync(":memory:");
             var registry = new DeciderRegistry(store);
-            registry.Register(ProjectStaffAssignmentDecider.Aggregate, ProjectStaffAssignmentDecider.Create());
+            registry.Register(RegionCourierAssignmentDecider.Aggregate, RegionCourierAssignmentDecider.Create());
 
-            await registry.HandleAsync("projectStaffAssignment", "a1", new Command("AssignStaffToProject", "{}"));
-            await registry.HandleAsync("projectStaffAssignment", "a1", new Command("UnassignStaffFromProject", "{}"));
+            await registry.HandleAsync("regionCourierAssignment", "a1", new Command("AssignCourierToRegion", "{}"));
+            await registry.HandleAsync("regionCourierAssignment", "a1", new Command("UnassignCourierFromRegion", "{}"));
 
             // Before the endsStream fix, Evolve never reset Exists, so this next line
             // would throw "already exists" -- the reassignment the Once guard should
             // allow after a real removal.
-            await registry.HandleAsync("projectStaffAssignment", "a1", new Command("AssignStaffToProject", "{}"));
+            await registry.HandleAsync("regionCourierAssignment", "a1", new Command("AssignCourierToRegion", "{}"));
 
-            var stream = await store.LoadStreamAsync("projectStaffAssignment", "a1");
+            var stream = await store.LoadStreamAsync("regionCourierAssignment", "a1");
             var types = string.Join(",", stream.Select(e => e.Type));
-            if (types != "StaffAssignedToProject,StaffUnassignedFromProject,StaffAssignedToProject")
+            if (types != "CourierAssignedToRegion,CourierUnassignedFromRegion,CourierAssignedToRegion")
             {
                 Console.WriteLine($"FAIL: stream = [{types}]");
                 return 1;
@@ -405,7 +405,7 @@ public class CSharpGeneratorTests
     [Fact]
     public async Task An_endsStream_event_with_no_scenario_beginning_again_ends_the_stream_for_good()
     {
-        // Deleting a time entry ends its stream, and nothing may follow --
+        // Deleting an entry ends its stream, and nothing may follow --
         // not an update, and not a create on the same id either. No scenario logs the
         // entry again after a delete, so the create stays once per stream for good.
         const string json = """

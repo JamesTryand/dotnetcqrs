@@ -13,8 +13,8 @@ namespace DotnetCqrs.Tests;
 /// The headless, assertable counterpart to samples/OrderFulfillment/Program.cs's
 /// interactive walkthrough: the same real domain code (Orders/Tasks deciders,
 /// OrdersProjection/TasksProjection, FulfillmentReactor), wired the same way,
-/// verified with assertions instead of console output. This is Milestone 8's
-/// "one hand-built example system end to end."
+/// verified with assertions instead of console output: one hand-built example
+/// system end to end.
 /// </summary>
 public class OrderFulfillmentSampleTests
 {

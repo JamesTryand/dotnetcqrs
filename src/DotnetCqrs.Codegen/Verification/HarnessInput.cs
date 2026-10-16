@@ -68,7 +68,7 @@ public sealed record ViewScenarioInput(
     IReadOnlyList<ViewFilterInput> Filters, // every readModel.filters entry -- the harness only acts on one whose param is actually present in QueryParams
     IReadOnlyList<string> PiiColumns, // snake_case columns holding the envelope; revealed through PiiColumnRevealer like a real query route
     string? SearchIndexTypeName = null, // the generated {Collection}SearchIndex, when the read model has pii contains filters
-    string? HashedIndexTypeName = null, // the generated {Collection}HashedIndex, when it has pii exact/prefix filters (D6)
+    string? HashedIndexTypeName = null, // the generated {Collection}HashedIndex, when it has pii exact/prefix filters
     ViewAccessInput? Access = null, // schema 3.8.0: the read model's access rules, when it declares any
     ViewCallerInput? Caller = null); // schema 3.8.0 when.caller; null reads as a caller holding requiredRole
 
@@ -105,7 +105,7 @@ public sealed record ViewScopeInput(
 /// <para>For a schema 3.1.0 <c>match</c> filter, <c>MatchClause</c> is the exact WHERE
 /// clause the generated route uses (from <c>GenerationSupport.MatchClause</c>), with
 /// <c>{0}</c> where the parameter goes, so the two can't drift. <c>Hashed</c> marks a pii
-/// <c>exact</c>/<c>prefix</c> filter (D6), whose parameter is the HMAC of the normalized term
+/// <c>exact</c>/<c>prefix</c> filter, whose parameter is the HMAC of the normalized term
 /// rather than a pattern.</para>
 public sealed record ViewFilterInput(string Param, string Field, string Kind,
     string? Mode = null, string? Normalize = null, int? MinPrefixLength = null, string? MatchClause = null, bool Hashed = false);

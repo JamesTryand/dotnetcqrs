@@ -14,8 +14,8 @@ namespace DotnetCqrs.Tests.Codegen;
 /// item, in its place. How many, and what each carries, is hand-written: the generator emits a hook
 /// that returns the items, and the scenario harness running the generated decider reports such a
 /// scenario as a choice made by hand, accepting the expected events when they fit the alternative.
-/// For example: a payroll release pays each staff member in its own event,
-/// encrypted under their key, appended with the release.
+/// For example: closing a grant round awards each recipient in its own event,
+/// encrypted under their key, appended with the closing.
 /// </summary>
 [Trait("Category", "Compiles")]
 public class RepeatedOutcomeTests
@@ -36,7 +36,7 @@ public class RepeatedOutcomeTests
     private static string WithoutPii()
     {
         var node = JsonNode.Parse(Example)!;
-        foreach (var fields in new[] { node["events"]!["work-recorded"]!, node["events"]!["person-paid"]!, node["readModels"]!["payments"]! })
+        foreach (var fields in new[] { node["events"]!["application-approved"]!, node["events"]!["grant-awarded"]!, node["readModels"]!["awards"]! })
             foreach (var f in fields["fields"]!.AsArray())
             {
                 f!.AsObject().Remove("pii");
@@ -50,10 +50,10 @@ public class RepeatedOutcomeTests
     {
         var result = DocumentMapper.Map(DocumentLoader.Parse(Example));
 
-        var release = result.Domains.SelectMany(d => d.Commands).Single(c => c.Name == "ReleasePayRun");
-        var outcome = Assert.Single(release.Outcomes);
-        Assert.Equal(["PayRunReleased", "PersonPaid"], outcome.EventNames);
-        Assert.Equal(["PersonPaid"], outcome.Repeated);
+        var close = result.Domains.SelectMany(d => d.Commands).Single(c => c.Name == "CloseGrantRound");
+        var outcome = Assert.Single(close.Outcomes);
+        Assert.Equal(["GrantRoundClosed", "GrantAwarded"], outcome.EventNames);
+        Assert.Equal(["GrantAwarded"], outcome.Repeated);
         Assert.DoesNotContain(result.Report.Warnings, w => w.Contains("different events"));
     }
 
@@ -62,7 +62,7 @@ public class RepeatedOutcomeTests
     {
         var results = await VerifyAsync(Example);
 
-        foreach (var (id, events) in new[] { ("two-people-paid", "[PayRunReleased, PersonPaid, PersonPaid]"), ("nobody-owed", "[PayRunReleased]") })
+        foreach (var (id, events) in new[] { ("two-recipients-awarded", "[GrantRoundClosed, GrantAwarded, GrantAwarded]"), ("no-applications-approved", "[GrantRoundClosed]") })
         {
             var r = results.Single(r => r.ScenarioId == id);
             Assert.False(r.Passed, id);
@@ -74,7 +74,7 @@ public class RepeatedOutcomeTests
     [Fact(Timeout = VerifyTimeoutMs)]
     public async Task Repeats_out_of_place_are_not_the_declared_outcome()
     {
-        // A payment before the release, or a second release: neither fits [released, paid*].
+        // An award before the closing, or a second closing: neither fits [closed, awarded*].
         var node = JsonNode.Parse(Example)!;
         var scenarios = Slice(node)["scenarios"]!.AsArray();
         var events = scenarios[0]!["then"]!["events"]!.AsArray();
@@ -86,7 +86,7 @@ public class RepeatedOutcomeTests
 
         var results = await VerifyAsync(node.ToJsonString());
 
-        foreach (var id in new[] { "two-people-paid", "nobody-owed" })
+        foreach (var id in new[] { "two-recipients-awarded", "no-applications-approved" })
         {
             var r = results.Single(r => r.ScenarioId == id);
             Assert.False(r.Passed, id);
@@ -100,15 +100,15 @@ public class RepeatedOutcomeTests
     {
         var node = JsonNode.Parse(Example)!;
         Slice(node)["scenarios"]!.AsArray().Add(JsonNode.Parse("""
-            {"id": "no-release-twice", "name": "A refusal no declared rule makes", "kind": "error",
+            {"id": "no-close-twice", "name": "A refusal no declared rule makes", "kind": "error",
              "given": [],
-             "when": {"commandId": "release-pay-run", "data": {"periodEnd": "2026-09-30"}},
-             "then": {"error": {"message": "nothing to release"}}}
+             "when": {"commandId": "close-grant-round", "data": {"closingDate": "2026-09-30"}},
+             "then": {"error": {"message": "nothing to close"}}}
             """));
 
         var results = await VerifyAsync(node.ToJsonString());
 
-        var r = results.Single(r => r.ScenarioId == "no-release-twice");
+        var r = results.Single(r => r.ScenarioId == "no-close-twice");
         Assert.False(r.Passed);
         Assert.False(r.ByHand, r.Detail);
         Assert.Contains("expected a refusal", r.Detail);
@@ -121,35 +121,35 @@ public class RepeatedOutcomeTests
 
         var (compiles, errors) = InMemoryProgram.Compile(files);
         Assert.False(compiles);
-        Assert.Contains("ReleasePayRunOutcome0PersonPaid", errors);
+        Assert.Contains("CloseGrantRoundOutcome0GrantAwarded", errors);
 
-        // The hand-written hook: here, two payments for September and none otherwise.
-        var hook = new GeneratedFile("Pay_runDecider.Hand.cs", """
+        // The hand-written hook: here, two awards for September and none otherwise.
+        var hook = new GeneratedFile("Grant_roundDecider.Hand.cs", """
             using DotnetCqrs.Deciders;
 
-            namespace Generated.Pay_run;
+            namespace Generated.Grant_round;
 
-            public static partial class Pay_runDecider
+            public static partial class Grant_roundDecider
             {
-                private static partial IEnumerable<PersonPaidPayload> ReleasePayRunOutcome0PersonPaid(Pay_runState state, Command cmd) =>
+                private static partial IEnumerable<GrantAwardedPayload> CloseGrantRoundOutcome0GrantAwarded(Grant_roundState state, Command cmd) =>
                     cmd.Payload.Contains("2026-09-30")
-                        ? [new PersonPaidPayload("r1", "p1", "r1:p1", null, 120), new PersonPaidPayload("r1", "p2", "r1:p2", null, 80)]
+                        ? [new GrantAwardedPayload("g1", "r1", "g1:r1", null, 1200), new GrantAwardedPayload("g1", "r2", "g1:r2", null, 800)]
                         : [];
             }
             """);
         const string programCs = """
             using DotnetCqrs.Deciders;
             using DotnetCqrs.EventStore;
-            using Generated.Pay_run;
+            using Generated.Grant_round;
 
             var store = await SqliteEventStore.OpenAsync(":memory:");
             var registry = new DeciderRegistry(store);
-            registry.Register(Pay_runDecider.Aggregate, Pay_runDecider.Create());
+            registry.Register(Grant_roundDecider.Aggregate, Grant_roundDecider.Create());
 
-            await registry.HandleAsync("pay_run", "r1", new Command("ReleasePayRun", "{\"periodEnd\":\"2026-09-30\"}"));
-            await registry.HandleAsync("pay_run", "r2", new Command("ReleasePayRun", "{\"periodEnd\":\"2026-10-31\"}"));
-            foreach (var id in new[] { "r1", "r2" })
-                foreach (var e in await store.LoadStreamAsync("pay_run", id))
+            await registry.HandleAsync("grant_round", "g1", new Command("CloseGrantRound", "{\"closingDate\":\"2026-09-30\"}"));
+            await registry.HandleAsync("grant_round", "g2", new Command("CloseGrantRound", "{\"closingDate\":\"2026-10-31\"}"));
+            foreach (var id in new[] { "g1", "g2" })
+                foreach (var e in await store.LoadStreamAsync("grant_round", id))
                     Console.WriteLine($"{id} {e.Type} {e.Data}");
             return 0;
             """;
@@ -157,43 +157,43 @@ public class RepeatedOutcomeTests
         var (success, output) = await InMemoryProgram.RunAsync([.. files, hook], programCs);
 
         Assert.True(success, output);
-        Assert.Contains("r1 PayRunReleased", output);
-        Assert.Contains("r1 PersonPaid {\"payRunId\":\"r1\",\"personId\":\"p1\",\"paymentId\":\"r1:p1\",\"periodEnd\":null,\"amount\":120}", output);
-        Assert.Contains("r1 PersonPaid {\"payRunId\":\"r1\",\"personId\":\"p2\",\"paymentId\":\"r1:p2\",\"periodEnd\":null,\"amount\":80}", output);
-        Assert.Contains("r2 PayRunReleased", output);
-        Assert.DoesNotContain("r2 PersonPaid", output);
+        Assert.Contains("g1 GrantRoundClosed", output);
+        Assert.Contains("g1 GrantAwarded {\"grantRoundId\":\"g1\",\"recipientId\":\"r1\",\"awardId\":\"g1:r1\",\"closingDate\":null,\"amount\":1200}", output);
+        Assert.Contains("g1 GrantAwarded {\"grantRoundId\":\"g1\",\"recipientId\":\"r2\",\"awardId\":\"g1:r2\",\"closingDate\":null,\"amount\":800}", output);
+        Assert.Contains("g2 GrantRoundClosed", output);
+        Assert.DoesNotContain("g2 GrantAwarded", output);
     }
 
     [Fact]
     public async Task A_repeated_pii_event_is_encrypted_under_each_items_own_subject()
     {
         var files = DocumentMapper.Map(DocumentLoader.Parse(Example)).Domains.SelectMany(CSharpGenerator.Generate).ToList();
-        var hook = new GeneratedFile("Pay_runDecider.Hand.cs", """
+        var hook = new GeneratedFile("Grant_roundDecider.Hand.cs", """
             using DotnetCqrs.Crypto;
             using DotnetCqrs.Deciders;
 
-            namespace Generated.Pay_run;
+            namespace Generated.Grant_round;
 
-            public static partial class Pay_runDecider
+            public static partial class Grant_roundDecider
             {
-                private static partial IEnumerable<PersonPaidPayload> ReleasePayRunOutcome0PersonPaid(Pay_runState state, Command cmd) =>
-                    [new PersonPaidPayload("r1", "p1", "r1:p1", null, Pii<decimal>.Fresh(120m)), new PersonPaidPayload("r1", "p2", "r1:p2", null, Pii<decimal>.Fresh(80m))];
+                private static partial IEnumerable<GrantAwardedPayload> CloseGrantRoundOutcome0GrantAwarded(Grant_roundState state, Command cmd) =>
+                    [new GrantAwardedPayload("g1", "r1", "g1:r1", null, Pii<decimal>.Fresh(1200m)), new GrantAwardedPayload("g1", "r2", "g1:r2", null, Pii<decimal>.Fresh(800m))];
             }
             """);
         const string programCs = """
             using DotnetCqrs.Crypto;
             using DotnetCqrs.Deciders;
             using DotnetCqrs.EventStore;
-            using Generated.Pay_run;
+            using Generated.Grant_round;
 
             var kms = new InMemoryKmsClient();
             var store = await SqliteEventStore.OpenAsync(":memory:");
             var registry = new DeciderRegistry(store);
             registry.RegisterDataSubjects();
-            registry.Register(Pay_runDecider.Aggregate, Pay_runDecider.Create(), new Pay_runDecider.PiiProtector(kms, new SubjectStatus(store)));
+            registry.Register(Grant_roundDecider.Aggregate, Grant_roundDecider.Create(), new Grant_roundDecider.PiiProtector(kms, new SubjectStatus(store)));
 
-            await registry.HandleAsync("pay_run", "r1", new Command("ReleasePayRun", "{\"periodEnd\":\"2026-09-30\"}"));
-            foreach (var e in await store.LoadStreamAsync("pay_run", "r1"))
+            await registry.HandleAsync("grant_round", "g1", new Command("CloseGrantRound", "{\"closingDate\":\"2026-09-30\"}"));
+            foreach (var e in await store.LoadStreamAsync("grant_round", "g1"))
                 Console.WriteLine($"{e.Type} {e.Data}");
             return 0;
             """;
@@ -201,9 +201,9 @@ public class RepeatedOutcomeTests
         var (success, output) = await InMemoryProgram.RunAsync([.. files, hook], programCs);
 
         Assert.True(success, output);
-        Assert.DoesNotContain("\"amount\":120", output);
-        Assert.Contains("\"s\":\"p1\"", output);
-        Assert.Contains("\"s\":\"p2\"", output);
+        Assert.DoesNotContain("\"amount\":1200", output);
+        Assert.Contains("\"s\":\"r1\"", output);
+        Assert.Contains("\"s\":\"r2\"", output);
     }
 
     [Fact]
@@ -211,25 +211,25 @@ public class RepeatedOutcomeTests
     {
         var doc = DocumentLoader.Parse(WithoutPii());
         static void Register(DeciderRegistry registry, DotnetCqrs.Crypto.IKmsClient _) =>
-            registry.Register("pay_run", new Decider<List<(string Person, double Amount)>>
+            registry.Register("grant_round", new Decider<List<(string Recipient, double Amount)>>
             {
                 InitialState = () => [],
                 Decide = (state, cmd) =>
                 [
-                    new NewEvent("PayRunReleased", cmd.Payload),
-                    .. state.Select(w => new NewEvent("PersonPaid", JsonSerializer.Serialize(new { personId = w.Person, paymentId = "r1:" + w.Person, amount = w.Amount }))),
+                    new NewEvent("GrantRoundClosed", cmd.Payload),
+                    .. state.Select(w => new NewEvent("GrantAwarded", JsonSerializer.Serialize(new { recipientId = w.Recipient, awardId = "g1:" + w.Recipient, amount = w.Amount }))),
                 ],
                 Evolve = (state, ev) =>
                 {
-                    if (ev.Type != "WorkRecorded") return state;
+                    if (ev.Type != "ApplicationApproved") return state;
                     var data = JsonDocument.Parse(ev.Data).RootElement;
-                    return [.. state, (data.GetProperty("personId").GetString()!, data.GetProperty("amount").GetDouble())];
+                    return [.. state, (data.GetProperty("recipientId").GetString()!, data.GetProperty("amount").GetDouble())];
                 },
             });
 
         var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc), new HostDeciders(Register));
 
-        foreach (var id in new[] { "two-people-paid", "nobody-owed" })
+        foreach (var id in new[] { "two-recipients-awarded", "no-applications-approved" })
         {
             var r = results.Single(r => r.ScenarioId == id);
             Assert.True(r.Passed, $"{id}: {r.Detail}");
@@ -257,21 +257,21 @@ public class RepeatedOutcomeTests
     [Fact]
     public void A_repeated_event_must_be_one_of_its_alternatives_events()
     {
-        var errors = MappingErrors(n => Slice(n)["outcomes"]![0]!["eventIds"] = JsonNode.Parse("""["pay-run-released"]"""));
-        Assert.Contains(errors, e => e.Contains("release-pay-run-slice") && e.Contains("repeated") && e.Contains("\"person-paid\"") && e.Contains("not one of this outcome's events"));
+        var errors = MappingErrors(n => Slice(n)["outcomes"]![0]!["eventIds"] = JsonNode.Parse("""["grant-round-closed"]"""));
+        Assert.Contains(errors, e => e.Contains("close-grant-round-slice") && e.Contains("repeated") && e.Contains("\"grant-awarded\"") && e.Contains("not one of this outcome's events"));
     }
 
     [Fact]
     public void Set_cannot_fix_values_on_a_repeated_event()
     {
-        var errors = MappingErrors(n => Slice(n)["outcomes"]![0]!["set"] = JsonNode.Parse("""{"person-paid": {"personId": "p9"}}"""));
-        Assert.Contains(errors, e => e.Contains("release-pay-run-slice") && e.Contains("set") && e.Contains("\"person-paid\"") && e.Contains("repeated"));
+        var errors = MappingErrors(n => Slice(n)["outcomes"]![0]!["set"] = JsonNode.Parse("""{"grant-awarded": {"recipientId": "r9"}}"""));
+        Assert.Contains(errors, e => e.Contains("close-grant-round-slice") && e.Contains("set") && e.Contains("\"grant-awarded\"") && e.Contains("repeated"));
     }
 
     [Fact]
     public void A_repeated_event_must_carry_fields()
     {
-        var errors = MappingErrors(n => n["events"]!["person-paid"]!["fields"] = new JsonArray());
-        Assert.Contains(errors, e => e.Contains("release-pay-run-slice") && e.Contains("\"person-paid\"") && e.Contains("carries no fields"));
+        var errors = MappingErrors(n => n["events"]!["grant-awarded"]!["fields"] = new JsonArray());
+        Assert.Contains(errors, e => e.Contains("close-grant-round-slice") && e.Contains("\"grant-awarded\"") && e.Contains("carries no fields"));
     }
 }

@@ -11,7 +11,7 @@ using Microsoft.Extensions.Options;
 namespace DotnetCqrs.Host;
 
 /// <summary>
-/// Serves a live view (D27): a read model's query, kept current for one viewer for as long as the view is shown,
+/// Serves a live view: a read model's query, kept current for one viewer for as long as the view is shown,
 /// as a Server-Sent Events stream. It is the last step of the data flow: command → decider → events → projection
 /// applies → read model changed (<see cref="IReadModelChangeFeed"/>) → the new result is pushed to whoever is
 /// showing that view. Nothing polls.

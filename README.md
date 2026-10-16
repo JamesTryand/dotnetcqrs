@@ -67,15 +67,14 @@ Go/PocketBase to C#/.NET rather than wrapping it.
   crypto-shredding
 - [Cross-host replication](docs/cross-host-replication.md) — a same-host
   read-only secondary plus write-forwarding, extended across real hosts
-  via LiteFS (dotnetcqrs-multi-node Milestone 3)
+  via LiteFS
 - [dotnetcqrs ↔ pocketcqrs interop](docs/interop.md) — dispatching commands
   between the two runtimes' gateways both ways: what matches for free, and
-  the auth alignment that is the actual work (dotnetcqrs-multi-node
-  Milestone 5)
+  the auth alignment that is the actual work
 - [Postgres backend](docs/postgres-backend.md) — `DotnetCqrs.Postgres`, a
   second `IEventStore` / `IReadModelStore` implementation behind the
-  Milestone 6 abstractions: advisory-lock append serialization, a
-  grant-based write-guard (dotnetcqrs-multi-node Milestone 7)
+  provider-neutral abstractions: advisory-lock append serialization, a
+  grant-based write-guard
 
 ## Samples
 

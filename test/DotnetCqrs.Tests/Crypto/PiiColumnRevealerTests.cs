@@ -4,7 +4,7 @@ using DotnetCqrs.Crypto;
 namespace DotnetCqrs.Tests.Crypto;
 
 /// <summary>
-/// Milestone D3: the query-time reveal of a page of read-model rows. One buffer and one
+/// The query-time reveal of a page of read-model rows. One buffer and one
 /// flush per page, a redacted marker for an erased subject, and a refusal (not a leak)
 /// when a pii column holds anything but the envelope.
 /// </summary>
