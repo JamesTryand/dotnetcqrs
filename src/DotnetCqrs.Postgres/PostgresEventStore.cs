@@ -5,6 +5,7 @@ using System.Text.Json;
 using DotnetCqrs.Consumers;
 using DotnetCqrs.EventStore;
 using DotnetCqrs.ExtCalling;
+using DotnetCqrs.Outbox;
 using Npgsql;
 
 namespace DotnetCqrs.Postgres;
@@ -30,7 +31,7 @@ namespace DotnetCqrs.Postgres;
 /// reads and pooled connections. Milestone 7 deliberately does <b>not</b> deliver
 /// unrestricted concurrent multi-writer append; see <c>docs/postgres-backend.md</c>.</para>
 /// </summary>
-public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbeatStore, IExtCallOutbox
+public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbeatStore, IExtCallOutbox, IOutbox
 {
     private const string Schema = """
         CREATE TABLE IF NOT EXISTS events (
@@ -81,6 +82,17 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
             UNIQUE (consumer, event_id)
         );
         CREATE INDEX IF NOT EXISTS idx_extcall_outbox_due ON extcall_outbox (consumer, next_attempt_at);
+
+        -- The general outbox (IOutbox): work a consumer recorded, done by an OutboxWorker once due.
+        CREATE TABLE IF NOT EXISTS outbox (
+            consumer text NOT NULL,
+            key      text NOT NULL,
+            payload  text NOT NULL,
+            due      text NOT NULL,
+            attempts integer NOT NULL DEFAULT 0,
+            PRIMARY KEY (consumer, key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox (consumer, due);
 
         -- The writer heartbeat (health/telemetry contract section 5): one row, never an event.
         CREATE TABLE IF NOT EXISTS writer_heartbeat (
@@ -521,6 +533,74 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
         await using var command = connection.CreateCommand();
         command.CommandText = "DELETE FROM extcall_outbox WHERE id = @id";
         command.Parameters.AddWithValue("@id", id);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    // ---- IOutbox (the general outbox) ----
+    // Explicit: IExtCallOutbox has a DueAsync and a NextDueAsync of the same shape.
+
+    async Task IOutbox.EnqueueAsync(string consumer, string key, string payload, DateTimeOffset due, CancellationToken ct)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO outbox (consumer, key, payload, due) VALUES (@consumer, @key, @payload, @due)
+            ON CONFLICT (consumer, key) DO NOTHING
+            """;
+        command.Parameters.AddWithValue("@consumer", consumer);
+        command.Parameters.AddWithValue("@key", key);
+        command.Parameters.AddWithValue("@payload", payload);
+        command.Parameters.AddWithValue("@due", OutboxTime(due));
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    async Task<IReadOnlyList<OutboxEntry>> IOutbox.DueAsync(string consumer, DateTimeOffset now, int limit, CancellationToken ct)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT consumer, key, payload, due, attempts FROM outbox
+            WHERE consumer = @consumer AND due <= @now ORDER BY due, key LIMIT @limit
+            """;
+        command.Parameters.AddWithValue("@consumer", consumer);
+        command.Parameters.AddWithValue("@now", OutboxTime(now));
+        command.Parameters.AddWithValue("@limit", limit);
+        var entries = new List<OutboxEntry>();
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            entries.Add(new OutboxEntry(reader.GetString(0), reader.GetString(1), reader.GetString(2),
+                DateTimeOffset.Parse(reader.GetString(3), CultureInfo.InvariantCulture), reader.GetInt32(4)));
+        return entries;
+    }
+
+    async Task<DateTimeOffset?> IOutbox.NextDueAsync(string consumer, CancellationToken ct)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT MIN(due) FROM outbox WHERE consumer = @consumer";
+        command.Parameters.AddWithValue("@consumer", consumer);
+        return await command.ExecuteScalarAsync(ct) is string text ? DateTimeOffset.Parse(text, CultureInfo.InvariantCulture) : null;
+    }
+
+    async Task IOutbox.RetryAsync(string consumer, string key, int attempts, DateTimeOffset due, CancellationToken ct)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE outbox SET attempts = @attempts, due = @due WHERE consumer = @consumer AND key = @key";
+        command.Parameters.AddWithValue("@consumer", consumer);
+        command.Parameters.AddWithValue("@key", key);
+        command.Parameters.AddWithValue("@attempts", attempts);
+        command.Parameters.AddWithValue("@due", OutboxTime(due));
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    async Task IOutbox.RemoveAsync(string consumer, string key, CancellationToken ct)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM outbox WHERE consumer = @consumer AND key = @key";
+        command.Parameters.AddWithValue("@consumer", consumer);
+        command.Parameters.AddWithValue("@key", key);
         await command.ExecuteNonQueryAsync(ct);
     }
 
