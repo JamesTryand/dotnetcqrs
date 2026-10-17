@@ -319,3 +319,17 @@ gaplessness), `PostgresProjectionTests` (3), `PostgresWriteGuardTests` (4 + 1
 no-`search_path`-override), `PostgresDeadLetterTests` (3), `PostgresAddParamTests` (1).
 No `src/DotnetCqrs*/` file outside the new project changed; `DotnetCqrs.Abstractions` is
 untouched.
+
+**2026-10-17**, the outbox's first Postgres run: .NET SDK 10.0.402, a throwaway `postgres:17-alpine`
+on a separate Linux host (Docker, loopback-bound, reached through an SSH tunnel to `localhost:55432`).
+dotnetcqrs @ `e9a9f39`.
+
+```
+$ DOTNETCQRS_PG="Host=localhost;Port=55432;Username=postgres;Password=dev;Database=postgres" \
+    dotnet test test/DotnetCqrs.Tests --filter FullyQualifiedName~Postgres
+Passed!  - Failed:     0, Passed:    34, Skipped:     0, Total:    34, Duration: 5 m 17 s
+```
+
+`PostgresOutboxTests` (the general `IOutbox`, both tests) passes: an entry is retried later or removed
+and survives reopening the store; only a consumer's due entries come back, soonest first, and a key is
+recorded once.
