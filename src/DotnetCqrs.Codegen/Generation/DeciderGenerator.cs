@@ -87,11 +87,11 @@ internal static class DeciderGenerator
             b.AppendLine($"                case \"{command.Name}\":");
             b.AppendLine("                {");
             if (command.Once)
-                b.AppendLine($"                    if (state.Exists) throw new InvalidOperationException(\"{domain.Aggregate} already exists\");");
+                b.AppendLine($"                    if (state.Exists) throw new InvalidOperationException(\"{Domain.Names.Words(domain.Aggregate)} already exists\");");
             if (command.Once && !command.CanBeginAgain && endsForGood)
-                b.AppendLine($"                    if (state.Ended) throw new InvalidOperationException(\"{domain.Aggregate} has ended and cannot begin again\");");
+                b.AppendLine($"                    if (state.Ended) throw new InvalidOperationException(\"{Domain.Names.Words(domain.Aggregate)} has ended and cannot begin again\");");
             if (command.RequiresExisting)
-                b.AppendLine($"                    if (!state.Exists) throw new InvalidOperationException(\"{domain.Aggregate} does not exist\");");
+                b.AppendLine($"                    if (!state.Exists) throw new InvalidOperationException(\"{Domain.Names.Words(domain.Aggregate)} does not exist\");");
             if (command.OwnedBy is { } ownedBy)
             {
                 // Schema 3.15.0: the aggregate decides who owns it, from its own state, never a read model.

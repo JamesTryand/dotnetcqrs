@@ -1437,7 +1437,7 @@ public sealed class DocumentMapper
     /// against the aggregate's state with the refusals (<see cref="CheckRefusals"/>).</summary>
     private static Domain.StateOwnership? BuildStateOwnership(string aggregate, string commandName, CommandOwnershipDef? def) =>
         def?.StateField is not { } field ? null
-            : new Domain.StateOwnership(Names.SanitizeName(field), def.Message ?? $"only this {aggregate}'s own {field} may {commandName}");
+            : new Domain.StateOwnership(Names.SanitizeName(field), def.Message ?? $"only this {Names.Words(aggregate)}'s own {field} may {commandName}");
 
     /// <summary>Resolves a command's <c>scope</c> (schema 2.5.0) -- two independent
     /// via-resolutions, same posture as <see cref="BuildOwnership"/>.</summary>

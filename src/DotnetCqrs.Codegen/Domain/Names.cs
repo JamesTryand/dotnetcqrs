@@ -32,6 +32,12 @@ public static partial class Names
     public static string DeriveId(string typeName) =>
         string.Join("-", SplitWords(typeName).Select(w => w.ToLowerInvariant()));
 
+    /// <summary>An aggregate name as a generated message writes it: lower-case words, so
+    /// <c>"loanRequest"</c> reads <c>"loan request"</c>, as a document's own error scenarios say
+    /// it. An acronym run stays as written: <c>"orderPDF"</c> reads <c>"order PDF"</c>.</summary>
+    public static string Words(string name) =>
+        string.Join(" ", SplitWords(name).Select(w => w.Length > 1 && w.ToUpperInvariant() == w ? w : w.ToLowerInvariant()));
+
     /// <summary>Renders a code identifier as this project's lower-camel aggregate
     /// convention: <c>"Order"</c> → <c>"order"</c>, <c>"SupportTicket"</c> →
     /// <c>"supportTicket"</c>.</summary>

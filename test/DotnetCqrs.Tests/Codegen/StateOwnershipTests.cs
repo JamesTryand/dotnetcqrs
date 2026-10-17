@@ -55,20 +55,8 @@ public class StateOwnershipTests
         // given events, so the scope refuses a volunteer at another branch with its message (schema 4.0.0).
         Assert.Contains("refused by the command's authorization",
             results.Single(r => r.ScenarioId == "volunteer-at-another-branch-is-refused").Detail);
-        // One of the example's scenarios is not the generated code's to pass as written: the existence refusal is
-        // the decider's, and it does come before ownership, but its wording is the generator's own, after the
-        // aggregate's id.
-        var notTheDeciders = new Dictionary<string, string>
-        {
-            ["no-such-loan-request"] = "got \"loanRequest does not exist\"",
-        };
-        foreach (var (id, detail) in notTheDeciders)
-        {
-            var r = results.Single(r => r.ScenarioId == id);
-            Assert.False(r.Passed, id);
-            Assert.Contains(detail, r.Detail);
-        }
-        Assert.All(results.Where(r => !notTheDeciders.ContainsKey(r.ScenarioId)), r => Assert.True(r.Passed, $"{r.ScenarioId}: {r.Detail}"));
+        // The existence refusal names the aggregate in words, as the example does ("loan request does not exist").
+        Assert.All(results, r => Assert.True(r.Passed, $"{r.ScenarioId}: {r.Detail}"));
     }
 
     [Fact(Timeout = VerifyTimeoutMs)]
@@ -114,7 +102,7 @@ public class StateOwnershipTests
 
         var decider = CSharpGenerator.Generate(domain).Single(f => f.Name.EndsWith("Decider.cs")).Source;
 
-        Assert.Contains("throw new CommandForbiddenException(\"only this loanRequest's own memberId may ChangeLoanRequest\");", decider);
+        Assert.Contains("throw new CommandForbiddenException(\"only this loan request's own memberId may ChangeLoanRequest\");", decider);
     }
 
     [Theory]
