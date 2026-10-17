@@ -47,4 +47,38 @@ public class InMemoryProgramTests
         Assert.False(compileSuccess);
         Assert.Contains("error CS", compileOutput);
     }
+
+    // A run's output is only what its own program wrote. The console is one per process and tests run in
+    // parallel: RowsPerListItemTests failed under load with another test host's "Now listening" lines in what it
+    // had captured, because the capture took the whole process's console for the length of the run.
+    [Fact(Timeout = 120000)]
+    public async Task Another_tests_console_output_is_not_captured()
+    {
+        const string program = """
+            for (var i = 0; i < 5; i++)
+            {
+                Console.WriteLine($"program line {i}");
+                await Task.Delay(20);
+            }
+            return 0;
+            """;
+        using var done = new CancellationTokenSource();
+        var intruder = Task.Run(async () =>
+        {
+            while (!done.IsCancellationRequested)
+            {
+                Console.WriteLine("another test's line");
+                await Task.Delay(1);
+            }
+        });
+
+        var (success, output) = await InMemoryProgram.RunAsync(NoFiles, program);
+        await done.CancelAsync();
+        await intruder;
+
+        Assert.True(success, output);
+        Assert.DoesNotContain("another test's line", output);
+        Assert.Equal(Enumerable.Range(0, 5).Select(i => $"program line {i}"),
+            output.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries));
+    }
 }

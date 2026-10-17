@@ -1,3 +1,4 @@
+using System.Text;
 using DotnetCqrs.Codegen.Generation;
 using DotnetCqrs.Codegen.Verification;
 
@@ -11,8 +12,21 @@ namespace DotnetCqrs.Tests.Codegen;
 /// library and, for the wiring a test checks, runs correctly.</summary>
 internal static class InMemoryProgram
 {
-    // Test programs report through the console, which is one per process: runs take turns.
-    private static readonly SemaphoreSlim ConsoleGate = new(1, 1);
+    // Test programs report through the console, which is one per process, while other tests (a host's
+    // "Now listening", say) write to it too. The console is routed once, for good: a write goes to the
+    // capture of the run whose flow it comes from, and anything else to the real console. A run's own
+    // program runs inside that flow (InProcessHarness awaits it), so its output, and only its, is captured.
+    private static readonly AsyncLocal<TextWriter?> Capture = new();
+    private static readonly Lazy<bool> Routed = new(() =>
+    {
+        Console.SetOut(new RoutingWriter(Console.Out));
+        Console.SetError(new RoutingWriter(Console.Error));
+        return true;
+    });
+
+    // Runs still take turns, as they did when the console was swapped per run: each compiles and loads an
+    // assembly, and running them all at once only slows a small machine down.
+    private static readonly SemaphoreSlim RunGate = new(1, 1);
 
     /// <summary>Compiles <paramref name="files"/> as a library. Success, or the compiler's
     /// errors.</summary>
@@ -28,12 +42,10 @@ internal static class InMemoryProgram
     public static async Task<(bool Success, string Output)> RunAsync(IEnumerable<GeneratedFile> files, string programCs)
     {
         var sources = files.Select(f => (f.Name, f.Source)).Append(("Program.cs", programCs)).ToList();
-        await ConsoleGate.WaitAsync();
-        var (stdout, stderr) = (Console.Out, Console.Error);
+        _ = Routed.Value;
+        await RunGate.WaitAsync();
         var text = new StringWriter();
-        var captured = TextWriter.Synchronized(text);
-        Console.SetOut(captured);
-        Console.SetError(captured);
+        Capture.Value = TextWriter.Synchronized(text);
         try
         {
             var exitCode = await InProcessHarness.RunAsync(sources, [], CancellationToken.None);
@@ -45,9 +57,19 @@ internal static class InMemoryProgram
         }
         finally
         {
-            Console.SetOut(stdout);
-            Console.SetError(stderr);
-            ConsoleGate.Release();
+            Capture.Value = null;
+            RunGate.Release();
         }
+    }
+
+    private sealed class RoutingWriter(TextWriter console) : TextWriter
+    {
+        private TextWriter Target => Capture.Value ?? console;
+        public override Encoding Encoding => console.Encoding;
+        public override void Write(char value) => Target.Write(value);
+        public override void Write(string? value) => Target.Write(value);
+        public override void Write(char[] buffer, int index, int count) => Target.Write(buffer, index, count);
+        public override void WriteLine(string? value) => Target.WriteLine(value);
+        public override void Flush() => Target.Flush();
     }
 }
