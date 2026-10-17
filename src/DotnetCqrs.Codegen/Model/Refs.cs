@@ -9,8 +9,10 @@ public sealed record EventRef(string EventId, JsonElement? Data);
 /// <summary>References one command, with optional payload data — used in a
 /// <c>stateChange</c>/<c>error</c> scenario's <c>when</c>. <c>Actor</c>/<c>At</c> (schema
 /// 3.10.0) say who sends it and when, for verifying against a host's own deciders, which
-/// stamp both onto events; generated stand-ins ignore them.</summary>
-public sealed record CommandRef(string CommandId, JsonElement? Data, string? Actor = null, string? At = null);
+/// stamp both onto events; generated stand-ins ignore them. <c>Role</c> (schema 4.1.0) is the role the
+/// actor holds, which verify runs the command's authorization with; absent, the actor holds the command's
+/// required roles and none of its bypass roles.</summary>
+public sealed record CommandRef(string CommandId, JsonElement? Data, string? Actor = null, string? At = null, string? Role = null);
 
 /// <summary>References one read model query — used in a <c>stateView</c> scenario's
 /// <c>when</c>. <c>AsOf</c> (schema 2.6.0) pins what "today" means for a

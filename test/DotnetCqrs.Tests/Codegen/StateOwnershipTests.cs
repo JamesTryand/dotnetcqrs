@@ -50,7 +50,7 @@ public class StateOwnershipTests
 
         var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
 
-        Assert.Equal(7, results.Count);
+        Assert.Equal(8, results.Count);
         // The harness runs the generated command authorization before the decider, over read models built from the
         // given events, so the scope refuses a volunteer at another branch with its message (schema 4.0.0).
         Assert.Contains("refused by the command's authorization",

@@ -109,15 +109,16 @@ static async Task<ScenarioResultDto> RunCommandScenarioAsync(CommandScenarioInpu
 }
 
 // Runs a command scenario's generated authorization, as the gateway does, over the read models it reads, built
-// from the scenario's given events: null when it allows the command, else its refusal ("" naming no message). A
-// scenario names an actor, not a role: like a view scenario naming no caller, it holds the command's required roles
-// and none of its bypass roles, so the checks that can refuse are the ones about who the actor is.
+// from the scenario's given events: null when it allows the command, else its refusal ("" naming no message). The
+// scenario's role (schema 4.1.0 when.role) is checked by the role declarations and applies any bypass. Without one,
+// like a view scenario naming no caller, it holds the command's required roles and none of its bypass roles, so the
+// checks that can refuse are the ones about who the actor is.
 static async Task<string?> AuthorizationRefusalAsync(CommandScenarioInput scenario)
 {
-    if (scenario.AuthorizationReadModels is not { Count: > 0 }) return null;
+    if (scenario.AuthorizationReadModels is not { Count: > 0 } && scenario.Role is null) return null;
     await using var readModel = await SqliteReadModelStore.OpenAsync(":memory:");
     var kms = new DotnetCqrs.Crypto.InMemoryKmsClient();
-    foreach (var rm in scenario.AuthorizationReadModels)
+    foreach (var rm in scenario.AuthorizationReadModels ?? [])
     {
         var projectionType = Type.GetType(rm.ProjectionTypeName)
             ?? throw new InvalidOperationException($"projection type not found: {rm.ProjectionTypeName}");
@@ -131,7 +132,7 @@ static async Task<string?> AuthorizationRefusalAsync(CommandScenarioInput scenar
             await projection.ApplyAsync(new Event(position, $"scenario-{position}", rm.Aggregate, g.MainKey, position, g.Type, data, "{}", "1970-01-01T00:00:00.000Z"), CancellationToken.None);
         }
     }
-    return await Generated.CommandAuthorization.ActorRefusalAsync(scenario.Aggregate, scenario.CommandName, scenario.Actor ?? "", scenario.StreamId, readModel);
+    return await Generated.CommandAuthorization.ActorRefusalAsync(scenario.Aggregate, scenario.CommandName, scenario.Actor ?? "", scenario.Role, scenario.StreamId, scenario.CommandPayload, readModel);
 }
 
 static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scenario)
@@ -682,7 +683,7 @@ record ViewGivenEventInput(string Type, string Data, string MainKey, Dictionary<
 record CommandScenarioInput(string SliceId, string ScenarioId, string Name, string Kind, string DeciderTypeName,
     string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes,
     string? ExpectedErrorMessage = null, List<List<HandOutcomeEvent>>? HandOutcomes = null, string? Actor = null, string? At = null,
-    List<AuthorizationReadModelInput>? AuthorizationReadModels = null);
+    List<AuthorizationReadModelInput>? AuthorizationReadModels = null, string? Role = null);
 record AuthorizationReadModelInput(string ProjectionTypeName, string Aggregate, List<ViewGivenEventInput> Given);
 record HandOutcomeEvent(string Type, bool Repeated);
 record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,

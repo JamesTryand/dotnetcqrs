@@ -46,7 +46,9 @@ public sealed record CommandScenarioInput(
     string? Actor = null, // when.actor / when.at (schema 3.10.0): who sends the command, and when,
     string? At = null, // for a host's deciders, which stamp both
     IReadOnlyList<IReadOnlyList<HandOutcomeEvent>>? HandOutcomes = null, // schema 3.12.0: the command's alternatives (event types), when one has a hand-written condition or (3.13.0) repeated events; generated stand-ins only
-    IReadOnlyList<AuthorizationReadModelInput>? AuthorizationReadModels = null); // the read models the command's authorization reads (ownership via, scope), built from every given event
+    IReadOnlyList<AuthorizationReadModelInput>? AuthorizationReadModels = null, // the read models the command's authorization reads (ownership via, scope), built from every given event
+    string? Role = null, // when.role (schema 4.1.0): the role the actor holds; null holds the required roles and no bypass role
+    bool RoleDeclarations = false); // the command declares requiredRole or fieldGatedRole, so a Role has something to check
 
 /// <summary>A read model a command's authorization reads, for the harness to build from a command scenario's
 /// given events before it runs the generated authorization. Each event carries its row key for this projection

@@ -44,10 +44,12 @@ namespace DotnetCqrs.Codegen.Generation;
 ///
 /// <para>The evaluation is split into what the caller's role and the payload decide
 /// (<c>RolesAllow</c>) and what read models say about who the caller is
-/// (<c>StateRefusalAsync</c>), so verify can run the second for a scenario's actor, over read
-/// models built from its given events, exactly as the gateway runs it. <c>ActorRefusalAsync</c>
-/// is that second part by (aggregate, command): what model-only verify runs, and what a host
-/// hands its own verify (<c>HostDeciders.Authorization</c>).</para>
+/// (<c>StateRefusalAsync</c>), so verify can run them for a scenario's actor and role, over read
+/// models built from its given events, exactly as the gateway runs them. <c>ActorRefusalAsync</c>
+/// is that by (aggregate, command): what model-only verify runs, and what a host hands its own
+/// verify (<c>HostDeciders.Authorization</c>). A scenario naming no role (schema 4.1.0
+/// <c>when.role</c>) holds the command's required roles and none of its bypass roles, so only
+/// the second part runs.</para>
 /// </summary>
 public static class CommandAuthorizationGenerator
 {
@@ -123,14 +125,23 @@ public static class CommandAuthorizationGenerator
         b.AppendLine("    }");
         b.AppendLine();
         b.AppendLine("    /// <summary>What verify runs before a command scenario's decider: (aggregate, command)'s");
-        b.AppendLine("    /// read-model declarations for an actor who holds its required roles and none of its");
-        b.AppendLine("    /// bypass roles, since a scenario names an actor, not a role. Null when they allow it, as");
-        b.AppendLine("    /// StateRefusalAsync. A host hands it to its --verify as HostDeciders.Authorization.</summary>");
-        b.AppendLine("    public static Task<string?> ActorRefusalAsync(");
-        b.AppendLine("        string aggregate, string command, string actor, string aggregateId, IReadModelStore store, CancellationToken ct = default) =>");
-        b.AppendLine("        Policies.TryGetValue((aggregate, command), out var policy)");
-        b.AppendLine("            ? StateRefusalAsync(policy, \"\", () => actor, aggregateId, store, ct)");
-        b.AppendLine("            : Task.FromResult<string?>(null);");
+        b.AppendLine("    /// declarations for the scenario's actor holding its role (schema 4.1.0 when.role). With a");
+        b.AppendLine("    /// role, the role declarations must admit it and its bypass roles apply; without one, the");
+        b.AppendLine("    /// actor holds the required roles and none of the bypass roles, so only the read-model");
+        b.AppendLine("    /// declarations run. Null when they allow it, as StateRefusalAsync; \"\" for a refused role.");
+        b.AppendLine("    /// A host hands it to its --verify as HostDeciders.Authorization.</summary>");
+        b.AppendLine("    public static async Task<string?> ActorRefusalAsync(");
+        b.AppendLine("        string aggregate, string command, string actor, string? role, string aggregateId, string payload,");
+        b.AppendLine("        IReadModelStore store, CancellationToken ct = default)");
+        b.AppendLine("    {");
+        b.AppendLine("        if (!Policies.TryGetValue((aggregate, command), out var policy)) return null;");
+        b.AppendLine("        if (role is not null)");
+        b.AppendLine("        {");
+        b.AppendLine("            using var body = JsonDocument.Parse(payload);");
+        b.AppendLine("            if (!RolesAllow(policy, role, body.RootElement)) return \"\";");
+        b.AppendLine("        }");
+        b.AppendLine("        return await StateRefusalAsync(policy, role ?? \"\", () => actor, aggregateId, store, ct);");
+        b.AppendLine("    }");
         b.AppendLine();
         b.AppendLine("    /// <summary>The read-model declarations (requiredOwnership via, scope): what the target's");
         b.AppendLine("    /// rows say about who the caller is. Null when they allow the command; otherwise the");

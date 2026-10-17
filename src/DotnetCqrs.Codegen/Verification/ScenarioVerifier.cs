@@ -230,7 +230,9 @@ public static class ScenarioVerifier
             scenario is StateChangeScenario values ? values.Then.Events.Select(e => e.Data?.GetRawText()).ToList() : null,
             when.Actor, when.At,
             handOutcomes?.GetValueOrDefault((aggregate, generatedName)),
-            authorizationReadModels.Count == 0 ? null : authorizationReadModels));
+            authorizationReadModels.Count == 0 ? null : authorizationReadModels,
+            when.Role,
+            index.CommandRoleDeclarations.Contains((aggregate, generatedName))));
     }
 
     private static bool IsHandBuilt(Document document, string readModelId) =>
@@ -475,6 +477,7 @@ public static class ScenarioVerifier
         public required Dictionary<string, IReadOnlyList<string>> ReadModelPiiColumns; // schema read model id -> snake_case pii columns
         public required Dictionary<string, Domain.ReadModel> ReadModelDomain; // schema read model id -> the mapped read model (match clauses need it)
         public required Dictionary<(string Aggregate, string Command), IReadOnlyList<string>> CommandPolicyCollections; // (aggregate, generated command name) -> the collections its authorization reads
+        public required HashSet<(string Aggregate, string Command)> CommandRoleDeclarations; // commands declaring requiredRole or fieldGatedRole
 
         public static GeneratedIndex Build(Document document, IReadOnlyList<Domain.Domain> domains)
         {
@@ -482,6 +485,7 @@ public static class ScenarioVerifier
             var generatedEventToAggregate = new Dictionary<string, string>();
             var eventPiiFields = new Dictionary<string, IReadOnlyDictionary<string, string>>();
             var commandPolicyCollections = new Dictionary<(string, string), IReadOnlyList<string>>();
+            var commandRoleDeclarations = new HashSet<(string, string)>();
             foreach (var d in domains)
             {
                 foreach (var c in d.Commands)
@@ -491,6 +495,7 @@ public static class ScenarioVerifier
                     if (c.RequiredOwnership is { } ownership) collections.Add(ownership.ViaCollection);
                     if (c.Scope is { } scope) collections.AddRange([scope.ResolveViaCollection, scope.MemberOfViaCollection]);
                     if (collections.Count > 0) commandPolicyCollections[(d.Aggregate, c.Name)] = collections.Distinct().ToList();
+                    if (c.RequiredRole is not null || c.FieldGatedRole is not null) commandRoleDeclarations.Add((d.Aggregate, c.Name));
                     foreach (var ev in c.Events)
                     {
                         var pii = ev.Fields.Where(f => f.Pii && f.PiiSubject is not null).ToDictionary(f => f.Name, f => f.PiiSubject!);
@@ -566,6 +571,7 @@ public static class ScenarioVerifier
                 ReadModelPiiColumns = readModelPiiColumns,
                 ReadModelDomain = readModelDomain,
                 CommandPolicyCollections = commandPolicyCollections,
+                CommandRoleDeclarations = commandRoleDeclarations,
             };
         }
     }

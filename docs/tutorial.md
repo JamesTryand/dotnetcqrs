@@ -504,16 +504,21 @@ gateway does, over the read models it reads (a
 `requiredOwnership.via`, a `scope`), built from the scenario's given events.
 A scope that refuses the scenario's `when.actor` refuses the command, with the
 scope's `message` (schema 4.0.0) when it declares one; the gateway's 403
-carries the same message. A scenario names an actor, not a role, so it holds
-the command's required roles and none of its bypass roles.
+carries the same message. A scenario may also name the role its actor holds
+(`when.role`, schema 4.1.0): the role declarations (`requiredRole`,
+`fieldGatedRole`) must admit it, refusing with "not authorized" otherwise, and
+a `requiredOwnership.via` or `scope` whose `bypassRoles` name it is skipped.
+Without a role, the actor holds the command's required roles and none of its
+bypass roles.
 
 A host that verifies against its own deciders (`ScenarioVerifier.VerifyAsync(doc,
 mapped, new HostDeciders(register))`) runs the same check when it hands over its
 generated authorization: `Authorization = Generated.CommandAuthorization.ActorRefusalAsync`.
 The read models it reads are built by the host's own projections (those named in
 `HostDeciders.Projections`, else the generated ones in the host's assembly).
-Without it, a scenario whose command's authorization reads read models fails,
-saying so, rather than passing a command the gateway would refuse.
+Without it, a scenario whose command's authorization reads read models, or
+whose role the command's role declarations would check, fails, saying so,
+rather than passing a command the gateway would refuse.
 
 ## Where next
 

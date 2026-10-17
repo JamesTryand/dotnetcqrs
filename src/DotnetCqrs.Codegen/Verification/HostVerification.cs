@@ -27,17 +27,20 @@ public sealed record HostDeciders(Action<DeciderRegistry, IKmsClient> Register)
     /// <summary>The host's generated <c>CommandAuthorization.ActorRefusalAsync</c>: run before the deciders, over the read
     /// models it reads, built from the scenario's given events with the host's own projections (<see cref="Projections"/>
     /// where it names one, else the generated projection in the host's assembly). Without it, a scenario whose command's
-    /// authorization reads read models fails, saying so: the gateway would run checks verify can't.</summary>
+    /// authorization reads read models, or whose role (schema 4.1.0) the command's role declarations would check, fails,
+    /// saying so: the gateway would run checks verify can't.</summary>
     public CommandActorRefusal? Authorization { get; init; }
 
     public string DefaultActor { get; init; } = "scenario";
     public string DefaultAt { get; init; } = "2026-01-01T09:00:00.000Z";
 }
 
-/// <summary>A command's authorization for a scenario's actor: null when it allows the command, else its refusal's
-/// message ("" when it names none). The shape of a generated <c>CommandAuthorization.ActorRefusalAsync</c>.</summary>
+/// <summary>A command's authorization for a scenario's actor holding its role (null: the command's required roles and
+/// none of its bypass roles), with its payload: null when it allows the command, else its refusal's message ("" when it
+/// names none). The shape of a generated <c>CommandAuthorization.ActorRefusalAsync</c>.</summary>
 public delegate Task<string?> CommandActorRefusal(
-    string aggregate, string command, string actor, string aggregateId, IReadModelStore store, CancellationToken ct);
+    string aggregate, string command, string actor, string? role, string aggregateId, string payload, IReadModelStore store,
+    CancellationToken ct);
 
 /// <summary>
 /// Runs command scenarios in-process against a host's own deciders: the given events are
@@ -64,11 +67,13 @@ internal static class HostScenarioRunner
             var actor = scenario.Actor ?? host.DefaultActor;
 
             // The gateway refuses before the decider is asked.
-            if (scenario.AuthorizationReadModels is { Count: > 0 } readModels)
+            var readModels = scenario.AuthorizationReadModels ?? [];
+            if (readModels.Count > 0 || (scenario.Role is not null && scenario.RoleDeclarations))
             {
                 if (host.Authorization is null)
-                    return Result(scenario, false,
-                        $"the command's authorization reads {string.Join(", ", readModels.Select(r => r.ReadModelId ?? r.ProjectionTypeName))}, but the host gives no authorization to run (HostDeciders.Authorization)");
+                    return Result(scenario, false, readModels.Count > 0
+                        ? $"the command's authorization reads {string.Join(", ", readModels.Select(r => r.ReadModelId ?? r.ProjectionTypeName))}, but the host gives no authorization to run (HostDeciders.Authorization)"
+                        : $"the command's authorization checks the scenario's role {scenario.Role}, but the host gives no authorization to run (HostDeciders.Authorization)");
                 if (await AuthorizationRefusalAsync(scenario, readModels, actor, host, kms, ct) is { } refusal)
                 {
                     var message = refusal.Length > 0 ? refusal : "not authorized";
@@ -124,7 +129,7 @@ internal static class HostScenarioRunner
     }
 
     // The read models the command's authorization reads, each built from every given event by the host's projection
-    // for it, then the host's authorization for the scenario's actor.
+    // for it, then the host's authorization for the scenario's actor and role.
     private static async Task<string?> AuthorizationRefusalAsync(
         CommandScenarioInput scenario, IReadOnlyList<AuthorizationReadModelInput> readModels, string actor, HostDeciders host,
         IKmsClient kms, CancellationToken ct)
@@ -148,7 +153,7 @@ internal static class HostScenarioRunner
                 await projection.ApplyAsync(new Event(position, $"scenario-{position}", rm.Aggregate, g.MainKey, position, g.Type, data, "{}", "1970-01-01T00:00:00.000Z"), ct);
             }
         }
-        return await host.Authorization(scenario.Aggregate, scenario.CommandName, actor, scenario.StreamId, readModel, ct);
+        return await host.Authorization(scenario.Aggregate, scenario.CommandName, actor, scenario.Role, scenario.StreamId, scenario.CommandPayload, readModel, ct);
     }
 
     // A given event's pii fields sealed under its subject, as the decider would have stored them.
