@@ -214,7 +214,8 @@ public static class ScenarioVerifier
                     g.Data?.GetRawText() ?? "{}",
                     RowKey(idField, g.Data, streamId),
                     new Dictionary<string, string>(),
-                    index.EventPiiFields.GetValueOrDefault(index.EventType.GetValueOrDefault(g.EventId, g.EventId)) ?? EmptyPiiFields)).ToList()));
+                    index.EventPiiFields.GetValueOrDefault(index.EventType.GetValueOrDefault(g.EventId, g.EventId)) ?? EmptyPiiFields)).ToList(),
+                rmId));
         }
 
         var expectedEventTypes = scenario is StateChangeScenario stateChange

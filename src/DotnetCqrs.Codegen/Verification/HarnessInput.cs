@@ -50,11 +50,13 @@ public sealed record CommandScenarioInput(
 
 /// <summary>A read model a command's authorization reads, for the harness to build from a command scenario's
 /// given events before it runs the generated authorization. Each event carries its row key for this projection
-/// in <c>MainKey</c>.</summary>
+/// in <c>MainKey</c>. <c>ReadModelId</c> lets a host's verify use its own projection for the read model
+/// (<c>HostDeciders.Projections</c>).</summary>
 public sealed record AuthorizationReadModelInput(
     string ProjectionTypeName,
     string Aggregate,
-    IReadOnlyList<ViewGivenEventInput> Given);
+    IReadOnlyList<ViewGivenEventInput> Given,
+    string? ReadModelId = null);
 
 /// <summary>One event of an alternative, for the harness: <c>Repeated</c> (schema 3.13.0) when it
 /// may occur any number of times, zero included, in its place.</summary>

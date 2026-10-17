@@ -114,9 +114,7 @@ static async Task<ScenarioResultDto> RunCommandScenarioAsync(CommandScenarioInpu
 // and none of its bypass roles, so the checks that can refuse are the ones about who the actor is.
 static async Task<string?> AuthorizationRefusalAsync(CommandScenarioInput scenario)
 {
-    if (scenario.AuthorizationReadModels is not { Count: > 0 }
-        || !Generated.CommandAuthorization.Policies.TryGetValue((scenario.Aggregate, scenario.CommandName), out var policy))
-        return null;
+    if (scenario.AuthorizationReadModels is not { Count: > 0 }) return null;
     await using var readModel = await SqliteReadModelStore.OpenAsync(":memory:");
     var kms = new DotnetCqrs.Crypto.InMemoryKmsClient();
     foreach (var rm in scenario.AuthorizationReadModels)
@@ -133,7 +131,7 @@ static async Task<string?> AuthorizationRefusalAsync(CommandScenarioInput scenar
             await projection.ApplyAsync(new Event(position, $"scenario-{position}", rm.Aggregate, g.MainKey, position, g.Type, data, "{}", "1970-01-01T00:00:00.000Z"), CancellationToken.None);
         }
     }
-    return await Generated.CommandAuthorization.StateRefusalAsync(policy, "", () => scenario.Actor ?? "", scenario.StreamId, readModel);
+    return await Generated.CommandAuthorization.ActorRefusalAsync(scenario.Aggregate, scenario.CommandName, scenario.Actor ?? "", scenario.StreamId, readModel);
 }
 
 static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scenario)

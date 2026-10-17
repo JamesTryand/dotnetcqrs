@@ -45,7 +45,9 @@ namespace DotnetCqrs.Codegen.Generation;
 /// <para>The evaluation is split into what the caller's role and the payload decide
 /// (<c>RolesAllow</c>) and what read models say about who the caller is
 /// (<c>StateRefusalAsync</c>), so verify can run the second for a scenario's actor, over read
-/// models built from its given events, exactly as the gateway runs it.</para>
+/// models built from its given events, exactly as the gateway runs it. <c>ActorRefusalAsync</c>
+/// is that second part by (aggregate, command): what model-only verify runs, and what a host
+/// hands its own verify (<c>HostDeciders.Authorization</c>).</para>
 /// </summary>
 public static class CommandAuthorizationGenerator
 {
@@ -119,6 +121,16 @@ public static class CommandAuthorizationGenerator
         b.AppendLine("        }");
         b.AppendLine("        return true;");
         b.AppendLine("    }");
+        b.AppendLine();
+        b.AppendLine("    /// <summary>What verify runs before a command scenario's decider: (aggregate, command)'s");
+        b.AppendLine("    /// read-model declarations for an actor who holds its required roles and none of its");
+        b.AppendLine("    /// bypass roles, since a scenario names an actor, not a role. Null when they allow it, as");
+        b.AppendLine("    /// StateRefusalAsync. A host hands it to its --verify as HostDeciders.Authorization.</summary>");
+        b.AppendLine("    public static Task<string?> ActorRefusalAsync(");
+        b.AppendLine("        string aggregate, string command, string actor, string aggregateId, IReadModelStore store, CancellationToken ct = default) =>");
+        b.AppendLine("        Policies.TryGetValue((aggregate, command), out var policy)");
+        b.AppendLine("            ? StateRefusalAsync(policy, \"\", () => actor, aggregateId, store, ct)");
+        b.AppendLine("            : Task.FromResult<string?>(null);");
         b.AppendLine();
         b.AppendLine("    /// <summary>The read-model declarations (requiredOwnership via, scope): what the target's");
         b.AppendLine("    /// rows say about who the caller is. Null when they allow the command; otherwise the");
