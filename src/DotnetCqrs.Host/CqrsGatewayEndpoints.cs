@@ -71,7 +71,8 @@ public static class CqrsGatewayEndpoints
     /// Generated.CommandAuthorization.AuthorizeAsync(user, agg, cmd, id, payload,
     /// myReadModelStore, resolveOwnRole, resolveOwnSubjectId, ct)</c> — so this library
     /// stays exactly as decoupled from <c>DotnetCqrs.ReadModels</c> as it is today.
-    /// When supplied and it returns <c>false</c>, the request is refused with 403
+    /// When supplied and it returns <c>false</c>, or throws <c>CommandForbiddenException</c>
+    /// (answered with its message), the request is refused with 403
     /// before <see cref="DeciderRegistry.HandleWithMetaAsync"/> ever loads any
     /// aggregate state.</para></summary>
     public static RouteHandlerBuilder MapCqrsGateway(
@@ -235,7 +236,16 @@ public static class CqrsGatewayEndpoints
             // authorization declaration that needs the payload itself, not just
             // aggregate/command/aggregateId; every other declaration simply ignores it.
             using var payloadDocument = JsonDocument.Parse(payload);
-            var authorized = await authorize(httpContext.User, aggregate, command, aggregateId, payloadDocument.RootElement, ct);
+            bool authorized;
+            try
+            {
+                authorized = await authorize(httpContext.User, aggregate, command, aggregateId, payloadDocument.RootElement, ct);
+            }
+            catch (CommandForbiddenException ex)
+            {
+                // A refusal naming its own message (a scope's, schema 4.0.0): the caller is told why.
+                return Results.Problem(ex.Message, statusCode: StatusCodes.Status403Forbidden);
+            }
             if (!authorized)
                 return Results.Problem("not authorized", statusCode: StatusCodes.Status403Forbidden);
         }

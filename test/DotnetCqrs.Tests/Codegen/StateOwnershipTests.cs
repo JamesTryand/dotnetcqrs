@@ -44,20 +44,22 @@ public class StateOwnershipTests
     }
 
     [Fact(Timeout = VerifyTimeoutMs)]
-    public async Task The_schema_example_verifies_every_scenario_the_generated_decider_decides()
+    public async Task The_schema_example_verifies_every_scenario_the_generated_code_decides()
     {
         var doc = DocumentLoader.LoadFromFile(TestDataPath("state-ownership.json"));
 
         var results = await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc));
 
         Assert.Equal(7, results.Count);
-        // The harness runs the generated decider alone, and two of the example's (schema 4.0.0) scenarios are not
-        // the decider's to pass as written. The scope refusal is the command authorization's, checked before a
-        // command reaches the decider (its generation is checked above). The existence refusal is the decider's,
-        // and it does come before ownership, but its wording is the generator's own, after the aggregate's id.
+        // The harness runs the generated command authorization before the decider, over read models built from the
+        // given events, so the scope refuses a volunteer at another branch with its message (schema 4.0.0).
+        Assert.Contains("refused by the command's authorization",
+            results.Single(r => r.ScenarioId == "volunteer-at-another-branch-is-refused").Detail);
+        // One of the example's scenarios is not the generated code's to pass as written: the existence refusal is
+        // the decider's, and it does come before ownership, but its wording is the generator's own, after the
+        // aggregate's id.
         var notTheDeciders = new Dictionary<string, string>
         {
-            ["volunteer-at-another-branch-is-refused"] = "expected a refusal but the command was accepted",
             ["no-such-loan-request"] = "got \"loanRequest does not exist\"",
         };
         foreach (var (id, detail) in notTheDeciders)
@@ -100,6 +102,7 @@ public class StateOwnershipTests
         // (schema 4.0.0) is the column compared with the actor.
         Assert.Contains("ApproveLoanRequest", authorization);
         Assert.Contains("\"branchVolunteers\", \"branch_id\", \"volunteer_id\"", authorization);
+        Assert.Contains("\"only a volunteer at this loan request's branch may approve it\"", authorization);
     }
 
     [Fact]

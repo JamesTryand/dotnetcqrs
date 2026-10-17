@@ -77,6 +77,20 @@ public class CqrsGatewayAuthorizeHookTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task A_refusal_naming_its_message_returns_403_with_it_and_the_decider_never_runs()
+    {
+        // Schema 4.0.0's scope.message: the generated evaluator refuses with it as CommandForbiddenException.
+        _authorize = (_, _, _, _, _, _) => throw new CommandForbiddenException("only a member of this team may do that");
+
+        var response = await _client.PostAsync("/api/cqrs/task/t1/CreateTask", content: null);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Contains("only a member of this team may do that", await response.Content.ReadAsStringAsync());
+        var stream = await _store.LoadStreamAsync("task", "t1");
+        Assert.Empty(stream);
+    }
+
+    [Fact]
     public async Task An_approving_authorize_hook_lets_the_command_dispatch_normally()
     {
         _authorize = (_, _, _, _, _, _) => Task.FromResult(true);

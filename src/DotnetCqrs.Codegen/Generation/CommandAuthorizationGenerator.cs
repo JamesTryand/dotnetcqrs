@@ -38,7 +38,14 @@ namespace DotnetCqrs.Codegen.Generation;
 ///
 /// <para>The membership check a declared <c>scope</c> runs
 /// (<c>command.scope.memberOfVia</c>) compares the member through the field the document
-/// names (<c>actorField</c>, schema 4.0.0), never an assumed column.</para>
+/// names (<c>actorField</c>, schema 4.0.0), never an assumed column. A scope naming its own
+/// <c>message</c> (schema 4.0.0) refuses with it as a <c>CommandForbiddenException</c>, which the
+/// gateway answers 403 with, as it does the decider's own refusals.</para>
+///
+/// <para>The evaluation is split into what the caller's role and the payload decide
+/// (<c>RolesAllow</c>) and what read models say about who the caller is
+/// (<c>StateRefusalAsync</c>), so verify can run the second for a scenario's actor, over read
+/// models built from its given events, exactly as the gateway runs it.</para>
 /// </summary>
 public static class CommandAuthorizationGenerator
 {
@@ -78,7 +85,9 @@ public static class CommandAuthorizationGenerator
         b.AppendLine("    /// declared policy (the common case for most commands) returns true -- unchanged");
         b.AppendLine("    /// behavior for a document that declares none of requiredRole/fieldGatedRole/");
         b.AppendLine("    /// requiredOwnership/scope on this command. Declarations combine: every one the");
-        b.AppendLine("    /// command declares must hold, so each refuses or passes on to the next.</summary>");
+        b.AppendLine("    /// command declares must hold, so each refuses or passes on to the next. A refusing");
+        b.AppendLine("    /// declaration that names its own message (a scope's, schema 4.0.0) throws");
+        b.AppendLine("    /// CommandForbiddenException with it instead of returning false.</summary>");
         b.AppendLine("    public static async Task<bool> AuthorizeAsync(");
         b.AppendLine("        ClaimsPrincipal user, string aggregate, string command, string aggregateId, JsonElement payload,");
         b.AppendLine("        IReadModelStore store, Func<ClaimsPrincipal, string> resolveOwnRole, Func<ClaimsPrincipal, string> resolveOwnSubjectId,");
@@ -87,7 +96,18 @@ public static class CommandAuthorizationGenerator
         b.AppendLine("        if (!Policies.TryGetValue((aggregate, command), out var policy)) return true;");
         b.AppendLine();
         b.AppendLine("        var ownRole = resolveOwnRole(user);");
+        b.AppendLine("        if (!RolesAllow(policy, ownRole, payload)) return false;");
         b.AppendLine();
+        b.AppendLine("        var refusal = await StateRefusalAsync(policy, ownRole, () => resolveOwnSubjectId(user), aggregateId, store, ct);");
+        b.AppendLine("        if (refusal is null) return true;");
+        b.AppendLine("        if (refusal.Length > 0) throw new DotnetCqrs.Deciders.CommandForbiddenException(refusal);");
+        b.AppendLine("        return false;");
+        b.AppendLine("    }");
+        b.AppendLine();
+        b.AppendLine("    /// <summary>The role declarations (requiredRole, fieldGatedRole): what the caller's role");
+        b.AppendLine("    /// and the payload decide.</summary>");
+        b.AppendLine("    public static bool RolesAllow(CommandAuthorizationPolicy policy, string ownRole, JsonElement payload)");
+        b.AppendLine("    {");
         b.AppendLine("        if (policy.RequiredRole is { Length: > 0 } requiredRole && !requiredRole.Contains(ownRole, StringComparer.OrdinalIgnoreCase))");
         b.AppendLine("            return false;");
         b.AppendLine();
@@ -97,16 +117,25 @@ public static class CommandAuthorizationGenerator
         b.AppendLine("            var applies = payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty(fieldGated.Field, out var actual) && fieldGated.Matches(actual);");
         b.AppendLine("            if (applies && !fieldGated.RequiredRole.Contains(ownRole, StringComparer.OrdinalIgnoreCase)) return false;");
         b.AppendLine("        }");
+        b.AppendLine("        return true;");
+        b.AppendLine("    }");
         b.AppendLine();
+        b.AppendLine("    /// <summary>The read-model declarations (requiredOwnership via, scope): what the target's");
+        b.AppendLine("    /// rows say about who the caller is. Null when they allow the command; otherwise the");
+        b.AppendLine("    /// refusing declaration's own message, or \"\" when it names none. ownRole matters only");
+        b.AppendLine("    /// as a bypass role.</summary>");
+        b.AppendLine("    public static async Task<string?> StateRefusalAsync(");
+        b.AppendLine("        CommandAuthorizationPolicy policy, string ownRole, Func<string> ownSubjectId, string aggregateId,");
+        b.AppendLine("        IReadModelStore store, CancellationToken ct = default)");
+        b.AppendLine("    {");
         b.AppendLine("        if (policy.Ownership is { } ownership)");
         b.AppendLine("        {");
         b.AppendLine("            if (!ownership.BypassRoles.Contains(ownRole, StringComparer.OrdinalIgnoreCase))");
         b.AppendLine("            {");
-        b.AppendLine("                var ownSubjectId = resolveOwnSubjectId(user);");
         b.AppendLine("                var owner = await ScalarStringAsync(store,");
         b.AppendLine("                    $\"SELECT {ownership.OwnerColumn} FROM {ownership.ViaCollection} WHERE {ownership.KeyColumn} = @id\",");
         b.AppendLine("                    [(\"@id\", aggregateId)], ct);");
-        b.AppendLine("                if (owner is null || !string.Equals(owner, ownSubjectId, StringComparison.Ordinal)) return false;");
+        b.AppendLine("                if (owner is null || !string.Equals(owner, ownSubjectId(), StringComparison.Ordinal)) return \"\";");
         b.AppendLine("            }");
         b.AppendLine("        }");
         b.AppendLine();
@@ -114,19 +143,18 @@ public static class CommandAuthorizationGenerator
         b.AppendLine("        {");
         b.AppendLine("            if (!scope.BypassRoles.Contains(ownRole, StringComparer.OrdinalIgnoreCase))");
         b.AppendLine("            {");
-        b.AppendLine("                var ownSubjectId = resolveOwnSubjectId(user);");
         b.AppendLine("                var resolved = await ScalarStringAsync(store,");
         b.AppendLine("                    $\"SELECT {scope.ResolveSelectColumn} FROM {scope.ResolveViaCollection} WHERE {scope.ResolveKeyColumn} = @id\",");
         b.AppendLine("                    [(\"@id\", aggregateId)], ct);");
-        b.AppendLine("                if (resolved is null) return false;");
+        b.AppendLine("                if (resolved is null) return scope.Message ?? \"\";");
         b.AppendLine("                var member = await ScalarStringAsync(store,");
         b.AppendLine("                    $\"SELECT 1 FROM {scope.MemberOfViaCollection} WHERE {scope.MemberOfMatchColumn} = @val AND {scope.MemberOfActorColumn} = @actor LIMIT 1\",");
-        b.AppendLine("                    [(\"@val\", resolved), (\"@actor\", ownSubjectId)], ct);");
-        b.AppendLine("                if (member is null) return false;");
+        b.AppendLine("                    [(\"@val\", resolved), (\"@actor\", ownSubjectId())], ct);");
+        b.AppendLine("                if (member is null) return scope.Message ?? \"\";");
         b.AppendLine("            }");
         b.AppendLine("        }");
         b.AppendLine();
-        b.AppendLine("        return true;");
+        b.AppendLine("        return null;");
         b.AppendLine("    }");
         b.AppendLine();
         // ReadAsync: an authorization check runs per request, alongside other requests and
@@ -153,7 +181,8 @@ public static class CommandAuthorizationGenerator
         b.AppendLine();
         b.AppendLine("public sealed record ScopePolicy(");
         b.AppendLine("    string ResolveViaCollection, string ResolveKeyColumn, string ResolveSelectColumn,");
-        b.AppendLine("    string MemberOfViaCollection, string MemberOfMatchColumn, string MemberOfActorColumn, string[] BypassRoles);");
+        b.AppendLine("    string MemberOfViaCollection, string MemberOfMatchColumn, string MemberOfActorColumn, string[] BypassRoles,");
+        b.AppendLine("    string? Message = null);");
 
         return new GeneratedFile("CommandAuthorization.cs", b.ToString());
     }
@@ -169,9 +198,17 @@ public static class CommandAuthorizationGenerator
             parts.Add($"Ownership: new(\"{ownership.ViaCollection}\", \"{ToSnakeCase(ownership.KeyField)}\", \"{ToSnakeCase(ownership.OwnerField)}\", {GenerationSupport.QuotedArray(ownership.BypassRoles)})");
         if (command.Scope is { } scope)
             parts.Add($"Scope: new(\"{scope.ResolveViaCollection}\", \"{ToSnakeCase(scope.ResolveKeyField)}\", \"{ToSnakeCase(scope.ResolveSelectField)}\", " +
-                $"\"{scope.MemberOfViaCollection}\", \"{ToSnakeCase(scope.MemberOfMatchField)}\", \"{ToSnakeCase(scope.MemberOfActorField)}\", {GenerationSupport.QuotedArray(scope.BypassRoles)})");
+                $"\"{scope.MemberOfViaCollection}\", \"{ToSnakeCase(scope.MemberOfMatchField)}\", \"{ToSnakeCase(scope.MemberOfActorField)}\", {GenerationSupport.QuotedArray(scope.BypassRoles)}" +
+                (scope.Message is null ? ")" : $", {Literal(scope.Message)})"));
         return "new(" + string.Join(", ", parts) + ")";
     }
+
+    // Relaxed, as DeciderGenerator's own literals: an apostrophe stays readable in the generated code; quotes,
+    // backslashes and control characters are still escaped.
+    private static string Literal(string value) => System.Text.Json.JsonSerializer.Serialize(value, LiteralOptions);
+
+    private static readonly System.Text.Json.JsonSerializerOptions LiteralOptions =
+        new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     /// <summary>Renders a <see cref="FieldGatedRoleValue"/> as a C# lambda comparing a
     /// parsed payload's <see cref="JsonElement"/> against the declared value -- chosen

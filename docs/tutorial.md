@@ -498,6 +498,15 @@ way in and reveals it on the way out, using `InMemoryKmsClient`, so a view
 scenario is compared with what a caller would actually see. No facade is
 needed to verify.
 
+Checked against the generated code (`dotnetcqrs-codegen verify`), a command
+scenario runs the generated `CommandAuthorization` before the decider, as the
+gateway does, over the read models it reads (a
+`requiredOwnership.via`, a `scope`), built from the scenario's given events.
+A scope that refuses the scenario's `when.actor` refuses the command, with the
+scope's `message` (schema 4.0.0) when it declares one; the gateway's 403
+carries the same message. A scenario names an actor, not a role, so it holds
+the command's required roles and none of its bypass roles.
+
 ## Where next
 
 - [Concepts](concepts.md) — the vocabulary this tutorial assumes (decider,

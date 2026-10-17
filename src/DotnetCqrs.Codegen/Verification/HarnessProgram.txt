@@ -48,6 +48,17 @@ static async Task<ScenarioResultDto> RunCommandScenarioAsync(CommandScenarioInpu
             await store.AppendAsync(scenario.Aggregate, scenario.StreamId, 0, seed);
         }
 
+        // The gateway refuses before the decider is asked.
+        if (await AuthorizationRefusalAsync(scenario) is { } refusal)
+        {
+            var message = refusal.Length > 0 ? refusal : "not authorized";
+            if (scenario.Kind != "error")
+                return Result(scenario, passed: false, "the command's authorization refused it: " + message);
+            return message == scenario.ExpectedErrorMessage
+                ? Result(scenario, passed: true, "refused by the command's authorization: " + message)
+                : Result(scenario, passed: false, $"the command's authorization refused it for another reason: expected \"{scenario.ExpectedErrorMessage}\", got \"{message}\"");
+        }
+
         try
         {
             // The scenario's when.actor/when.at (3.10.0), as the host would resolve them: a rule may read the actor
@@ -95,6 +106,34 @@ static async Task<ScenarioResultDto> RunCommandScenarioAsync(CommandScenarioInpu
     {
         return Result(scenario, passed: false, "verification error: " + ex.Message);
     }
+}
+
+// Runs a command scenario's generated authorization, as the gateway does, over the read models it reads, built
+// from the scenario's given events: null when it allows the command, else its refusal ("" naming no message). A
+// scenario names an actor, not a role: like a view scenario naming no caller, it holds the command's required roles
+// and none of its bypass roles, so the checks that can refuse are the ones about who the actor is.
+static async Task<string?> AuthorizationRefusalAsync(CommandScenarioInput scenario)
+{
+    if (scenario.AuthorizationReadModels is not { Count: > 0 }
+        || !Generated.CommandAuthorization.Policies.TryGetValue((scenario.Aggregate, scenario.CommandName), out var policy))
+        return null;
+    await using var readModel = await SqliteReadModelStore.OpenAsync(":memory:");
+    var kms = new DotnetCqrs.Crypto.InMemoryKmsClient();
+    foreach (var rm in scenario.AuthorizationReadModels)
+    {
+        var projectionType = Type.GetType(rm.ProjectionTypeName)
+            ?? throw new InvalidOperationException($"projection type not found: {rm.ProjectionTypeName}");
+        var projection = (IProjection)Activator.CreateInstance(projectionType, readModel)!;
+        await CallInitAsync(projection);
+        long position = 0;
+        foreach (var g in rm.Given)
+        {
+            position++;
+            var data = await SealPiiAsync(g.Data, g.PiiFields, kms);
+            await projection.ApplyAsync(new Event(position, $"scenario-{position}", rm.Aggregate, g.MainKey, position, g.Type, data, "{}", "1970-01-01T00:00:00.000Z"), CancellationToken.None);
+        }
+    }
+    return await Generated.CommandAuthorization.StateRefusalAsync(policy, "", () => scenario.Actor ?? "", scenario.StreamId, readModel);
 }
 
 static async Task<ScenarioResultDto> RunViewScenarioAsync(ViewScenarioInput scenario)
@@ -644,7 +683,9 @@ record GivenEventInput(string Type, string Data);
 record ViewGivenEventInput(string Type, string Data, string MainKey, Dictionary<string, string> ViaKeys, Dictionary<string, string>? PiiFields = null);
 record CommandScenarioInput(string SliceId, string ScenarioId, string Name, string Kind, string DeciderTypeName,
     string Aggregate, string StreamId, List<GivenEventInput> Given, string CommandName, string CommandPayload, List<string> ExpectedEventTypes,
-    string? ExpectedErrorMessage = null, List<List<HandOutcomeEvent>>? HandOutcomes = null, string? Actor = null, string? At = null);
+    string? ExpectedErrorMessage = null, List<List<HandOutcomeEvent>>? HandOutcomes = null, string? Actor = null, string? At = null,
+    List<AuthorizationReadModelInput>? AuthorizationReadModels = null);
+record AuthorizationReadModelInput(string ProjectionTypeName, string Aggregate, List<ViewGivenEventInput> Given);
 record HandOutcomeEvent(string Type, bool Repeated);
 record ViewScenarioInput(string SliceId, string ScenarioId, string Name, string ProjectionTypeName, string Aggregate,
     string TableName, List<ViewGivenEventInput> Given, string? QueryParams, string? AsOf, string ExpectedResult,

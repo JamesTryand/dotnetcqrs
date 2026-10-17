@@ -34,11 +34,13 @@ public sealed record CommandOwnershipVia(string ReadModelId, string KeyField, st
 /// member of the set <see cref="MemberOfVia"/> resolves for that value -- unless the
 /// actor's role is in <see cref="BypassRoles"/>. Kept as its own declaration rather than
 /// merged with <see cref="CommandOwnershipDef"/>: they share the first resolution step but
-/// diverge on the second (equality-against-actor vs. set-membership).</summary>
+/// diverge on the second (equality-against-actor vs. set-membership). <see cref="Message"/> (schema 4.0.0) is the
+/// refusal's message when the actor is not a member.</summary>
 public sealed record CommandScopeDef(
     [property: JsonConverter(typeof(RoleOrRolesConverter))] IReadOnlyList<string>? BypassRoles,
     CommandScopeResolveVia ResolveVia,
-    CommandScopeMemberOfVia MemberOfVia);
+    CommandScopeMemberOfVia MemberOfVia,
+    string? Message = null);
 
 public sealed record CommandScopeResolveVia(string ReadModelId, string KeyField, string SelectField);
 

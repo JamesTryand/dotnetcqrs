@@ -124,11 +124,13 @@ public sealed record StateOwnership(string StateField, string Message);
 
 /// <summary>Domain-level counterpart of <see cref="Model.CommandScopeDef"/>: both
 /// <c>*Collection</c> names are already resolved physical collection/table names, same
-/// posture as <see cref="OwnershipPolicy"/>/<see cref="ReadModelScope"/>.</summary>
+/// posture as <see cref="OwnershipPolicy"/>/<see cref="ReadModelScope"/>. <c>Message</c> (schema 4.0.0) is the
+/// refusal's own message, null when the document names none.</summary>
 public sealed record ScopePolicy(
     IReadOnlyList<string> BypassRoles,
     string ResolveViaCollection, string ResolveKeyField, string ResolveSelectField,
-    string MemberOfViaCollection, string MemberOfMatchField, string MemberOfActorField);
+    string MemberOfViaCollection, string MemberOfMatchField, string MemberOfActorField,
+    string? Message = null);
 
 /// <summary>One declared refusal of a command: it refuses with <c>Message</c> when every
 /// condition in <c>All</c> holds.</summary>

@@ -1462,7 +1462,8 @@ public sealed class DocumentMapper
         return new Domain.ScopePolicy(
             def.BypassRoles ?? [],
             resolveCollection, Names.SanitizeName(def.ResolveVia.KeyField), Names.SanitizeName(def.ResolveVia.SelectField),
-            memberOfCollection, Names.SanitizeName(def.MemberOfVia.MatchField), Names.SanitizeName(def.MemberOfVia.ActorField));
+            memberOfCollection, Names.SanitizeName(def.MemberOfVia.MatchField), Names.SanitizeName(def.MemberOfVia.ActorField),
+            def.Message);
     }
 
     // ---- helpers ----

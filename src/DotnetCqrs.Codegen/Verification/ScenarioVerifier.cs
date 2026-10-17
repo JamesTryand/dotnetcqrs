@@ -194,6 +194,29 @@ public static class ScenarioVerifier
         var (own, _) = SplitGiven(index, aggregate, scenario.Given);
         var streamId = StreamId(document, scenario.Given);
 
+        // The read models the command's authorization reads, built from every given event (a read model is
+        // cross-cutting), each keyed for its own projection, as a view scenario's are.
+        var authorizationReadModels = new List<AuthorizationReadModelInput>();
+        foreach (var collection in index.CommandPolicyCollections.GetValueOrDefault((aggregate, generatedName)) ?? [])
+        {
+            if (!index.ReadModelByCollection.TryGetValue(collection, out var rm))
+            {
+                results.Add(new ScenarioResult(slice.Id, scenario.Id, scenario.Name, KindOf(scenario), Passed: false, Skipped: true,
+                    $"the command's authorization reads collection \"{collection}\", which was not generated"));
+                return;
+            }
+            var idField = index.ReadModelIdByCollection.TryGetValue(collection, out var rmId) ? ReadModelIdFieldName(document, rmId) : null;
+            authorizationReadModels.Add(new AuthorizationReadModelInput(
+                $"Generated.{GenerationSupport.ExportName(rm.Aggregate)}.{GenerationSupport.ExportName(rm.Collection)}Projection",
+                rm.Aggregate,
+                scenario.Given.Select(g => new ViewGivenEventInput(
+                    index.EventType.GetValueOrDefault(g.EventId, g.EventId),
+                    g.Data?.GetRawText() ?? "{}",
+                    RowKey(idField, g.Data, streamId),
+                    new Dictionary<string, string>(),
+                    index.EventPiiFields.GetValueOrDefault(index.EventType.GetValueOrDefault(g.EventId, g.EventId)) ?? EmptyPiiFields)).ToList()));
+        }
+
         var expectedEventTypes = scenario is StateChangeScenario stateChange
             ? stateChange.Then.Events.Select(e => index.EventType.GetValueOrDefault(e.EventId, e.EventId)).ToList()
             : [];
@@ -205,7 +228,8 @@ public static class ScenarioVerifier
             scenario is ErrorScenario error ? error.Then.Error.Message : null,
             scenario is StateChangeScenario values ? values.Then.Events.Select(e => e.Data?.GetRawText()).ToList() : null,
             when.Actor, when.At,
-            handOutcomes?.GetValueOrDefault((aggregate, generatedName))));
+            handOutcomes?.GetValueOrDefault((aggregate, generatedName)),
+            authorizationReadModels.Count == 0 ? null : authorizationReadModels));
     }
 
     private static bool IsHandBuilt(Document document, string readModelId) =>
@@ -398,9 +422,12 @@ public static class ScenarioVerifier
             var outputPath = Path.Combine(workDir, "output.json");
             await File.WriteAllTextAsync(inputPath, JsonSerializer.Serialize(new HarnessInput(commandScenarios, viewScenarios)), ct);
 
+            // The command authorization too: a command scenario runs it before the decider.
+            var authorization = CommandAuthorizationGenerator.Generate(domains);
             var sources = domains
                 .SelectMany(CSharpGenerator.Generate)
                 .Select(file => (file.Name, file.Source))
+                .Append((authorization.Name, authorization.Source))
                 .Append(("Program.cs", ReadEmbeddedHarness()));
             if (HandOutcomeStandIns(domains) is { } standIns)
                 sources = sources.Append(("HandOutcomes.cs", standIns));
@@ -446,17 +473,23 @@ public static class ScenarioVerifier
         public required Dictionary<string, IReadOnlyDictionary<string, string>> EventPiiFields; // generated event type -> (pii field -> its piiSubject field)
         public required Dictionary<string, IReadOnlyList<string>> ReadModelPiiColumns; // schema read model id -> snake_case pii columns
         public required Dictionary<string, Domain.ReadModel> ReadModelDomain; // schema read model id -> the mapped read model (match clauses need it)
+        public required Dictionary<(string Aggregate, string Command), IReadOnlyList<string>> CommandPolicyCollections; // (aggregate, generated command name) -> the collections its authorization reads
 
         public static GeneratedIndex Build(Document document, IReadOnlyList<Domain.Domain> domains)
         {
             var generatedCommandToAggregate = new Dictionary<string, string>();
             var generatedEventToAggregate = new Dictionary<string, string>();
             var eventPiiFields = new Dictionary<string, IReadOnlyDictionary<string, string>>();
+            var commandPolicyCollections = new Dictionary<(string, string), IReadOnlyList<string>>();
             foreach (var d in domains)
             {
                 foreach (var c in d.Commands)
                 {
                     generatedCommandToAggregate[c.Name] = d.Aggregate;
+                    var collections = new List<string>();
+                    if (c.RequiredOwnership is { } ownership) collections.Add(ownership.ViaCollection);
+                    if (c.Scope is { } scope) collections.AddRange([scope.ResolveViaCollection, scope.MemberOfViaCollection]);
+                    if (collections.Count > 0) commandPolicyCollections[(d.Aggregate, c.Name)] = collections.Distinct().ToList();
                     foreach (var ev in c.Events)
                     {
                         var pii = ev.Fields.Where(f => f.Pii && f.PiiSubject is not null).ToDictionary(f => f.Name, f => f.PiiSubject!);
@@ -531,6 +564,7 @@ public static class ScenarioVerifier
                 EventPiiFields = eventPiiFields,
                 ReadModelPiiColumns = readModelPiiColumns,
                 ReadModelDomain = readModelDomain,
+                CommandPolicyCollections = commandPolicyCollections,
             };
         }
     }
