@@ -85,7 +85,7 @@ public static class HostProjectGenerator
         // Cross-cutting, one file for the whole document -- see
         // CommandAuthorizationGenerator's own doc comment for why this can't be emitted
         // per-aggregate/per-command the way everything else above is.
-        files.Add(CommandAuthorizationGenerator.Generate(mapped.Domains));
+        files.Add(CommandAuthorizationGenerator.Generate(mapped.Domains, mapped.ErasureRequest));
 
         files.Add(GenerateCsproj(projectName, dotnetCqrsProjectPath));
         files.Add(GenerateProgram(mapped, projectName, dotnetCqrsProjectPath, aggregateOverrides));
@@ -607,8 +607,11 @@ public static class HostProjectGenerator
         {
             b.AppendLine("// Erasure is permanent, so the gateway refuses every dataSubject command (RequestErasure, EraseSubject)");
             b.AppendLine("// while no `authorize` policy is wired, and this scaffold is unauthenticated, so it wires none: erasure is");
-            b.AppendLine("// closed by default. Wire a policy saying who may send them. A request is recorded and nothing acts on it");
-            b.AppendLine("// until something decides it: wire DotnetCqrs.Retention (RegisterErasureRetention) to govern requests.");
+            b.AppendLine("// closed by default. Wire a policy saying who may send them. Generated.CommandAuthorization.AuthorizeAsync");
+            b.AppendLine("// admits RequestErasure as the document's dataSubjects.erasure says (no one, without it) and refuses every");
+            b.AppendLine("// other dataSubject command: allow erasing directly, holds or approvals in your own delegate around it.");
+            b.AppendLine("// A request is recorded and nothing acts on it until something decides it: wire DotnetCqrs.Retention");
+            b.AppendLine("// (RegisterErasureRetention) to govern requests.");
             b.AppendLine("// For a THROWAWAY LOCAL RUN ONLY, DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE=1 lets any caller use them.");
             b.AppendLine("var allowUnauthorizedErasure = Environment.GetEnvironmentVariable(\"DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE\") == \"1\";");
             b.AppendLine("if (allowUnauthorizedErasure)");

@@ -50,10 +50,19 @@ namespace DotnetCqrs.Codegen.Generation;
 /// verify (<c>HostDeciders.Authorization</c>). A scenario naming no role (schema 4.1.0
 /// <c>when.role</c>) holds the command's required roles and none of its bypass roles, so only
 /// the second part runs.</para>
+///
+/// <para>The runtime's built-in <c>dataSubject</c> aggregate is the one exception to "no policy
+/// allows it". Erasure cannot be undone, so every <c>dataSubject</c> command is refused here
+/// unless the document's <c>dataSubjects.erasure</c> (schema 3.2.0) admits it, and that declaration
+/// only ever admits <c>RequestErasure</c> (schema 3.7.1): <c>self</c> for the caller's own subject
+/// id (or, with <c>via</c>, the subject ids a read model says the caller owns), <c>roles</c> for
+/// any subject. Erasing directly, holding, approving and legal holds are each host's own policy,
+/// never a document's, so a host that allows them wraps its <c>authorize</c> delegate around this
+/// one. Nothing here names a role or an application: the rule is whatever the document says.</para>
 /// </summary>
 public static class CommandAuthorizationGenerator
 {
-    public static GeneratedFile Generate(IReadOnlyList<Domain.Domain> domains)
+    public static GeneratedFile Generate(IReadOnlyList<Domain.Domain> domains, ErasureRequestPolicy? erasureRequest = null)
     {
         var entries = new List<(string Aggregate, Command Command)>();
         foreach (var domain in domains)
@@ -85,18 +94,31 @@ public static class CommandAuthorizationGenerator
         b.AppendLine("        };");
         b.AppendLine();
 
+        b.AppendLine("    /// <summary>The runtime's built-in data-subject aggregate, and the one command of it a document may");
+        b.AppendLine("    /// authorise (dataSubjects.erasure, schema 3.7.1).</summary>");
+        b.AppendLine("    public const string DataSubjectAggregate = \"dataSubject\";");
+        b.AppendLine("    public const string RequestErasureCommand = \"RequestErasure\";");
+        b.AppendLine();
+        b.AppendLine("    /// <summary>Who may request a subject's erasure, from the document's dataSubjects.erasure; null when it");
+        b.AppendLine("    /// declares none, and then no one may.</summary>");
+        b.AppendLine($"    public static readonly ErasureRequestPolicy? ErasureRequest = {ErasureRequestLiteral(erasureRequest)};");
+        b.AppendLine();
+
         b.AppendLine("    /// <summary>Evaluates the declared policy for (aggregate, command), if any. No");
         b.AppendLine("    /// declared policy (the common case for most commands) returns true -- unchanged");
         b.AppendLine("    /// behavior for a document that declares none of requiredRole/fieldGatedRole/");
         b.AppendLine("    /// requiredOwnership/scope on this command. Declarations combine: every one the");
         b.AppendLine("    /// command declares must hold, so each refuses or passes on to the next. A refusing");
         b.AppendLine("    /// declaration that names its own message (a scope's, schema 4.0.0) throws");
-        b.AppendLine("    /// CommandForbiddenException with it instead of returning false.</summary>");
+        b.AppendLine("    /// CommandForbiddenException with it instead of returning false. The dataSubject aggregate");
+        b.AppendLine("    /// is the exception: see DataSubjectAllowsAsync.</summary>");
         b.AppendLine("    public static async Task<bool> AuthorizeAsync(");
         b.AppendLine("        ClaimsPrincipal user, string aggregate, string command, string aggregateId, JsonElement payload,");
         b.AppendLine("        IReadModelStore store, Func<ClaimsPrincipal, string> resolveOwnRole, Func<ClaimsPrincipal, string> resolveOwnSubjectId,");
         b.AppendLine("        CancellationToken ct = default)");
         b.AppendLine("    {");
+        b.AppendLine("        if (string.Equals(aggregate, DataSubjectAggregate, StringComparison.OrdinalIgnoreCase))");
+        b.AppendLine("            return await DataSubjectAllowsAsync(command, aggregateId, resolveOwnRole(user), () => resolveOwnSubjectId(user), store, ct);");
         b.AppendLine("        if (!Policies.TryGetValue((aggregate, command), out var policy)) return true;");
         b.AppendLine();
         b.AppendLine("        var ownRole = resolveOwnRole(user);");
@@ -180,6 +202,28 @@ public static class CommandAuthorizationGenerator
         b.AppendLine("        return null;");
         b.AppendLine("    }");
         b.AppendLine();
+        b.AppendLine("    /// <summary>A dataSubject command (the aggregate id is the subject id). Erasure cannot be undone, so");
+        b.AppendLine("    /// with no rule a command is refused, not allowed: only RequestErasure, and only as ErasureRequest");
+        b.AppendLine("    /// says. A host that lets someone erase directly, hold, approve or place a legal hold decides that");
+        b.AppendLine("    /// in its own authorize delegate before calling AuthorizeAsync.</summary>");
+        b.AppendLine("    public static async Task<bool> DataSubjectAllowsAsync(");
+        b.AppendLine("        string command, string subjectId, string ownRole, Func<string> ownSubjectId,");
+        b.AppendLine("        IReadModelStore store, CancellationToken ct = default)");
+        b.AppendLine("    {");
+        b.AppendLine("        if (ErasureRequest is not { } rule || !string.Equals(command, RequestErasureCommand, StringComparison.Ordinal)) return false;");
+        b.AppendLine("        if (rule.Roles.Contains(ownRole, StringComparer.OrdinalIgnoreCase)) return true;");
+        b.AppendLine("        if (!rule.Self) return false;");
+        b.AppendLine();
+        b.AppendLine("        var own = ownSubjectId();");
+        b.AppendLine("        if (string.IsNullOrEmpty(own)) return false;");
+        b.AppendLine("        if (rule.Via is not { } via) return string.Equals(own, subjectId, StringComparison.Ordinal);");
+        b.AppendLine("        // Several rows may name the caller (a returning person has a new subject id): any of them will do.");
+        b.AppendLine("        var owned = await ScalarStringAsync(store,");
+        b.AppendLine("            $\"SELECT 1 FROM {via.ViaCollection} WHERE {via.KeyColumn} = @id AND {via.OwnerColumn} = @own LIMIT 1\",");
+        b.AppendLine("            [(\"@id\", subjectId), (\"@own\", own)], ct);");
+        b.AppendLine("        return owned is not null;");
+        b.AppendLine("    }");
+        b.AppendLine();
         // ReadAsync: an authorization check runs per request, alongside other requests and
         // the projections' writes (see IReadModelStore.ReadAsync).
         b.AppendLine("    private static Task<string?> ScalarStringAsync(IReadModelStore store, string sql, (string, object?)[] parameters, CancellationToken ct) =>");
@@ -206,6 +250,10 @@ public static class CommandAuthorizationGenerator
         b.AppendLine("    string ResolveViaCollection, string ResolveKeyColumn, string ResolveSelectColumn,");
         b.AppendLine("    string MemberOfViaCollection, string MemberOfMatchColumn, string MemberOfActorColumn, string[] BypassRoles,");
         b.AppendLine("    string? Message = null);");
+        b.AppendLine();
+        b.AppendLine("/// <summary>dataSubjects.erasure: Self lets a caller request their own subject's erasure (through Via when");
+        b.AppendLine("/// set: the subject ids whose rows name the caller); Roles may request any subject's.</summary>");
+        b.AppendLine("public sealed record ErasureRequestPolicy(bool Self, string[] Roles, OwnershipPolicy? Via = null);");
 
         return new GeneratedFile("CommandAuthorization.cs", b.ToString());
     }
@@ -224,6 +272,15 @@ public static class CommandAuthorizationGenerator
                 $"\"{scope.MemberOfViaCollection}\", \"{ToSnakeCase(scope.MemberOfMatchField)}\", \"{ToSnakeCase(scope.MemberOfActorField)}\", {GenerationSupport.QuotedArray(scope.BypassRoles)}" +
                 (scope.Message is null ? ")" : $", {Literal(scope.Message)})"));
         return "new(" + string.Join(", ", parts) + ")";
+    }
+
+    private static string ErasureRequestLiteral(ErasureRequestPolicy? policy)
+    {
+        if (policy is null) return "null";
+        var via = policy.Via is { } v
+            ? $", new(\"{v.ViaCollection}\", \"{ToSnakeCase(v.KeyField)}\", \"{ToSnakeCase(v.OwnerField)}\", [])"
+            : "";
+        return $"new({(policy.Self ? "true" : "false")}, {GenerationSupport.QuotedArray(policy.Roles)}{via})";
     }
 
     // Relaxed, as DeciderGenerator's own literals: an apostrophe stays readable in the generated code; quotes,

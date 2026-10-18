@@ -103,6 +103,28 @@ decides, and it must cover every command in `GovernedSubject.Commands`: a policy
 has no rule for opens erasure again. Which roles may send which is yours to decide. Typically a wider group may ask
 than may hold, approve, place or release a legal hold, or erase directly.
 
+**Who may ask can be declared in the document.** `dataSubjects.erasure` (schema 3.2.0) says who may send
+`RequestErasure`: `self: true` for a caller's own subject id, `roles` for any subject's, and with `via` the subject
+ids a read model says the caller owns (a person who came back after an erasure has a new subject id):
+
+```json
+"dataSubjects": { "erasure": { "self": true, "roles": ["support"] } }
+```
+
+The generated `CommandAuthorization.AuthorizeAsync` applies it, and it is the one exception to "no policy allows
+it": **every `dataSubject` command is refused unless the declaration admits it, and it only ever admits
+`RequestErasure`** (schema 3.7.1). Without the declaration, no one may ask. So wiring the generated evaluator can't
+open erasure by accident. Holding, approving, legal holds and erasing directly are never a document's to declare:
+a host that allows them decides so in its own delegate, before handing the rest to the generated one:
+
+```csharp
+app.MapCqrsGateway(authorize: (user, aggregate, command, id, payload, ct) =>
+    aggregate == DataSubject.Aggregate && command != DataSubject.RequestErasureCommand
+        ? Task.FromResult(IsAdministrator(user))                       // your own rule
+        : CommandAuthorization.AuthorizeAsync(user, aggregate, command, id, payload, readModelDb,
+            resolveOwnRole, resolveOwnSubjectId, ct));
+```
+
 **Showing requests on a screen** is a read model like any other: a projection of the `dataSubject` events into a
 table your screen lists.
 

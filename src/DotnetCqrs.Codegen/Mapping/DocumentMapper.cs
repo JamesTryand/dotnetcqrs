@@ -92,10 +92,11 @@ public sealed class DocumentMapper
 
         NotePii();
         NoteLossy();
+        var erasureRequest = BuildErasureRequest(domains);
 
         if (_report.HasErrors) throw new DocumentMappingException(_report);
 
-        return new MappingResult { Domains = domains, Report = _report };
+        return new MappingResult { Domains = domains, Report = _report, ErasureRequest = erasureRequest };
     }
 
     // ---- referential integrity (see the class doc comment for why this replaces a
@@ -1431,6 +1432,33 @@ public sealed class DocumentMapper
         return new Domain.OwnershipPolicy(
             def.BypassRoles ?? [], viaCollection,
             Names.SanitizeName(def.Via.KeyField), Names.SanitizeName(def.Via.OwnerField));
+    }
+
+    /// <summary>Resolves the document's <c>dataSubjects.erasure</c> (schema 3.2.0, 3.7.1): who may request a subject's
+    /// erasure. Its <c>via</c> is the same lookup as <see cref="BuildOwnership"/>'s, resolved the same way.</summary>
+    private Domain.ErasureRequestPolicy? BuildErasureRequest(IReadOnlyList<Domain.Domain> domains)
+    {
+        if (_document.DataSubjects?.Erasure is not { } def) return null;
+
+        Domain.OwnershipPolicy? via = null;
+        if (def.Via is { } v)
+        {
+            var viaCollection = ResolveReadModelCollection(v.ReadModelId);
+            if (viaCollection is null)
+            {
+                _report.Error($"dataSubjects.erasure.via references read model \"{v.ReadModelId}\", which does not exist");
+                return null;
+            }
+            via = new Domain.OwnershipPolicy([], viaCollection, Names.SanitizeName(v.KeyField), Names.SanitizeName(v.OwnerField));
+        }
+
+        // The dataSubject aggregate is registered only for a document holding personal data.
+        var hasPii = domains.Any(d => Generation.GenerationSupport.CollectEventFields(d).Item1.Any(f => f.Pii)
+            || d.ReadModels.Any(rm => rm.Fields.Any(f => f.Pii)));
+        if (!hasPii)
+            _report.Warn("dataSubjects.erasure is declared but no field is marked pii, so there is no data subject to erase");
+
+        return new Domain.ErasureRequestPolicy(def.Self == true, def.Roles ?? [], via);
     }
 
     /// <summary>Schema 3.15.0: ownership the aggregate decides from its own state. The field is checked

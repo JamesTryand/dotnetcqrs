@@ -25,5 +25,9 @@ public sealed class MappingResult
     /// <summary>One entry per aggregate, in stable name order.</summary>
     public required IReadOnlyList<Domain.Domain> Domains { get; init; }
 
+    /// <summary>The document's <c>dataSubjects.erasure</c>, or null when it declares none (then no one may request
+    /// erasure through the generated authorization).</summary>
+    public Domain.ErasureRequestPolicy? ErasureRequest { get; init; }
+
     public required MappingReport Report { get; init; }
 }

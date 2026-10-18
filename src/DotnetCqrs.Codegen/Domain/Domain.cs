@@ -118,6 +118,11 @@ public sealed record NumberFieldValue(double Value) : FieldGatedRoleValue;
 /// never re-consults the document), same posture as <see cref="ReadModelScope"/>.</summary>
 public sealed record OwnershipPolicy(IReadOnlyList<string> BypassRoles, string ViaCollection, string KeyField, string OwnerField);
 
+/// <summary>Domain-level counterpart of <see cref="Model.ErasureAuthorizationDef"/>: who may request a subject's
+/// erasure. <see cref="Via"/>, when set, maps a caller to the subject ids they own (its <c>ViaCollection</c>
+/// resolved, as for <see cref="OwnershipPolicy"/>; its bypass roles unused).</summary>
+public sealed record ErasureRequestPolicy(bool Self, IReadOnlyList<string> Roles, OwnershipPolicy? Via);
+
 /// <summary>Schema 3.15.0: the state field (sanitized, as state fields are) that names the owner, and the
 /// refusal's message when the actor isn't them.</summary>
 public sealed record StateOwnership(string StateField, string Message);
