@@ -312,10 +312,19 @@ public sealed class ConsumerEngine : IReadModelChangeFeed
 
     /// <summary>Catches one consumer up, recording its progress for <see cref="Status"/> as it
     /// goes. Returns null when it caught up, or the (already logged) failure that blocked it;
-    /// cancellation propagates.</summary>
+    /// cancellation propagates.
+    ///
+    /// <para>Every checkpoint save is a commit. A projection saves once per batch: it is
+    /// idempotent and rebuildable, so re-applying the rest of a batch after a crash changes
+    /// nothing. Any other consumer (a reactor, say) may have acted on an event, so it saves
+    /// after each one. Either way the checkpoint is saved before a pass leaves the consumer,
+    /// blocked or stopping, so only a crash ever re-applies an event.</para></summary>
     private async Task<Exception?> RunOnceForAsync(IConsumer consumer, ICheckpointStore checkpoints, long? head, CancellationToken ct)
     {
+        var perBatch = consumer is IProjection;
         long pos = 0;
+        // The position the checkpoint store holds: behind pos while a projection's batch is unsaved.
+        long saved = 0;
         // Where the current batch started: events after it are applied and checkpointed but not yet published.
         long batchStart = 0;
         Event? current = null;
@@ -326,6 +335,7 @@ public sealed class ConsumerEngine : IReadModelChangeFeed
         try
         {
             pos = await checkpoints.CheckpointAsync(consumer.Name, ct);
+            saved = pos;
             batchStart = pos;
             while (true)
             {
@@ -339,17 +349,27 @@ public sealed class ConsumerEngine : IReadModelChangeFeed
                     pendingSince = CreatedAt(ev);
                     _progress[consumer.Name] = new Progress(pos, head, pendingSince, blocked);
                     await consumer.ApplyAsync(ev, ct);
-                    await checkpoints.SaveCheckpointAsync(consumer.Name, ev.Position, ct);
                     pos = ev.Position;
                     current = null;
                     blocked = false;
+                    if (!perBatch)
+                    {
+                        await checkpoints.SaveCheckpointAsync(consumer.Name, pos, ct);
+                        saved = pos;
+                    }
                     if (_stopRequested)
                     {
                         // Draining: the event in hand is applied and checkpointed; leave the rest.
+                        if (saved < pos) await checkpoints.SaveCheckpointAsync(consumer.Name, pos, ct);
                         _progress[consumer.Name] = new Progress(pos, head, pendingSince, false);
                         PublishChanged(consumer, batchStart, pos);
                         return null;
                     }
+                }
+                if (saved < pos)
+                {
+                    await checkpoints.SaveCheckpointAsync(consumer.Name, pos, ct);
+                    saved = pos;
                 }
                 // One change per batch, not per event: a burst becomes one notification.
                 PublishChanged(consumer, batchStart, pos);
@@ -371,7 +391,20 @@ public sealed class ConsumerEngine : IReadModelChangeFeed
                 ? $"position={pos} (reading checkpoint or polling after it)"
                 : $"position={current.Position} event={current.Id} type={current.Type} stream={current.Aggregate}/{current.AggregateId}";
             _log($"consumer blocked, will retry: consumer={consumer.Name} {at} error={ex}");
-            // The events before the failing one are applied and checkpointed: their change is real.
+            // The events before the failing one are applied: checkpoint them, so the retry starts at the failing one.
+            // If that fails too (the store is unreachable), the retry re-applies them, which a projection allows.
+            if (saved < pos)
+            {
+                try
+                {
+                    await checkpoints.SaveCheckpointAsync(consumer.Name, pos, CancellationToken.None);
+                }
+                catch (Exception saveError)
+                {
+                    _log($"consumer checkpoint not saved: consumer={consumer.Name} position={pos} error={saveError.Message}");
+                }
+            }
+            // Their change is real.
             PublishChanged(consumer, batchStart, pos);
             _progress[consumer.Name] = new Progress(pos, head, pendingSince ?? _time.GetUtcNow(), true);
             var where = current is null ? $"after position {pos}" : $"at position {current.Position}";

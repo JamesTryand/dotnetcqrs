@@ -181,6 +181,13 @@ earlier, and a blocked or rebuilding consumer is behind everyone. A consumer
 never reads what another consumer wrote to decide something; it folds what
 it needs from the events it is given.
 
+A consumer's progress is its checkpoint, saved as it goes. A projection
+saves it once per batch (up to 100 events); any other consumer, once per
+event, since it may have acted on one. Each save is committed without
+waiting for the disk. So after a crash or power cut a consumer may apply up
+to a batch of events again: delivery is at-least-once, which is why a
+projection must be idempotent and a reactor's target ids deterministic.
+
 ## Storage: SQLite, twice
 
 Both the event store and the read models are SQLite, but treat them as two

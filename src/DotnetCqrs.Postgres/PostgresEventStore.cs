@@ -331,8 +331,19 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
     /// <inheritdoc/>
     public async Task SaveCheckpointAsync(string name, long position, CancellationToken ct = default)
     {
+        // Committed without waiting for the WAL flush (synchronous_commit off, for this transaction alone): a crash
+        // can lose the last few checkpoints, which only rewinds the consumer to apply those events again, as
+        // at-least-once delivery allows. A catch-up saves one per consumer per event, so a flush each was most of it.
         await using var connection = await _dataSource.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        await using (var local = connection.CreateCommand())
+        {
+            local.Transaction = transaction;
+            local.CommandText = "SET LOCAL synchronous_commit TO OFF";
+            await local.ExecuteNonQueryAsync(ct);
+        }
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO consumer_checkpoints (name, position) VALUES (@name, @position)
             ON CONFLICT (name) DO UPDATE SET position = excluded.position
@@ -340,6 +351,7 @@ public sealed class PostgresEventStore : IEventStore, IDeadLetterStore, IHeartbe
         command.Parameters.AddWithValue("@name", name);
         command.Parameters.AddWithValue("@position", position);
         await command.ExecuteNonQueryAsync(ct);
+        await transaction.CommitAsync(ct);
     }
 
     /// <inheritdoc/>

@@ -144,4 +144,19 @@ public class PostgresEventStoreTests(PostgresFixture fx)
 
         Assert.Equal(appended[1].Position, await store.HeadPositionAsync());
     }
+
+    [SkippableFact]
+    public async Task A_checkpoint_committed_without_waiting_for_the_flush_is_committed()
+    {
+        Skip.IfNot(fx.Available, fx.SkipReason);
+        var connectionString = await fx.NewSchemaAsync();
+        await using (var store = await PostgresEventStore.OpenAsync(connectionString))
+        {
+            await store.SaveCheckpointAsync("proj", 1);
+            await store.SaveCheckpointAsync("proj", 2);
+        }
+
+        await using var reopened = await PostgresEventStore.OpenAsync(connectionString);
+        Assert.Equal(2, await reopened.CheckpointAsync("proj"));
+    }
 }

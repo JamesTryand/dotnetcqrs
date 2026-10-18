@@ -285,22 +285,53 @@ public sealed class SqliteEventStore : IEventStore, IDeadLetterStore, IHeartbeat
         }, ct);
     }
 
-    /// <summary>Durably stores the position of a named consumer.</summary>
+    /// <summary>Stores the position of a named consumer, committed without waiting for the disk
+    /// (<c>synchronous = NORMAL</c> for this statement alone, then the connection's own setting again).
+    /// A power cut can lose the last few, which only rewinds the consumer: it applies those events again,
+    /// as at-least-once delivery already allows. With WAL the next flushing commit (any append) makes it
+    /// durable too. A catch-up saves one per consumer per event, so a flush each was most of its cost.</summary>
     public async Task SaveCheckpointAsync(string name, long position, CancellationToken ct = default)
     {
         if (_readOnly) throw new ReadOnlyStoreException("save checkpoint");
         await Locked(async () =>
         {
-            await using var command = _connection.CreateCommand();
-            command.CommandText = """
-                INSERT INTO consumer_checkpoints (name, position) VALUES ($name, $position)
-                ON CONFLICT (name) DO UPDATE SET position = excluded.position
-                """;
-            command.Parameters.AddWithValue("$name", name);
-            command.Parameters.AddWithValue("$position", position);
-            await command.ExecuteNonQueryAsync(ct);
+            _synchronous ??= await PragmaAsync("PRAGMA synchronous", ct);
+            await PragmaAsync($"PRAGMA synchronous = {Math.Min(_synchronous.Value, 1)}", ct);
+            try
+            {
+                await using var command = _connection.CreateCommand();
+                command.CommandText = """
+                    INSERT INTO consumer_checkpoints (name, position) VALUES ($name, $position)
+                    ON CONFLICT (name) DO UPDATE SET position = excluded.position
+                    """;
+                command.Parameters.AddWithValue("$name", name);
+                command.Parameters.AddWithValue("$position", position);
+                await command.ExecuteNonQueryAsync(ct);
+            }
+            finally
+            {
+                await PragmaAsync($"PRAGMA synchronous = {_synchronous.Value}", CancellationToken.None);
+            }
         }, ct);
     }
+
+    // The connection's own synchronous setting, read once: what every statement but a checkpoint runs with.
+    private long? _synchronous;
+
+    private async Task<long> PragmaAsync(string sql, CancellationToken ct)
+    {
+        await using var command = _connection.CreateCommand();
+        command.CommandText = sql;
+        return await command.ExecuteScalarAsync(ct) is long value ? value : 0;
+    }
+
+    /// <summary>The connection's <c>PRAGMA synchronous</c> (2 is FULL), for tests.</summary>
+    internal Task<long> SynchronousAsync(CancellationToken ct = default) => Locked(async () =>
+    {
+        await using var command = _connection.CreateCommand();
+        command.CommandText = "PRAGMA synchronous";
+        return (long)(await command.ExecuteScalarAsync(ct))!;
+    }, ct);
 
     /// <summary>Returns all events of one stream in sequence order.</summary>
     public async Task<IReadOnlyList<Event>> LoadStreamAsync(string aggregate, string aggregateId, CancellationToken ct = default)

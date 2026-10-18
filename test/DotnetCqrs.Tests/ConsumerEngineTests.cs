@@ -570,4 +570,96 @@ public class ConsumerEngineTests
         public string Name { get; } = name;
         public Task ApplyAsync(Event ev, CancellationToken ct) => apply(ev);
     }
+
+    // --- Checkpoints: a projection saves once per batch (catch-up cost, 2026-10-18) ---
+
+    private sealed class CountingCheckpointStore : ICheckpointStore
+    {
+        private readonly InMemoryCheckpointStore _inner = new();
+        public int Saves;
+        public Task<long> CheckpointAsync(string name, CancellationToken ct = default) => _inner.CheckpointAsync(name, ct);
+        public Task SaveCheckpointAsync(string name, long position, CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref Saves);
+            return _inner.SaveCheckpointAsync(name, position, ct);
+        }
+    }
+
+    private sealed class DelegateProjection(string name, Func<Event, Task> apply) : DotnetCqrs.Projections.IProjection
+    {
+        public string Name { get; } = name;
+        public IReadOnlyList<string> Tables => [];
+        public Task ApplyAsync(Event ev, CancellationToken ct) => apply(ev);
+    }
+
+    [Fact]
+    public async Task A_projection_saves_its_checkpoint_once_per_batch_and_any_other_consumer_once_per_event()
+    {
+        // Every save is a commit. A projection is idempotent and rebuildable (re-applying a batch after a crash
+        // changes nothing), so it saves once per batch of up to 100; a reactor or other consumer may have acted on
+        // an event, so it still saves after each one.
+        await using var store = await SeededStoreAsync("c1", 250);
+        var engine = new ConsumerEngine(store, store);
+        var projectionCheckpoints = new CountingCheckpointStore();
+        var consumerCheckpoints = new CountingCheckpointStore();
+        engine.Register(new RecordingProjection("proj"), projectionCheckpoints);
+        engine.Register(new RecordingConsumer("reactor"), consumerCheckpoints);
+
+        await engine.RunOnceAsync();
+
+        Assert.Equal(250, await projectionCheckpoints.CheckpointAsync("proj"));
+        Assert.Equal(3, projectionCheckpoints.Saves);
+        Assert.Equal(250, await consumerCheckpoints.CheckpointAsync("reactor"));
+        Assert.Equal(250, consumerCheckpoints.Saves);
+    }
+
+    [Fact]
+    public async Task A_projection_blocked_mid_batch_checkpoints_the_events_before_it_so_a_retry_applies_none_twice()
+    {
+        await using var store = await SeededStoreAsync("c1", 120);
+        var engine = new ConsumerEngine(store, store, logger: _ => { });
+        var fail = true;
+        var applied = new ConcurrentQueue<long>();
+        engine.Register(new DelegateProjection("proj", ev =>
+        {
+            if (ev.Position == 50 && fail) throw new InvalidOperationException("boom");
+            applied.Enqueue(ev.Position);
+            return Task.CompletedTask;
+        }));
+
+        await Assert.ThrowsAsync<AggregateException>(() => engine.RunOnceAsync());
+        Assert.Equal(49, await store.CheckpointAsync("proj"));
+
+        fail = false;
+        await engine.RunOnceAsync();
+
+        Assert.Equal(120, await store.CheckpointAsync("proj"));
+        Assert.Equal(Enumerable.Range(1, 120).Select(i => (long)i), applied);
+    }
+
+    [Fact]
+    public async Task StopAsync_checkpoints_a_projections_event_in_hand_though_its_batch_is_unfinished()
+    {
+        await using var store = await SeededStoreAsync("c1", 5);
+        var engine = new ConsumerEngine(store, store, tick: TimeSpan.FromSeconds(30));
+        var inHand = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.Register(new DelegateProjection("proj", async ev =>
+        {
+            if (ev.Position == 2)
+            {
+                inHand.SetResult();
+                await release.Task;
+            }
+        }));
+        var run = engine.StartAsync(CancellationToken.None);
+        await inHand.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var stop = engine.StopAsync(TimeSpan.FromSeconds(30));
+        release.SetResult();
+
+        Assert.True(await stop.WaitAsync(TimeSpan.FromSeconds(10)));
+        await run.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(2, await store.CheckpointAsync("proj"));
+    }
 }

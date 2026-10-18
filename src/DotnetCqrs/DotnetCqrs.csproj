@@ -16,4 +16,7 @@
     <ProjectReference Include="..\DotnetCqrs.Abstractions\DotnetCqrs.Abstractions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="DotnetCqrs.Tests" />
+  </ItemGroup>
 </Project>
