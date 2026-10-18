@@ -989,11 +989,17 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         finally
         {
             client.Dispose();
-            if (!process.HasExited)
+            // The restore drill disposes the first host before starting the second: a failure in
+            // between leaves a disposed process here, whose HasExited throws and would hide it.
+            try
             {
-                process.Kill(entireProcessTree: true);
-                process.WaitForExit(5000);
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                    process.WaitForExit(5000);
+                }
             }
+            catch (InvalidOperationException) { /* already disposed */ }
             process.Dispose();
         }
     }
