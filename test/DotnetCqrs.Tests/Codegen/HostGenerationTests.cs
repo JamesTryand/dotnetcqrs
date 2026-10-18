@@ -958,14 +958,26 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             // the index nothing to replay (its consumer is past the SubjectErased event), so only
             // the startup purge against the key service's erasure ledger can remove the row.
             process.Kill(entireProcessTree: true);
-            process.WaitForExit(5000);
+            Assert.True(process.WaitForExit(5000), "the killed host should exit before its search store is restored");
             process.Dispose();
-            await using (var search = await OpenSearchStoreAsync(postgres))
+            // Windows releases a killed process's handles on search.db and its -wal/-shm files a
+            // moment after it has exited, and opening it then fails with SQLITE_IOERR or BUSY.
+            // Retry those only: the dead host can't be writing, so anything else is a real failure.
+            for (var attempt = 0; ; attempt++)
             {
-                await using var restore = search.Connection.CreateCommand();
-                restore.CommandText = "INSERT INTO customers__match_email_email (row_key, term, subject) VALUES ('c1', 'alice@example.com', 'c1')";
-                await restore.ExecuteNonQueryAsync();
-                await search.SaveCheckpointAsync(ISearchIndexStore.ErasureLedgerCheckpoint, 0);
+                try
+                {
+                    await using var search = await OpenSearchStoreAsync(postgres);
+                    await using var restore = search.Connection.CreateCommand();
+                    restore.CommandText = "INSERT INTO customers__match_email_email (row_key, term, subject) VALUES ('c1', 'alice@example.com', 'c1')";
+                    await restore.ExecuteNonQueryAsync();
+                    await search.SaveCheckpointAsync(ISearchIndexStore.ErasureLedgerCheckpoint, 0);
+                    break;
+                }
+                catch (Microsoft.Data.Sqlite.SqliteException e) when (e.SqliteErrorCode is 5 or 10 && attempt < 20)
+                {
+                    await Task.Delay(250);
+                }
             }
             port = FreeTcpPort();
             psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
