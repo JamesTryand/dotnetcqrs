@@ -520,6 +520,21 @@ Without it, a scenario whose command's authorization reads read models, or
 whose role the command's role declarations would check, fails, saying so,
 rather than passing a command the gateway would refuse.
 
+The generated host enforces the same declarations at its gateway with nothing
+to wire. When the document declares any command permission, `generate --host`
+writes `Program.cs` to pass `Generated.CommandAuthorization.AuthorizeAsync` to
+`MapCqrsGateway(authorize: ...)`, reading the caller's role from the claim
+named by `Cqrs:RoleClaim` (default `role`) and their own subject id from
+`Cqrs:SubjectClaim` (default the name-identifier claim). A command that
+declares nothing is allowed as before, and a document that declares nothing
+generates the gateway exactly as it always has. The policy is found whatever
+the case of the request's aggregate and command. The `dataSubject` aggregate
+keeps the refusal it has with no hook: who may erase whom is the host's own
+delegate. The scaffold signs no one in, so until the host adds authentication
+every declared command is refused (`403`), as a read model with access rules
+refuses every query until its hooks are wired. Replace the line to resolve
+roles some other way.
+
 ## Where next
 
 - [Concepts](concepts.md) — the vocabulary this tutorial assumes (decider,

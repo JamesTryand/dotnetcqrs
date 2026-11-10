@@ -209,6 +209,75 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
     public Task Generate_host_builds_self_verifies_and_dispatches_a_real_command_over_http()
         => RunOrderFulfillmentHostAsync(postgres: null);
 
+    /// <summary>A generated host enforces the command permissions its document declares, with nothing
+    /// wired by hand: this scaffold signs no one in, so a command whose scope the caller can't meet is
+    /// refused with the scope's own message, and a command declaring nothing is accepted as before.</summary>
+    [Fact(Timeout = 300000)]
+    public async Task A_generated_host_enforces_declared_command_permissions_over_http()
+    {
+        var (genExit, genOutput) = await RunAsync("dotnet",
+        [
+            await CliUnderTest.DllAsync(), "generate",
+            "--input", TestDataPath("state-ownership.json"),
+            "--output", _scratchDir, "--host",
+            "--dotnetcqrs-project", DotnetCqrsProjectPath(),
+        ]);
+        Assert.True(genExit == 0, $"generate --host exited {genExit}:\n{genOutput}");
+        var (buildExit, buildOutput) = await RunAsync("dotnet", ["build", _scratchDir, "-v", "quiet"]);
+        Assert.True(buildExit == 0, $"generated host project did not compile:\n{buildOutput}");
+
+        var port = FreeTcpPort();
+        var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        foreach (var a in new[] { "run", "--project", _scratchDir, "--no-build" }) psi.ArgumentList.Add(a);
+        psi.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}";
+        psi.Environment["CQRS_OPS_PORT"] = FreeTcpPort().ToString(System.Globalization.CultureInfo.InvariantCulture);
+        psi.Environment["CQRS_OPS_BIND"] = "127.0.0.1";
+        psi.Environment["CQRS_STATE_DIR"] = Path.Combine(_scratchDir, "node-state");
+        psi.Environment["DOTNETCQRS_POSTGRES"] = "";
+        psi.Environment.Remove("CQRS_NODE_ID");
+
+        var hostLog = new System.Text.StringBuilder();
+        using var process = StartHost(psi, hostLog);
+        try
+        {
+            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            HttpResponseMessage? requested = null;
+            for (var attempt = 0; attempt < 60 && requested is null; attempt++)
+            {
+                await Task.Delay(500);
+                try
+                {
+                    requested = await client.PostAsJsonAsync("/api/cqrs/loanRequest/l1/RequestLoan",
+                        new { toolId = "t1", branchId = "b1", loanDays = 7 });
+                }
+                catch (HttpRequestException)
+                {
+                    // not listening yet
+                }
+            }
+            Assert.True(requested is not null, $"generated host never answered:\n{Tail(hostLog)}");
+            Assert.True(requested!.StatusCode == HttpStatusCode.OK,
+                $"a command declaring nothing should be accepted, got {requested.StatusCode}: {await requested.Content.ReadAsStringAsync()}\n{Tail(hostLog)}");
+
+            using var approve = await client.PostAsJsonAsync("/api/cqrs/loanRequest/l1/ApproveLoanRequest", new { });
+            Assert.Equal(HttpStatusCode.Forbidden, approve.StatusCode);
+            Assert.Contains("only a volunteer at this loan request's branch may approve it", await approve.Content.ReadAsStringAsync());
+
+            // nothing was recorded for the refused command
+            await using var store = await OpenEventStoreAsync(null);
+            var stream = await store.LoadStreamAsync("loanRequest", "l1");
+            Assert.DoesNotContain(stream, e => e.Type.Contains("Approved", StringComparison.Ordinal));
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
+            }
+        }
+    }
+
     [SkippableFact(Timeout = 600000)]
     public async Task Generate_host_builds_self_verifies_and_dispatches_a_real_command_over_http_on_postgres()
     {

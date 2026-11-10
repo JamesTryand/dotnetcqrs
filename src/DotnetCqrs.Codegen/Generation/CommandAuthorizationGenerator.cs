@@ -32,9 +32,12 @@ namespace DotnetCqrs.Codegen.Generation;
 /// really are provider-standard claim types worth a generic default), the claim a role or
 /// an own id comes from is named by each host, and would mean nothing to another. The
 /// consuming project supplies both resolvers at its own <c>MapCqrsGateway(authorize: ...)</c>
-/// call site -- the same place it hand-wires <c>resolveActor</c> -- and
-/// <see cref="HostProjectGenerator"/>'s generated <c>Program.cs</c> leaves both as the
-/// operator's own addition.</para>
+/// call site -- the same place it hand-wires <c>resolveActor</c>. When the document declares
+/// any command permission, <see cref="HostProjectGenerator"/>'s generated <c>Program.cs</c>
+/// wires this table with resolvers reading claims NAMED IN CONFIGURATION (<c>Cqrs:RoleClaim</c>,
+/// <c>Cqrs:SubjectClaim</c>), so the declarations hold by default without a claim type baked in
+/// here; the host replaces that line to resolve them another way. A document declaring none
+/// generates no wiring at all.</para>
 ///
 /// <para>The membership check a declared <c>scope</c> runs
 /// (<c>command.scope.memberOfVia</c>) compares the member through the field the document
@@ -62,13 +65,19 @@ namespace DotnetCqrs.Codegen.Generation;
 /// </summary>
 public static class CommandAuthorizationGenerator
 {
+    /// <summary>Whether the command declares who may send it (requiredRole, fieldGatedRole,
+    /// requiredOwnership, scope): the commands the policy table holds, and what makes the generated
+    /// host wire the table into its gateway.</summary>
+    public static bool Declares(Command command) =>
+        command.RequiredRole is not null || command.FieldGatedRole is not null
+        || command.RequiredOwnership is not null || command.Scope is not null;
+
     public static GeneratedFile Generate(IReadOnlyList<Domain.Domain> domains, ErasureRequestPolicy? erasureRequest = null)
     {
         var entries = new List<(string Aggregate, Command Command)>();
         foreach (var domain in domains)
             foreach (var command in domain.Commands)
-                if (command.RequiredRole is not null || command.FieldGatedRole is not null
-                    || command.RequiredOwnership is not null || command.Scope is not null)
+                if (Declares(command))
                     entries.Add((domain.Aggregate, command));
 
         var b = new StringBuilder();
@@ -86,12 +95,23 @@ public static class CommandAuthorizationGenerator
         b.AppendLine("public static class CommandAuthorization");
         b.AppendLine("{");
 
+        // Found whatever the case of the request: a decider decides what a command name means, and
+        // one that reads it loosely must not let "openticket" past what "OpenTicket" declares.
         b.AppendLine("    public static readonly IReadOnlyDictionary<(string Aggregate, string Command), CommandAuthorizationPolicy> Policies =");
-        b.AppendLine("        new Dictionary<(string, string), CommandAuthorizationPolicy>");
+        b.AppendLine("        new Dictionary<(string, string), CommandAuthorizationPolicy>(IgnoreCaseKey.Instance)");
         b.AppendLine("        {");
         foreach (var (aggregate, command) in entries)
             b.AppendLine($"            [(\"{aggregate}\", \"{command.Name}\")] = {PolicyLiteral(command)},");
         b.AppendLine("        };");
+        b.AppendLine();
+        b.AppendLine("    private sealed class IgnoreCaseKey : IEqualityComparer<(string, string)>");
+        b.AppendLine("    {");
+        b.AppendLine("        public static readonly IgnoreCaseKey Instance = new();");
+        b.AppendLine("        public bool Equals((string, string) x, (string, string) y) =>");
+        b.AppendLine("            StringComparer.OrdinalIgnoreCase.Equals(x.Item1, y.Item1) && StringComparer.OrdinalIgnoreCase.Equals(x.Item2, y.Item2);");
+        b.AppendLine("        public int GetHashCode((string, string) key) =>");
+        b.AppendLine("            HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(key.Item1), StringComparer.OrdinalIgnoreCase.GetHashCode(key.Item2));");
+        b.AppendLine("    }");
         b.AppendLine();
 
         b.AppendLine("    /// <summary>The runtime's built-in data-subject aggregate, and the one command of it a document may");

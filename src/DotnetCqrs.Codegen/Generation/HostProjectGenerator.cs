@@ -142,6 +142,9 @@ public static class HostProjectGenerator
             .Where(d => GenerationSupport.CollectEventFields(d).Item1.Any(f => f.Pii))
             .Select(d => d.Aggregate).ToHashSet(StringComparer.Ordinal);
         var hasPii = piiAggregates.Count > 0 || mapped.Domains.Any(d => d.ReadModels.Any(rm => rm.Fields.Any(f => f.Pii)));
+        // A document that says who may send any command gets that enforced at the gateway; one that
+        // says nothing generates the gateway exactly as before (no authorize hook at all).
+        var hasCommandPolicies = mapped.Domains.SelectMany(d => d.Commands).Any(CommandAuthorizationGenerator.Declares);
 
         var b = new StringBuilder();
         b.AppendLine("using DotnetCqrs.Codegen;");
@@ -594,15 +597,24 @@ public static class HostProjectGenerator
         b.AppendLine("// Boot is complete once the traffic port listens: /readyz moves from starting to catching_up,");
         b.AppendLine("// and opens when every read model is within threshold (or the catch-up deadline passes).");
         b.AppendLine("app.Lifetime.ApplicationStarted.Register(() => health.BeginCatchUp(engine.Status, readiness.CatchUpDeadline, Console.WriteLine));");
-        // Generated.CommandAuthorization.AuthorizeAsync (Generated/CommandAuthorization.cs)
-        // is always emitted, but never auto-wired here -- same posture as resolveActor
-        // above, which this generator also leaves unset. Both need project-specific
-        // resolver delegates (an actor id, an own role, an own subject id) this generator
-        // has no way to know; wiring `authorize: (user, aggregate, command, id, payload,
-        // ct) => Generated.CommandAuthorization.AuthorizeAsync(user, aggregate, command,
-        // id, payload, readModelDb, resolveOwnRole, resolveOwnSubjectId, ct)` -- closing
-        // over this same file's own `readModelDb`, not a new route-handler parameter --
-        // is the operator's own addition, the same way resolveActor already is.
+        // Generated.CommandAuthorization.AuthorizeAsync (Generated/CommandAuthorization.cs) is
+        // wired whenever the document declares a command permission, so what the model says holds
+        // with nothing to add. The role and own subject id come from claims named in configuration
+        // (Cqrs:RoleClaim, Cqrs:SubjectClaim), so no claim type is baked into this generator or the
+        // runtime (CommandAuthorizationGenerator's doc comment says why); the host can replace the
+        // line. A document that declares none generates the gateway exactly as before.
+        if (hasCommandPolicies)
+        {
+            b.AppendLine("// Who may send a command, as the document declares it (Generated/CommandAuthorization.cs), is enforced");
+            b.AppendLine("// at the gateway below; a command that declares nothing is allowed as before. The caller's role and own");
+            b.AppendLine("// subject id are claims of the signed-in user, named by Cqrs:RoleClaim (default \"role\") and");
+            b.AppendLine("// Cqrs:SubjectClaim (default the name-identifier claim). This scaffold signs no one in, so a command");
+            b.AppendLine("// that declares a permission is refused (403) until the host adds authentication.");
+            b.AppendLine("var roleClaim = builder.Configuration[\"Cqrs:RoleClaim\"] ?? \"role\";");
+            b.AppendLine("var subjectClaim = builder.Configuration[\"Cqrs:SubjectClaim\"] ?? System.Security.Claims.ClaimTypes.NameIdentifier;");
+            b.AppendLine("string ResolveOwnRole(System.Security.Claims.ClaimsPrincipal user) => user.FindFirst(roleClaim)?.Value ?? \"\";");
+            b.AppendLine("string ResolveOwnSubjectId(System.Security.Claims.ClaimsPrincipal user) => user.FindFirst(subjectClaim)?.Value ?? \"\";");
+        }
         if (hasPii)
         {
             b.AppendLine("// Erasure is permanent, so the gateway refuses every dataSubject command (RequestErasure, EraseSubject)");
@@ -623,9 +635,22 @@ public static class HostProjectGenerator
         b.AppendLine("        ? CqrsGatewayEndpoints.ForwardTo(new HttpClient { BaseAddress = writerUrl })");
         b.AppendLine("        : CqrsGatewayEndpoints.RefuseReadOnly);");
         b.AppendLine("else");
-        b.AppendLine(hasPii
-            ? "    app.MapCqrsGateway(authorize: allowUnauthorizedErasure ? (_, _, _, _, _, _) => Task.FromResult(true) : null);"
-            : "    app.MapCqrsGateway();");
+        if (hasCommandPolicies)
+        {
+            // dataSubject keeps exactly the refusal (or the throwaway-run opening) it had with no
+            // hook: who may erase whom stays the host's own decision, never this wiring's.
+            var erasureOpen = hasPii ? "allowUnauthorizedErasure" : "false";
+            b.AppendLine("    app.MapCqrsGateway(authorize: (user, aggregate, command, aggregateId, payload, ct) =>");
+            b.AppendLine("        string.Equals(aggregate, Generated.CommandAuthorization.DataSubjectAggregate, StringComparison.OrdinalIgnoreCase)");
+            b.AppendLine($"            ? ({erasureOpen} ? Task.FromResult(true) : throw new CommandForbiddenException(");
+            b.AppendLine("                \"erasure commands are refused until the host wires an authorize policy deciding who may send them; nothing was recorded\"))");
+            b.AppendLine("            : Generated.CommandAuthorization.AuthorizeAsync(user, aggregate, command, aggregateId, payload,");
+            b.AppendLine("                readModelDb, ResolveOwnRole, ResolveOwnSubjectId, ct));");
+        }
+        else
+            b.AppendLine(hasPii
+                ? "    app.MapCqrsGateway(authorize: allowUnauthorizedErasure ? (_, _, _, _, _, _) => Task.FromResult(true) : null);"
+                : "    app.MapCqrsGateway();");
         // Each Map{Model}Route() below (ReadModelQueryGenerator) takes its own optional
         // `resolveOwnRole` for a read model declaring `requiredRole` (schema 2.7.0) --
         // same "left unset here, wired by the operator" posture as authorize/resolveActor
