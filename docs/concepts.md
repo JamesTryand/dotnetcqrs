@@ -2,7 +2,7 @@
 
 You know CRUD: a table has rows, a request updates a row in place, a query
 reads the current row. `dotnetcqrs` doesn't keep that experience on the read
-side the way [pocketcqrs](https://journal.bureau.tryand.uk/lab/pocketcqrs)
+side the way [pocketcqrs](https://github.com/jamestryand/pocketcqrs)
 does — there's no PocketBase underneath handing you REST/realtime/auth for
 free — but the underlying idea is the same, and it's the whole point of CQRS
 (Command Query Responsibility Segregation) and event sourcing.

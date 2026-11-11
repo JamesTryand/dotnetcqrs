@@ -6,7 +6,7 @@ namespace DotnetCqrs.Crypto;
 
 /// <summary>HTTP implementation of <see cref="IKmsClient"/>. Expects
 /// <paramref name="http"/>.BaseAddress already set to the facade's base URL (e.g.
-/// <c>https://kms.bureau.tryand.uk:8080/</c>) — construction/TLS/lifetime of the
+/// <c>https://kms.example:8080/</c>) — construction/TLS/lifetime of the
 /// <see cref="HttpClient"/> is the caller's concern (DI's <c>IHttpClientFactory</c> in a
 /// real host), same split every other facade caller in this repo uses.</summary>
 public sealed class KmsClient(HttpClient http) : IKmsClient
@@ -140,7 +140,7 @@ public sealed class KmsClient(HttpClient http) : IKmsClient
         return [.. body.Results.Select(r => new KmsBatchHmacItem(r.Hmac, r.Error))];
     }
 
-    // Wire shapes match docs/facade-api-contract.md exactly (journal.bureau.tryand.uk/kms) —
+    // Wire shapes match the key-management facade's API contract exactly —
     // kept private/internal to this file since nothing outside the HTTP transport needs them.
     private sealed record EncryptRequest([property: JsonPropertyName("plaintext")] string Plaintext);
     private sealed record EncryptResponse([property: JsonPropertyName("ciphertext")] string Ciphertext);

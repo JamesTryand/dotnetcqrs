@@ -4,7 +4,7 @@ A CQRS + event sourcing library for .NET: [deciders](https://thinkbeforecoding.c
 (`InitialState` / `Decide` / `Evolve`) commit events to an append-only
 SQLite log, projections fold that log into ordinary read-model tables, and
 reactors turn committed events into follow-up commands — the same shape as
-[pocketcqrs](https://journal.bureau.tryand.uk/lab/pocketcqrs), ported from
+[pocketcqrs](https://github.com/jamestryand/pocketcqrs), ported from
 Go/PocketBase to C#/.NET rather than wrapping it.
 
 - **Write side**: `DeciderRegistry` replays an aggregate's stream through
