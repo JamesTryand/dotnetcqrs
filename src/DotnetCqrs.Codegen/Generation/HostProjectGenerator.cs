@@ -1,4 +1,6 @@
+using System.Reflection;
 using System.Text;
+using System.Text.Json.Nodes;
 using DotnetCqrs.Codegen.Mapping;
 using DotnetCqrs.Codegen.Model;
 
@@ -71,9 +73,46 @@ namespace DotnetCqrs.Codegen.Generation;
 /// </summary>
 public static class HostProjectGenerator
 {
+    /// <summary>The dotnetcqrs packages a generated host references (the codegen one for its <c>--verify</c>).</summary>
+    public static readonly IReadOnlyList<string> PackageIds =
+    [
+        "JamesTryand.DotnetCqrs", "JamesTryand.DotnetCqrs.Host", "JamesTryand.DotnetCqrs.Codegen",
+        "JamesTryand.DotnetCqrs.Crypto", "JamesTryand.DotnetCqrs.Postgres", "JamesTryand.DotnetCqrs.Telemetry.Nats",
+    ];
+
+    /// <summary>The package id of this generator as a <c>dotnet tool</c>, as a tool manifest names it.</summary>
+    public const string ToolPackageId = "jamestryand.dotnetcqrs.codegen.cli";
+
+    /// <summary>Where a generated host's tool manifest goes, relative to the project folder.</summary>
+    public const string ToolManifestPath = ".config/dotnet-tools.json";
+
+    /// <summary>
+    /// The version this generator was built as (its informational version without the source hash the SDK
+    /// appends): the version a generated host's package references and tool manifest name by default, so
+    /// one version pins both the generator and the libraries the generated code is written against.
+    /// </summary>
+    public static string GeneratorVersion { get; } = ReadGeneratorVersion();
+
+    private static string ReadGeneratorVersion()
+    {
+        var assembly = typeof(HostProjectGenerator).Assembly;
+        var info = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+        var plus = info.IndexOf('+');
+        return plus < 0 ? info : info[..plus];
+    }
+
+    /// <summary>
+    /// Generates the host project. With <paramref name="dotnetCqrsProjectPath"/> null (the supported way) the
+    /// project references the dotnetcqrs packages at <paramref name="version"/> (default
+    /// <see cref="GeneratorVersion"/>) and a tool manifest (<see cref="ToolManifestPath"/>) pins this generator
+    /// at the same version: the project lives in its own repository and depends on dotnetcqrs as packages, never
+    /// its source. Given a path to a checkout's <c>DotnetCqrs.csproj</c>, it references that checkout's projects
+    /// instead and writes no manifest: for trying an unreleased version, and for this repository's own tests.
+    /// </summary>
     public static IReadOnlyList<GeneratedFile> Generate(
-        Document document, MappingResult mapped, string projectName, string dotnetCqrsProjectPath,
-        IReadOnlyDictionary<string, string> aggregateOverrides)
+        Document document, MappingResult mapped, string projectName, string? dotnetCqrsProjectPath,
+        IReadOnlyDictionary<string, string> aggregateOverrides, string? version = null)
     {
         var files = new List<GeneratedFile>();
         foreach (var domain in mapped.Domains)
@@ -87,12 +126,57 @@ public static class HostProjectGenerator
         // per-aggregate/per-command the way everything else above is.
         files.Add(CommandAuthorizationGenerator.Generate(mapped.Domains, mapped.ErasureRequest));
 
-        files.Add(GenerateCsproj(projectName, dotnetCqrsProjectPath));
-        files.Add(GenerateProgram(mapped, projectName, dotnetCqrsProjectPath, aggregateOverrides));
+        var pinned = version ?? GeneratorVersion;
+        files.Add(dotnetCqrsProjectPath is null
+            ? GenerateCsproj(projectName, PackageReferences(pinned))
+            : GenerateCsproj(projectName, ProjectReferences(dotnetCqrsProjectPath)));
+        if (dotnetCqrsProjectPath is null)
+            files.Add(new GeneratedFile(ToolManifestPath, ToolManifest(null, pinned)));
+        files.Add(GenerateProgram(mapped, projectName, aggregateOverrides));
         return files;
     }
 
-    private static GeneratedFile GenerateCsproj(string projectName, string dotnetCqrsProjectPath)
+    /// <summary>
+    /// A tool manifest pinning this generator at <paramref name="version"/>. Given an existing manifest's
+    /// text, only this generator's entry is added or changed; its other tools are kept as they are.
+    /// </summary>
+    public static string ToolManifest(string? existingJson, string version)
+    {
+        var root = existingJson is null ? null : JsonNode.Parse(existingJson) as JsonObject;
+        root ??= new JsonObject { ["version"] = 1, ["isRoot"] = true };
+        if (root["tools"] is not JsonObject tools)
+        {
+            tools = new JsonObject();
+            root["tools"] = tools;
+        }
+        tools[ToolPackageId] = new JsonObject
+        {
+            ["version"] = version,
+            ["commands"] = new JsonArray("dotnetcqrs-codegen"),
+            ["rollForward"] = false,
+        };
+        return root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + "\n";
+    }
+
+    /// <summary>
+    /// The tool manifest <c>dotnet tool</c> would use for <paramref name="directory"/>: the nearest
+    /// <c>.config/dotnet-tools.json</c> or <c>dotnet-tools.json</c> at or above it, or null when there is none.
+    /// </summary>
+    public static string? FindToolManifest(string directory)
+    {
+        for (var dir = new DirectoryInfo(Path.GetFullPath(directory)); dir is not null; dir = dir.Parent)
+        {
+            foreach (var candidate in new[] { Path.Combine(dir.FullName, ".config", "dotnet-tools.json"), Path.Combine(dir.FullName, "dotnet-tools.json") })
+                if (File.Exists(candidate))
+                    return candidate;
+        }
+        return null;
+    }
+
+    private static string PackageReferences(string version) =>
+        string.Join("\n", PackageIds.Select(id => $"    <PackageReference Include=\"{id}\" Version=\"{version}\" />"));
+
+    private static string ProjectReferences(string dotnetCqrsProjectPath)
     {
         // DotnetCqrs.Host and DotnetCqrs.Codegen are siblings of DotnetCqrs under the
         // same src/ directory in every environment this generator has been used against
@@ -104,7 +188,15 @@ public static class HostProjectGenerator
         var cryptoProjectPath = Path.Combine(srcDir, "DotnetCqrs.Crypto", "DotnetCqrs.Crypto.csproj");
         var postgresProjectPath = Path.Combine(srcDir, "DotnetCqrs.Postgres", "DotnetCqrs.Postgres.csproj");
         var natsTelemetryProjectPath = Path.Combine(srcDir, "DotnetCqrs.Telemetry.Nats", "DotnetCqrs.Telemetry.Nats.csproj");
+        return string.Join("\n", new[]
+        {
+            dotnetCqrsProjectPath, hostProjectPath, codegenProjectPath, cryptoProjectPath, postgresProjectPath,
+            natsTelemetryProjectPath,
+        }.Select(path => $"    <ProjectReference Include=\"{path}\" />"));
+    }
 
+    private static GeneratedFile GenerateCsproj(string projectName, string references)
+    {
         var source = $"""
             <Project Sdk="Microsoft.NET.Sdk.Web">
 
@@ -116,12 +208,7 @@ public static class HostProjectGenerator
               </PropertyGroup>
 
               <ItemGroup>
-                <ProjectReference Include="{dotnetCqrsProjectPath}" />
-                <ProjectReference Include="{hostProjectPath}" />
-                <ProjectReference Include="{codegenProjectPath}" />
-                <ProjectReference Include="{cryptoProjectPath}" />
-                <ProjectReference Include="{postgresProjectPath}" />
-                <ProjectReference Include="{natsTelemetryProjectPath}" />
+            {references}
               </ItemGroup>
 
               <ItemGroup>
@@ -134,7 +221,7 @@ public static class HostProjectGenerator
     }
 
     private static GeneratedFile GenerateProgram(
-        MappingResult mapped, string projectName, string dotnetCqrsProjectPath, IReadOnlyDictionary<string, string> aggregateOverrides)
+        MappingResult mapped, string projectName, IReadOnlyDictionary<string, string> aggregateOverrides)
     {
         // A domain whose events carry field.pii gets a generated PiiProtector; only those
         // aggregates register one. Any PII at all switches on the key-service wiring.

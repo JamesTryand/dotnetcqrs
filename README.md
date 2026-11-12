@@ -51,7 +51,10 @@ Go/PocketBase to C#/.NET rather than wrapping it.
   [EventModeling](https://eventmodeling.org) document — wiring correct,
   business rules left as stubs for you to fill in — or a whole runnable
   host with `--host`, and verify a document's own scenarios against the
-  result. Fields the document marks `pii` are wired for encryption and
+  result. A generated host lives in its own repository and depends on
+  dotnetcqrs as NuGet packages, never its source: one pinned version of the
+  `dotnetcqrs-codegen` tool writes package references at that same version
+  (see [the tutorial](docs/tutorial.md#running-it-as-a-host)). Fields the document marks `pii` are wired for encryption and
   erasure end to end, including search over them (keyed-hash indexes for
   exact and prefix matches).
 

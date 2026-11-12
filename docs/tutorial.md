@@ -347,11 +347,36 @@ every projection running, the command gateway
 model (`GET /api/query/{collection}`):
 
 ```sh
-dotnet run --project src/DotnetCqrs.Codegen.Cli -- generate \
+dotnet new tool-manifest          # once, in your own repository
+dotnet tool install JamesTryand.DotnetCqrs.Codegen.Cli --version 0.37.0
+dotnet tool run dotnetcqrs-codegen generate \
   --input order-fulfillment.json --output OrderFulfillment --host \
-  --dotnetcqrs-project src/DotnetCqrs/DotnetCqrs.csproj \
   --aggregate-override notify-shipping-partner=ShippingNotification
 ```
+
+The project lives in your repository, not in dotnetcqrs's. Its `.csproj`
+references the dotnetcqrs packages (`JamesTryand.DotnetCqrs`, `.Host`,
+`.Codegen`, `.Crypto`, `.Postgres`, `.Telemetry.Nats`) at the version of the
+tool that generated it, and the tool manifest pins that tool at the same
+version, so one version pins both the generator and the libraries its code is
+written against (0.37.0 is the first release that generates this way). The
+manifest is the one `dotnet tool` itself finds, the nearest at or above the
+project folder (here, the one `dotnet new tool-manifest` made); only this
+tool's entry in it changes. With none, the project gets its own
+`.config/dotnet-tools.json`. `--dotnetcqrs-version` names a different
+published version.
+
+**Changing the model:** edit the document and run the same `generate`
+command again (`dotnet tool restore` first on a fresh clone).
+**Upgrading:** `dotnet tool update JamesTryand.DotnetCqrs.Codegen.Cli
+--version <new>`, then `generate` again: the `.csproj` and the manifest move
+to the new version together. Regenerating rewrites the generated files, so
+keep your own code in files of your own, and commit what is generated.
+
+`--dotnetcqrs-project <checkout>/src/DotnetCqrs/DotnetCqrs.csproj` references
+a dotnetcqrs checkout's projects instead, and writes no manifest. It is only
+for trying a version that is not yet published; this repository's own tests
+use it to build against the code under test.
 
 When the document has personal data, the host needs the key-management
 facade. It reads the facade's base URL from `KMS_FACADE_URL`, and refuses to
