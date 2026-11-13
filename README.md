@@ -108,11 +108,12 @@ dotnet test dotnetcqrs.slnx
 
 Under active development. No stability guarantees on the public API.
 
-Preliminary NuGet packages exist as `JamesTryand.DotnetCqrs` and
-`JamesTryand.DotnetCqrs.*` (currently v0.9.0). They were published for a
-piece of work that needed them early; use them if you need packages in the
-meantime, but neither the package names nor their contents are final.
-Otherwise, consume via project/source reference.
+The NuGet packages are `JamesTryand.DotnetCqrs` and `JamesTryand.DotnetCqrs.*`
+on nuget.org (currently v0.37.0). Consume them as package references, with the
+generator pinned as a `dotnet tool` at the same version: that is the supported
+way for an application, which lives in its own repository. A project or source
+reference is only for trying an unreleased version. Neither the package names
+nor their contents are final yet.
 
 ## License
 
