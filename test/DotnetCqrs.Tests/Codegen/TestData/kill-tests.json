@@ -1,0 +1,188 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jamestryand/eventmodelschema/main/schema/eventmodeling.schema.json",
+  "eventModelingSchemaVersion": "2.0.0",
+  "id": "kill-tests",
+  "name": "Kill Tests",
+  "description": "The document the host kill tests generate a host from: a note is created once, a read model lists notes, and an automation stamps every note on a stamp stream derived from it.",
+  "swimlanes": [
+    {
+      "id": "notes",
+      "name": "Notes",
+      "kind": "team"
+    },
+    {
+      "id": "stamps",
+      "name": "Stamps",
+      "kind": "system"
+    }
+  ],
+  "events": {
+    "note-created": {
+      "name": "Note Created",
+      "swimlaneId": "notes",
+      "aggregate": "Note",
+      "fields": [
+        {
+          "name": "noteId",
+          "type": "string",
+          "idAttribute": true
+        },
+        {
+          "name": "title",
+          "type": "string"
+        }
+      ]
+    },
+    "stamp-created": {
+      "name": "Stamp Created",
+      "swimlaneId": "stamps",
+      "aggregate": "Stamp",
+      "fields": [
+        {
+          "name": "stampId",
+          "type": "string",
+          "idAttribute": true
+        }
+      ]
+    }
+  },
+  "commands": {
+    "create-note": {
+      "name": "Create Note",
+      "aggregate": "Note",
+      "fields": [
+        {
+          "name": "title",
+          "type": "string"
+        }
+      ]
+    },
+    "create-stamp": {
+      "name": "Create Stamp",
+      "aggregate": "Stamp"
+    }
+  },
+  "readModels": {
+    "note-list": {
+      "name": "Note List",
+      "question": "Which notes are there, and what are they called?",
+      "builtFromEventIds": [
+        "note-created"
+      ],
+      "fields": [
+        {
+          "name": "noteId",
+          "type": "string",
+          "idAttribute": true
+        },
+        {
+          "name": "title",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "screens": {
+    "note-screen": {
+      "name": "Notes"
+    }
+  },
+  "automations": {
+    "stamp-notes": {
+      "name": "Stamp Notes",
+      "description": "Stamps every note once, on a stamp stream derived from the note."
+    }
+  },
+  "slices": [
+    {
+      "id": "create-note-slice",
+      "name": "Create Note",
+      "pattern": "stateChange",
+      "swimlaneId": "notes",
+      "status": "done",
+      "screenId": "note-screen",
+      "commandId": "create-note",
+      "eventIds": [
+        "note-created"
+      ],
+      "scenarios": [
+        {
+          "id": "create-note-records-note-created",
+          "name": "Creating a note records Note Created",
+          "kind": "stateChange",
+          "given": [],
+          "when": {
+            "commandId": "create-note",
+            "data": {
+              "title": "first"
+            }
+          },
+          "then": {
+            "events": [
+              {
+                "eventId": "note-created",
+                "data": {
+                  "noteId": "note-1",
+                  "title": "first"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "note-list-slice",
+      "name": "Note List",
+      "pattern": "stateView",
+      "swimlaneId": "notes",
+      "status": "done",
+      "screenId": "note-screen",
+      "readModelId": "note-list",
+      "scenarios": []
+    },
+    {
+      "id": "stamp-notes-slice",
+      "name": "Stamp Notes",
+      "pattern": "automation",
+      "swimlaneId": "stamps",
+      "status": "done",
+      "automationId": "stamp-notes",
+      "triggerEventIds": [
+        "note-created"
+      ],
+      "commandId": "create-stamp",
+      "resultEventIds": [
+        "stamp-created"
+      ],
+      "scenarios": [
+        {
+          "id": "a-created-note-is-stamped",
+          "name": "A created note is stamped",
+          "kind": "stateChange",
+          "given": [
+            {
+              "eventId": "note-created",
+              "data": {
+                "noteId": "note-1",
+                "title": "first"
+              }
+            }
+          ],
+          "when": {
+            "commandId": "create-stamp",
+            "data": {}
+          },
+          "then": {
+            "events": [
+              {
+                "eventId": "stamp-created",
+                "data": {}
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
