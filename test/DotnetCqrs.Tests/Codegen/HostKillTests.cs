@@ -3,6 +3,8 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using DotnetCqrs.EventStore;
+using DotnetCqrs.Postgres;
+using Npgsql;
 
 namespace DotnetCqrs.Tests.Codegen;
 
@@ -20,7 +22,8 @@ namespace DotnetCqrs.Tests.Codegen;
 /// exists" rule.</para>
 ///
 /// <para>Each round checks its kill landed part way through, so a badly timed run fails instead
-/// of passing without testing anything. SQLite only: the Postgres store has no kill test yet.</para>
+/// of passing without testing anything. On SQLite, and on Postgres when <c>DOTNETCQRS_PG</c> is set
+/// (<c>ops/postgres</c>): each Postgres round runs in a database of its own, made afresh.</para>
 /// </summary>
 [Collection(CompilesCollection.Name)]
 [Trait("Category", "Slow")]
@@ -30,7 +33,16 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
     /// is acknowledged. Every acknowledged command must then have exactly one event, and no note
     /// more than one.</summary>
     [Fact(Timeout = 600000)]
-    public async Task Acknowledged_commands_survive_a_real_process_kill()
+    public Task Acknowledged_commands_survive_a_real_process_kill() => AcknowledgedCommandsAsync(postgres: false);
+
+    [SkippableFact(Timeout = 600000)]
+    public Task Acknowledged_commands_survive_a_real_process_kill_on_postgres()
+    {
+        Skip.If(host.PostgresBase is null, "DOTNETCQRS_PG is not set");
+        return AcknowledgedCommandsAsync(postgres: true);
+    }
+
+    private async Task AcknowledgedCommandsAsync(bool postgres)
     {
         const int rounds = 5;
         const int commands = 200;
@@ -38,10 +50,10 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
         var midBurst = 0;
         for (var round = 0; round < rounds; round++)
         {
-            host.ResetData();
+            host.ResetData(postgres);
             var acked = new System.Collections.Concurrent.ConcurrentDictionary<string, bool>();
             var firstAck = new TaskCompletionSource();
-            using (var node = await host.StartAsync())
+            using (var node = await host.StartAsync(postgres))
             {
                 using var client = new HttpClient { BaseAddress = node.BaseAddress, Timeout = TimeSpan.FromSeconds(30) };
                 var burst = Enumerable.Range(0, commands).Select(async i =>
@@ -69,9 +81,9 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
             }
             if (acked.Count is > 0 and < commands) midBurst++;
 
-            using (await host.StartAsync())
+            using (await host.StartAsync(postgres))
             {
-                await using var store = await SqliteEventStore.OpenReadOnlyAsync(host.EventsPath);
+                await using var store = await host.OpenStoreAsync(postgres);
                 for (var i = 0; i < commands; i++)
                 {
                     var id = $"k{i}";
@@ -93,16 +105,25 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
     /// where nothing but the reaction's command id refuses a repeat). After a restart every note
     /// has one row with its title, exactly one stamp and exactly one touch.</summary>
     [Fact(Timeout = 900000)]
-    public async Task Consumers_catch_up_once_after_a_real_process_kill()
+    public Task Consumers_catch_up_once_after_a_real_process_kill() => ConsumersCatchUpAsync(postgres: false);
+
+    [SkippableFact(Timeout = 900000)]
+    public Task Consumers_catch_up_once_after_a_real_process_kill_on_postgres()
+    {
+        Skip.If(host.PostgresBase is null, "DOTNETCQRS_PG is not set");
+        return ConsumersCatchUpAsync(postgres: true);
+    }
+
+    private async Task ConsumersCatchUpAsync(bool postgres)
     {
         const int rounds = 3;
         const int backlog = 1500;
         var rng = new Random(7);
         for (var round = 0; round < rounds; round++)
         {
-            host.ResetData();
+            host.ResetData(postgres);
             // the backlog, written with the host down, as the decider would write it
-            await using (var store = await SqliteEventStore.OpenAsync(host.EventsPath))
+            await using (var store = await host.OpenStoreAsync(postgres, readOnly: false))
             {
                 for (var i = 0; i < backlog; i++)
                 {
@@ -119,10 +140,10 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
                 using var client = new HttpClient { BaseAddress = node.BaseAddress };
                 return await RowCountAsync(client);
             });
-            var stampsAtKill = await KillPartWayAsync(round, "the stamp reactor", async _ => (await CountAsync("StampCreated")).Count);
-            var touchesAtKill = await KillPartWayAsync(round, "the touch reactor", async _ => (await CountAsync("NoteTouched")).Count);
+            var stampsAtKill = await KillPartWayAsync(round, "the stamp reactor", async _ => (await CountAsync(postgres, "StampCreated")).Count);
+            var touchesAtKill = await KillPartWayAsync(round, "the touch reactor", async _ => (await CountAsync(postgres, "NoteTouched")).Count);
 
-            using (var node = await host.StartAsync())
+            using (var node = await host.StartAsync(postgres))
             {
                 using var client = new HttpClient { BaseAddress = node.BaseAddress };
                 // every consumer finishing, or settling short of the backlog: lost or stuck
@@ -130,7 +151,7 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
                 var since = DateTime.UtcNow;
                 while (true)
                 {
-                    var now = (await RowCountAsync(client), (await CountAsync("StampCreated")).Count, (await CountAsync("NoteTouched")).Count);
+                    var now = (await RowCountAsync(client), (await CountAsync(postgres, "StampCreated")).Count, (await CountAsync(postgres, "NoteTouched")).Count);
                     if (now.Item1 >= backlog && now.Item2 >= backlog && now.Item3 >= backlog) break;
                     if (now != last) (last, since) = (now, DateTime.UtcNow);
                     else Assert.True(DateTime.UtcNow - since < TimeSpan.FromSeconds(15),
@@ -155,8 +176,8 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
                 var previous = -1L;
                 while (true)
                 {
-                    stamps = await CountAsync("StampCreated");
-                    touches = await CountAsync("NoteTouched");
+                    stamps = await CountAsync(postgres, "StampCreated");
+                    touches = await CountAsync(postgres, "NoteTouched");
                     var total = stamps.Values.Sum() + touches.Values.Sum();
                     if (total == previous) break;
                     previous = total;
@@ -179,7 +200,7 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
         async Task<int> KillPartWayAsync(int round, string consumer, Func<HostProcess, Task<int>> progress)
         {
             int atKill;
-            using (var node = await host.StartAsync())
+            using (var node = await host.StartAsync(postgres))
             {
                 var deadline = DateTime.UtcNow.AddSeconds(90);
                 while (await progress(node) == 0)
@@ -210,10 +231,10 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
     }
 
     /// <summary>Events of <paramref name="type"/> by stream id, read from the whole log.</summary>
-    private async Task<Dictionary<string, int>> CountAsync(string type)
+    private async Task<Dictionary<string, int>> CountAsync(bool postgres, string type)
     {
         var counts = new Dictionary<string, int>();
-        await using var store = await SqliteEventStore.OpenReadOnlyAsync(host.EventsPath);
+        await using var store = await host.OpenStoreAsync(postgres);
         long after = 0;
         while (true)
         {
@@ -257,9 +278,31 @@ public sealed class KillHostFixture : IDisposable
 
     public string EventsPath => Path.Combine(DataDir, "events.db");
 
+    /// <summary>The Postgres server the Postgres rounds use (<c>DOTNETCQRS_PG</c>), or null.</summary>
+    public string? PostgresBase { get; } =
+        Environment.GetEnvironmentVariable("DOTNETCQRS_PG") is { Length: > 0 } pg ? pg : null;
+
+    /// <summary>The database a Postgres round's host keeps everything in.</summary>
+    public string PostgresDatabase =>
+        new NpgsqlConnectionStringBuilder(PostgresBase) { Database = "dotnetcqrs_kill" }.ConnectionString;
+
+    /// <summary>The host's event log, opened from outside it (on SQLite read-only unless the backlog is written).</summary>
+    public async Task<IEventStore> OpenStoreAsync(bool postgres, bool readOnly = true) =>
+        postgres ? await PostgresEventStore.OpenAsync(PostgresDatabase)
+        : readOnly ? await SqliteEventStore.OpenReadOnlyAsync(EventsPath) : await SqliteEventStore.OpenAsync(EventsPath);
+
     /// <summary>Clears the host's data for a new round; the host must not be running.</summary>
-    public void ResetData()
+    public void ResetData(bool postgres = false)
     {
+        if (postgres)
+        {
+            using var connection = new NpgsqlConnection(PostgresBase);
+            connection.Open();
+            using (var drop = new NpgsqlCommand("DROP DATABASE IF EXISTS dotnetcqrs_kill WITH (FORCE)", connection))
+                drop.ExecuteNonQuery();
+            using (var create = new NpgsqlCommand("CREATE DATABASE dotnetcqrs_kill", connection))
+                create.ExecuteNonQuery();
+        }
         for (var attempt = 0; ; attempt++)
         {
             try
@@ -276,7 +319,7 @@ public sealed class KillHostFixture : IDisposable
     }
 
     /// <summary>Starts the host on a free port and waits until it answers.</summary>
-    public async Task<HostProcess> StartAsync()
+    public async Task<HostProcess> StartAsync(bool postgres = false)
     {
         var port = FreePort();
         var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
@@ -285,7 +328,7 @@ public sealed class KillHostFixture : IDisposable
         psi.Environment["CQRS_OPS_PORT"] = "0";
         psi.Environment["CQRS_OPS_BIND"] = "127.0.0.1";
         psi.Environment["CQRS_STATE_DIR"] = Path.Combine(_dir, "node-state");
-        psi.Environment["DOTNETCQRS_POSTGRES"] = "";
+        psi.Environment["DOTNETCQRS_POSTGRES"] = postgres ? PostgresDatabase : "";
         psi.Environment.Remove("CQRS_NODE_ID");
         var node = new HostProcess(Process.Start(psi)!, new Uri($"http://127.0.0.1:{port}"));
         using var client = new HttpClient { BaseAddress = node.BaseAddress };
