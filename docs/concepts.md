@@ -126,9 +126,11 @@ watches committed events and, on a match, dispatches a *follow-up command*
 — back through the same decider registry a human caller would use, not by
 appending events directly. `TaskCompleted` → reactor → `CreateNote`
 command → decider decides → `NoteCreated` event. Because the reaction is a
-real command, it can be refused, it's idempotent under replay (a reactor
-that dispatches the same command with the same target ID twice doesn't
-duplicate), and it shows up in the log with causation/correlation metadata
+real command, it can be refused, it's idempotent under replay (each
+reaction carries a command id derived from its reactor, its cause and its
+index, and the registry skips a command whose id is already in the target
+stream, so a reaction redelivered after a crash doesn't duplicate), and it
+shows up in the log with causation/correlation metadata
 tying it back to the event that triggered it. This is the multi-aggregate
 "saga" pattern CQRS literature talks about — one decider's fact triggering
 another decider's decision.
