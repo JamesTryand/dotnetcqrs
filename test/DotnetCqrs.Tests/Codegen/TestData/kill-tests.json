@@ -3,7 +3,7 @@
   "eventModelingSchemaVersion": "2.0.0",
   "id": "kill-tests",
   "name": "Kill Tests",
-  "description": "The document the host kill tests generate a host from: a note is created once, a read model lists notes, and an automation stamps every note on a stamp stream derived from it.",
+  "description": "The document the host kill tests generate a host from: a note is created once, a read model lists notes, an automation stamps every note on a stamp stream derived from it, and another touches every note on its own stream.",
   "swimlanes": [
     {
       "id": "notes",
@@ -44,6 +44,11 @@
           "idAttribute": true
         }
       ]
+    },
+    "note-touched": {
+      "name": "Note Touched",
+      "swimlaneId": "notes",
+      "aggregate": "Note"
     }
   },
   "commands": {
@@ -60,6 +65,10 @@
     "create-stamp": {
       "name": "Create Stamp",
       "aggregate": "Stamp"
+    },
+    "touch-note": {
+      "name": "Touch Note",
+      "aggregate": "Note"
     }
   },
   "readModels": {
@@ -91,6 +100,10 @@
     "stamp-notes": {
       "name": "Stamp Notes",
       "description": "Stamps every note once, on a stamp stream derived from the note."
+    },
+    "touch-notes": {
+      "name": "Touch Notes",
+      "description": "Touches every note once, on the note's own stream: no create-once rule refuses a repeat."
     }
   },
   "slices": [
@@ -177,6 +190,49 @@
             "events": [
               {
                 "eventId": "stamp-created",
+                "data": {}
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "touch-notes-slice",
+      "name": "Touch Notes",
+      "pattern": "automation",
+      "swimlaneId": "notes",
+      "status": "done",
+      "automationId": "touch-notes",
+      "triggerEventIds": [
+        "note-created"
+      ],
+      "commandId": "touch-note",
+      "resultEventIds": [
+        "note-touched"
+      ],
+      "scenarios": [
+        {
+          "id": "a-created-note-is-touched",
+          "name": "A created note is touched",
+          "kind": "stateChange",
+          "given": [
+            {
+              "eventId": "note-created",
+              "data": {
+                "noteId": "note-1",
+                "title": "first"
+              }
+            }
+          ],
+          "when": {
+            "commandId": "touch-note",
+            "data": {}
+          },
+          "then": {
+            "events": [
+              {
+                "eventId": "note-touched",
                 "data": {}
               }
             ]

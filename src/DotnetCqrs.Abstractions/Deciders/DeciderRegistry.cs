@@ -81,6 +81,14 @@ public sealed class DeciderRegistry(IEventStore store)
 
         var stream = await store.LoadStreamAsync(aggregate, aggregateId, ct);
 
+        // A command carrying a commandId whose events are already in this stream was applied
+        // before: a redelivery (a reactor's or an external caller's follow-up replayed after a
+        // crash). Return nothing rather than deciding it again. The check reads the stream the
+        // decision is made from, so a duplicate racing the first is caught by the append's
+        // expected sequence instead, and its retry lands here.
+        if (MetaString(resolvedMeta, "commandId") is { Length: > 0 } commandId && AlreadyApplied(stream, commandId))
+            return [];
+
         var state = decider.Initial();
         foreach (var ev in stream)
             state = decider.Evolve(state, ev);
@@ -153,6 +161,24 @@ public sealed class DeciderRegistry(IEventStore store)
 
     private string Materialize(NewEvent ne) =>
         ne.Payload is null ? ne.Data : JsonSerializer.Serialize(ne.Payload, ne.Payload.GetType(), PayloadSerializerOptions);
+
+    /// <summary>True when an event in <paramref name="stream"/> was appended by the command
+    /// <paramref name="commandId"/> (its metadata's <c>commandId</c>).</summary>
+    public static bool AlreadyApplied(IReadOnlyList<Event> stream, string commandId)
+    {
+        foreach (var ev in stream)
+        {
+            if (string.IsNullOrEmpty(ev.Metadata) || !ev.Metadata.Contains(commandId, StringComparison.Ordinal))
+                continue;
+            using var doc = JsonDocument.Parse(ev.Metadata);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("commandId", out var id)
+                && id.ValueKind == JsonValueKind.String
+                && id.GetString() == commandId)
+                return true;
+        }
+        return false;
+    }
 
     private static string? MetaString(IReadOnlyDictionary<string, object> meta, string key) =>
         meta.TryGetValue(key, out var value) ? value?.ToString() : null;

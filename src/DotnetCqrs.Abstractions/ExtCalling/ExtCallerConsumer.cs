@@ -63,17 +63,14 @@ public sealed class ExtCallerConfig
 /// Run the worker beside the engine (<c>_ = consumer.Worker.RunAsync(ct)</c>). A permanently failing rule dead-letters,
 /// as before.</para>
 ///
-/// Known gap, deliberately deferred (it would need <c>HandleWithMeta</c> to carry the key):
-/// pocketcqrs additionally derives a stable idempotency key per follow-up and has its
-/// remote gateway de-duplicate by it, so a redelivered source event's follow-up never
-/// even reaches the target decider a second time. This baseline has no such dedup index
-/// yet (no <c>CommandApplied</c> equivalent), so a redelivered follow-up here relies on
-/// the target decider's own rejection for idempotency, same as <see cref="Reactors.ReactorConsumer"/>
-/// — and unlike a reactor, that rejection currently dead-letters the (otherwise
-/// harmless, already-applied) redelivery rather than being recognized as expected. The
-/// derived commandId is still stamped into dispatch metadata below so a future dedup
-/// index has something to key off — and <see cref="GatewayFollowUpDispatcher"/> sends
-/// it as an <c>Idempotency-Key</c> header, which a pocketcqrs target already honours.
+/// Each follow-up carries a commandId derived from this consumer, the source event and the
+/// follow-up's index. Dispatched in-process (<see cref="InProcessFollowUpDispatcher"/>), a
+/// redelivered follow-up is skipped by <see cref="DeciderRegistry.HandleWithMetaAsync"/>, which
+/// finds that commandId already in the target stream (since 2026-11-17; before then it relied
+/// on the target decider's own rejection, as reactors did). Dispatched to a remote gateway,
+/// <see cref="GatewayFollowUpDispatcher"/> sends it as an <c>Idempotency-Key</c> header: a
+/// pocketcqrs target honours it, while a dotnetcqrs gateway deliberately ignores it (the key
+/// would be caller-settable), so there a redelivery still relies on the target decider.
 /// </summary>
 public sealed class ExtCallerConsumer : IConsumer
 {

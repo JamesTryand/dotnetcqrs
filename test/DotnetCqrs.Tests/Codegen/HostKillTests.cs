@@ -12,7 +12,8 @@ namespace DotnetCqrs.Tests.Codegen;
 /// checked for anything lost, corrupted or applied twice.
 ///
 /// <para>The host is generated from <c>kill-tests.json</c>: a note is created once, a projection
-/// lists notes, and an automation stamps every note on a stamp stream derived from it. A
+/// lists notes, an automation stamps every note on a stamp stream derived from it, and another
+/// touches every note on its own stream. A
 /// projection saves its checkpoint once per batch and a reactor after each event
 /// (<see cref="Consumers.ConsumerEngine"/>), so a kill replays events into both: the projection
 /// must be idempotent, and a replayed reaction must be refused by the stamp's own "already
@@ -74,11 +75,12 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
                 for (var i = 0; i < commands; i++)
                 {
                     var id = $"k{i}";
-                    var stream = await store.LoadStreamAsync("note", id);
+                    // the touch reaction adds its own event to the note's stream: count the creates
+                    var created = (await store.LoadStreamAsync("note", id)).Count(e => e.Type == "NoteCreated");
                     if (acked.ContainsKey(id))
-                        Assert.True(stream.Count == 1, $"round {round}: {id} was acknowledged before the kill but has {stream.Count} events");
+                        Assert.True(created == 1, $"round {round}: {id} was acknowledged before the kill but was created {created} times");
                     else
-                        Assert.True(stream.Count <= 1, $"round {round}: {id} has {stream.Count} events");
+                        Assert.True(created <= 1, $"round {round}: {id} was created {created} times");
                 }
             }
         }
@@ -86,9 +88,11 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
     }
 
     /// <summary>A backlog of notes is in the log before the host starts; the host is killed while
-    /// its projection and reactor are catching up. After a restart every note has one row with
-    /// its title, and exactly one stamp.</summary>
-    [Fact(Timeout = 600000)]
+    /// each consumer is catching up: the projection, the stamp reactor (a new stream per note, so
+    /// a repeat is refused as "already exists") and the touch reactor (onto the note's own stream,
+    /// where nothing but the reaction's command id refuses a repeat). After a restart every note
+    /// has one row with its title, exactly one stamp and exactly one touch.</summary>
+    [Fact(Timeout = 900000)]
     public async Task Consumers_catch_up_once_after_a_real_process_kill()
     {
         const int rounds = 3;
@@ -108,51 +112,29 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
                 }
             }
 
-            // The engine catches its consumers up one at a time (the projection, then the
-            // reactor), so each gets its own kill: first while the projection is part way,
-            // then, after a restart, while the reactor is.
-            int rowsAtKill, stampsAtKill;
-            using (var node = await host.StartAsync())
+            // The engine catches its consumers up one at a time, in the order they are
+            // registered, so each gets its own kill, part way through its own catch-up.
+            var rowsAtKill = await KillPartWayAsync(round, "the projection", async node =>
             {
                 using var client = new HttpClient { BaseAddress = node.BaseAddress };
-                var deadline = DateTime.UtcNow.AddSeconds(30);
-                while (await RowCountAsync(client) == 0)
-                {
-                    Assert.True(DateTime.UtcNow < deadline, $"the projection never started catching up:\n{node.Tail()}");
-                    await Task.Delay(10);
-                }
-                await Task.Delay(rng.Next(150));
-                rowsAtKill = await RowCountAsync(client);
-                node.Kill();
-            }
-            Assert.True(rowsAtKill < backlog, $"round {round}: the kill landed after the projection had finished ({rowsAtKill} rows)");
-            using (var node = await host.StartAsync())
-            {
-                var deadline = DateTime.UtcNow.AddSeconds(60);
-                while ((await StampsAsync()).Count == 0)
-                {
-                    Assert.True(DateTime.UtcNow < deadline, $"the reactor never started catching up:\n{node.Tail()}");
-                    await Task.Delay(50);
-                }
-                await Task.Delay(rng.Next(150));
-                stampsAtKill = (await StampsAsync()).Count;
-                node.Kill();
-            }
-            Assert.True(stampsAtKill < backlog, $"round {round}: the kill landed after the reactor had finished ({stampsAtKill} stamps)");
+                return await RowCountAsync(client);
+            });
+            var stampsAtKill = await KillPartWayAsync(round, "the stamp reactor", async _ => (await CountAsync("StampCreated")).Count);
+            var touchesAtKill = await KillPartWayAsync(round, "the touch reactor", async _ => (await CountAsync("NoteTouched")).Count);
 
             using (var node = await host.StartAsync())
             {
                 using var client = new HttpClient { BaseAddress = node.BaseAddress };
-                // both consumers finishing, or settling short of the backlog: lost or stuck
-                var last = (-1, -1);
+                // every consumer finishing, or settling short of the backlog: lost or stuck
+                var last = (-1, -1, -1);
                 var since = DateTime.UtcNow;
                 while (true)
                 {
-                    var now = (await RowCountAsync(client), (await StampsAsync()).Count);
-                    if (now.Item1 >= backlog && now.Item2 >= backlog) break;
+                    var now = (await RowCountAsync(client), (await CountAsync("StampCreated")).Count, (await CountAsync("NoteTouched")).Count);
+                    if (now.Item1 >= backlog && now.Item2 >= backlog && now.Item3 >= backlog) break;
                     if (now != last) (last, since) = (now, DateTime.UtcNow);
                     else Assert.True(DateTime.UtcNow - since < TimeSpan.FromSeconds(15),
-                        $"round {round}: after the restart the consumers stopped at {now.Item1} rows and {now.Item2} stamps of {backlog}:\n{node.Tail()}");
+                        $"round {round}: after the restart the consumers stopped at {now.Item1} rows, {now.Item2} stamps and {now.Item3} touches of {backlog}:\n{node.Tail()}");
                     await Task.Delay(500);
                 }
 
@@ -168,26 +150,49 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
                 for (var i = 0; i < backlog; i++)
                     Assert.Equal($"title n{i}", titles[$"n{i}"]);
 
-                // settle anything still in flight, then count every stamp event
-                Dictionary<string, int> stamps;
+                // settle anything still in flight, then count every reaction's event
+                Dictionary<string, int> stamps, touches;
                 var previous = -1L;
                 while (true)
                 {
-                    stamps = await StampsAsync();
-                    var total = stamps.Values.Sum();
+                    stamps = await CountAsync("StampCreated");
+                    touches = await CountAsync("NoteTouched");
+                    var total = stamps.Values.Sum() + touches.Values.Sum();
                     if (total == previous) break;
                     previous = total;
                     await Task.Delay(500);
                 }
                 Assert.Equal(backlog, stamps.Count);
+                Assert.Equal(backlog, touches.Count);
                 for (var i = 0; i < backlog; i++)
                 {
                     var stamp = $"stamp-notes-n{i}-1";
                     Assert.True(stamps.TryGetValue(stamp, out var n) && n == 1,
-                        $"round {round}: {stamp} has {(stamps.TryGetValue(stamp, out var m) ? m : 0)} events, want exactly 1");
+                        $"round {round}: {stamp} has {stamps.GetValueOrDefault(stamp)} events, want exactly 1");
+                    Assert.True(touches.GetValueOrDefault($"n{i}") == 1,
+                        $"round {round}: note n{i} was touched {touches.GetValueOrDefault($"n{i}")} times, want exactly 1");
                 }
-                Console.WriteLine($"round {round}: killed with {rowsAtKill} rows and {stampsAtKill} stamps of {backlog}");
+                Console.WriteLine($"round {round}: killed with {rowsAtKill} rows, {stampsAtKill} stamps and {touchesAtKill} touches of {backlog}");
             }
+        }
+
+        async Task<int> KillPartWayAsync(int round, string consumer, Func<HostProcess, Task<int>> progress)
+        {
+            int atKill;
+            using (var node = await host.StartAsync())
+            {
+                var deadline = DateTime.UtcNow.AddSeconds(90);
+                while (await progress(node) == 0)
+                {
+                    Assert.True(DateTime.UtcNow < deadline, $"{consumer} never started catching up:\n{node.Tail()}");
+                    await Task.Delay(20);
+                }
+                await Task.Delay(rng.Next(150));
+                atKill = await progress(node);
+                node.Kill();
+            }
+            Assert.True(atKill < backlog, $"round {round}: the kill landed after {consumer} had finished ({atKill} of {backlog})");
+            return atKill;
         }
 
         static async Task<int> RowCountAsync(HttpClient client)
@@ -204,10 +209,10 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
         }
     }
 
-    /// <summary>Stamp events by stream id, read from the whole log.</summary>
-    private async Task<Dictionary<string, int>> StampsAsync()
+    /// <summary>Events of <paramref name="type"/> by stream id, read from the whole log.</summary>
+    private async Task<Dictionary<string, int>> CountAsync(string type)
     {
-        var stamps = new Dictionary<string, int>();
+        var counts = new Dictionary<string, int>();
         await using var store = await SqliteEventStore.OpenReadOnlyAsync(host.EventsPath);
         long after = 0;
         while (true)
@@ -215,11 +220,13 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
             var batch = await store.PollAsync(after, 1000);
             if (batch.Count == 0) break;
             foreach (var ev in batch)
-                if (ev.Type == "StampCreated")
-                    stamps[ev.AggregateId] = stamps.GetValueOrDefault(ev.AggregateId) + 1;
+            {
+                if (ev.Type == type)
+                    counts[ev.AggregateId] = counts.GetValueOrDefault(ev.AggregateId) + 1;
+            }
             after = batch[^1].Position;
         }
-        return stamps;
+        return counts;
     }
 }
 

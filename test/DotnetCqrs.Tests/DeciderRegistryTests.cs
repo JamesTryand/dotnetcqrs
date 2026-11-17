@@ -34,6 +34,40 @@ public class DeciderRegistryTests
     }
 
     [Fact]
+    public async Task A_command_whose_commandId_is_already_in_the_stream_is_skipped()
+    {
+        // A redelivered reaction (a crash between its dispatch and its checkpoint) carries the
+        // same derived commandId; Increment has no rule to refuse a repeat, so only this check
+        // stops the counter reaching 2.
+        var (store, registry) = await SetUpAsync();
+        await using var _ = store;
+        var meta = new Dictionary<string, object> { ["commandId"] = "reaction-abc" };
+
+        var first = await registry.HandleWithMetaAsync("counter", "c1", new Command("Increment", "{}"), meta);
+        var again = await registry.HandleWithMetaAsync("counter", "c1", new Command("Increment", "{}"), meta);
+        var other = await registry.HandleWithMetaAsync("counter", "c1", new Command("Increment", "{}"),
+            new Dictionary<string, object> { ["commandId"] = "reaction-def" });
+        var plain = await registry.HandleAsync("counter", "c1", new Command("Increment", "{}"));
+
+        Assert.Single(first);
+        Assert.Empty(again);
+        Assert.Single(other);
+        Assert.Single(plain);
+        Assert.Equal(3, (await store.LoadStreamAsync("counter", "c1")).Count);
+    }
+
+    [Fact]
+    public void A_reactions_commandId_is_stable_and_distinct_per_reaction()
+    {
+        var id = Reactors.ReactorConsumer.ReactionCommandId("ship", "event-1", 0);
+        Assert.Equal(id, Reactors.ReactorConsumer.ReactionCommandId("ship", "event-1", 0));
+        Assert.NotEqual(id, Reactors.ReactorConsumer.ReactionCommandId("ship", "event-1", 1));
+        Assert.NotEqual(id, Reactors.ReactorConsumer.ReactionCommandId("ship", "event-2", 0));
+        Assert.NotEqual(id, Reactors.ReactorConsumer.ReactionCommandId("notify", "event-1", 0));
+        Assert.StartsWith("reaction-", id);
+    }
+
+    [Fact]
     public async Task Handle_folds_prior_events_before_deciding()
     {
         var (store, registry) = await SetUpAsync();

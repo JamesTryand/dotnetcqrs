@@ -16,8 +16,19 @@ public sealed class ReactorConsumer(IReactor reactor, DeciderRegistry registry, 
 
     public string Name => $"reactor:{reactor.Name}";
 
+    /// <summary>The stable id of one reaction to one event: the same inputs as pocketcqrs's
+    /// <c>reactionCommandID</c> (the reactor's name, the causing event's id, the reaction's index),
+    /// hashed so a name containing the separator cannot collide with another.</summary>
+    public static string ReactionCommandId(string reactorName, string causeId, int index)
+    {
+        var input = string.Join('\0', "reaction", reactorName, causeId, index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(input));
+        return "reaction-" + Convert.ToHexStringLower(hash)[..32];
+    }
+
     public async Task ApplyAsync(Event ev, CancellationToken ct)
     {
+        var index = 0;
         foreach (var reaction in reactor.React(ev))
         {
             var meta = new Dictionary<string, object>
@@ -25,6 +36,12 @@ public sealed class ReactorConsumer(IReactor reactor, DeciderRegistry registry, 
                 ["actor"] = Name,
                 ["causationId"] = ev.Id,
                 ["correlationId"] = EventMeta.CorrelationId(ev),
+                // Derived, not minted: a redelivery of the same event derives the same id, and the
+                // registry skips a command whose id is already in the target stream. Without it a
+                // reaction onto a stream with no create-once rule (auto-ship: OrderPlaced, then
+                // ShipOrder on the same order) was applied twice when the host crashed between
+                // the dispatch and the checkpoint (found by HostKillTests, 2026-11-17).
+                ["commandId"] = ReactionCommandId(reactor.Name, ev.Id, index++),
             };
             try
             {
