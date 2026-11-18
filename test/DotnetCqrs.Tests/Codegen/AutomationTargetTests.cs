@@ -85,11 +85,14 @@ public class AutomationTargetTests
     [Theory]
     [InlineData("trigger", "its targetIdField \"buyerId\" is not a field of trigger event \"order-placed\"")]
     [InlineData("command", "command \"record-customer-order\" must declare \"customerId\" with idAttribute: true")]
+    [InlineData("type", "\"orderId\" is string on trigger event \"order-placed\" but integer on command \"record-customer-order\"")]
     public void The_mapper_refuses_a_field_the_trigger_or_the_command_lacks(string broken, string want)
     {
         var node = JsonNode.Parse(Doc)!;
         if (broken == "trigger")
             node["slices"]![2]!["targetIdField"] = "buyerId";
+        else if (broken == "type")
+            node["commands"]!["record-customer-order"]!["fields"]![1]!["type"] = "integer";
         else
             node["commands"]!["record-customer-order"]!["fields"]![0]!.AsObject().Remove("idAttribute");
         var doc = DocumentLoader.Parse(node.ToJsonString());

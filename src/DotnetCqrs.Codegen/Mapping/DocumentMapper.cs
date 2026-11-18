@@ -417,8 +417,27 @@ public sealed class DocumentMapper
                 "idAttribute: true, the identity of the stream it acts on (the automation's targetIdField)");
             ok = false;
         }
+        // The reaction copies the trigger's data into the command, so a field both declare must be the same type and
+        // cardinality on both: a date string copied into a yyyymmdd integer was found in a real model, and no
+        // scenario could show it (none crosses from the trigger to the command).
+        foreach (var id in slice.TriggerEventIds)
+        {
+            var eventFields = _document.Events?.GetValueOrDefault(id)?.Fields ?? [];
+            foreach (var cf in cmd.Fields ?? [])
+            {
+                var ef = eventFields.FirstOrDefault(f => f.Name == cf.Name);
+                if (ef is null || (ef.Type == cf.Type && Cardinality(ef) == Cardinality(cf))) continue;
+                _report.Error($"automation \"{slice.Id}\": \"{cf.Name}\" is {Shape(ef)} on trigger event \"{id}\" but " +
+                    $"{Shape(cf)} on command \"{slice.CommandId}\"; the reaction copies it by name, so they must match");
+                ok = false;
+            }
+        }
         return ok;
     }
+
+    private static string Cardinality(Model.Field f) => string.IsNullOrEmpty(f.Cardinality) ? "single" : f.Cardinality;
+
+    private static string Shape(Model.Field f) => Cardinality(f) == "list" ? "a list of " + f.Type : f.Type;
 
     private Domain.Command BuildCommand(string aggregate, string id, CommandDef cmd, IReadOnlyList<string> eventIds, bool once, bool requiresExisting,
         bool canBeginAgain = false, string? sliceId = null, IReadOnlyList<OutcomeDef>? outcomes = null)

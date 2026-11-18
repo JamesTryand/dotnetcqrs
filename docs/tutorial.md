@@ -546,7 +546,9 @@ a field, such as a customer's from a payment's `customerId`). A scenario
 whose command carries another value for the field fails, as does one that
 shows no trigger event: before, such a scenario passed with its command going
 to the wrong stream. The generator refuses an automation without the field,
-or whose field a trigger event or the command lacks.
+or whose field a trigger event or the command lacks, and (0.41.0) one whose
+trigger and command declare a field of one name with different types: the
+reaction copies fields by name, and no scenario would show the mismatch.
 The value has to be on the event: a command sent directly puts its stream's id
 in its body too (`orderId` in `PlaceOrder`'s), or the reaction has no target
 and is dropped, and logged.
