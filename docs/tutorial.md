@@ -65,7 +65,7 @@ dotnet run --project src/DotnetCqrs.Codegen.Cli -- generate \
   --aggregate-override notify-shipping-partner=ShippingNotification
 ```
 
-Either way, this document produces twelve warnings (uuid fields becoming
+Either way, this document produces fourteen warnings (uuid fields becoming
 plain `text` columns, an automation whose read model the generated
 reaction doesn't consult, and so on — each one names exactly what got
 simplified) and six files across two aggregates, `order` and
@@ -535,6 +535,21 @@ carries the same message. A scenario may also name the role its actor holds
 a `requiredOwnership.via` or `scope` whose `bypassRoles` name it is skipped.
 Without a role, the actor holds the command's required roles and none of its
 bypass roles.
+
+An automation scenario runs on the stream its trigger names (schema 5.0.0):
+every automation started by an event has `targetIdField`, a field of each
+trigger event whose value is the id of the stream its command acts on, and
+the command declares that field with `idAttribute: true`. The generated
+reactor sends to that stream and nowhere else (it used to derive the id from
+the trigger's own stream, which could never reach an existing stream named by
+a field, such as a customer's from a payment's `customerId`). A scenario
+whose command carries another value for the field fails, as does one that
+shows no trigger event: before, such a scenario passed with its command going
+to the wrong stream. The generator refuses an automation without the field,
+or whose field a trigger event or the command lacks.
+The value has to be on the event: a command sent directly puts its stream's id
+in its body too (`orderId` in `PlaceOrder`'s), or the reaction has no target
+and is dropped, and logged.
 
 A host that verifies against its own deciders (`ScenarioVerifier.VerifyAsync(doc,
 mapped, new HostDeciders(register))`) runs the same check when it hands over its

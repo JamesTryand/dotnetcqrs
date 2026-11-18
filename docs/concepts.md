@@ -188,7 +188,10 @@ saves it once per batch (up to 100 events); any other consumer, once per
 event, since it may have acted on one. Each save is committed without
 waiting for the disk. So after a crash or power cut a consumer may apply up
 to a batch of events again: delivery is at-least-once, which is why a
-projection must be idempotent and a reactor's target ids deterministic.
+projection must be idempotent and a reactor's target ids deterministic. A
+generated reactor's target id is the value of the trigger event's field the
+model names (`targetIdField`, eventmodelschema 5.0.0), so a redelivery
+reaches the same stream, where the registry skips a reaction already applied.
 
 ## Storage: SQLite, twice
 

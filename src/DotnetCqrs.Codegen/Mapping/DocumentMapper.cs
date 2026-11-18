@@ -333,6 +333,7 @@ public sealed class DocumentMapper
         if (!TryGetCommand(slice.CommandId, out var cmd)) return;
         var (aggregate, ok) = AggregateFor("command", slice.CommandId, cmd.Aggregate);
         if (!ok) return;
+        if (!CheckTarget(slice, cmd)) return;
 
         // the reactor belongs to whichever aggregate OWNS the trigger events -- that's
         // the stream it consumes, and it may well not be the target
@@ -373,21 +374,50 @@ public sealed class DocumentMapper
             _report.Warn($"automation \"{slice.Id}\" consults read model \"{slice.ReadModelId}\"; the generated " +
                 "reaction does not read it -- the author adds that access if the rule needs it");
 
-        // Same-aggregate automations (auto-ship: order -> order) dispatch back into the
-        // stream that already exists -- prefixing it would build an id nothing ever
-        // created. Only a cross-aggregate dispatch needs a prefix, both to derive a new
-        // target instance per trigger and to avoid colliding with another trigger stream
-        // that happens to share the same raw id.
+        // Where the command goes (schema 5.0.0): the stream named by the trigger event's targetIdField, the same
+        // stream a command sent directly with that id reaches. It used to be derived (the trigger's own stream, or
+        // a prefix plus the trigger's stream id and sequence), which could never reach an existing stream named by
+        // a field.
         var reactor = new Reactor
         {
             Name = Names.LowerFirst(Names.SanitizeName(Names.TypeName(slice.Name, slice.Id))),
             Aggregate = aggregate,
             Command = CommandName(slice.CommandId),
-            IdPrefix = crossAggregate ? Names.DeriveId(Names.TypeName(slice.Name, slice.Id)) + "-" : null,
-            PerEvent = isCreate,
+            IdField = Names.SanitizeName(slice.TargetIdField!),
         };
         reactor.On.AddRange(triggers);
         GetOrCreateDomain(source).Reactors.Add(reactor);
+    }
+
+    /// <summary>Refuses an automation that doesn't say where its command goes (schema 5.0.0
+    /// <c>targetIdField</c>), or names a field a trigger event doesn't carry or the command doesn't declare as
+    /// its identity (<c>idAttribute</c>).</summary>
+    private bool CheckTarget(AutomationSlice slice, CommandDef cmd)
+    {
+        var field = slice.TargetIdField;
+        if (string.IsNullOrEmpty(field))
+        {
+            _report.Error($"automation \"{slice.Id}\" names no targetIdField: name the trigger event's field whose " +
+                $"value is the id of the stream \"{slice.CommandId}\" acts on (schema 5.0.0; the stream is no longer derived)");
+            return false;
+        }
+        var ok = true;
+        foreach (var id in slice.TriggerEventIds)
+        {
+            var fields = _document.Events?.GetValueOrDefault(id)?.Fields ?? [];
+            if (!fields.Any(f => f.Name == field))
+            {
+                _report.Error($"automation \"{slice.Id}\": its targetIdField \"{field}\" is not a field of trigger event \"{id}\"");
+                ok = false;
+            }
+        }
+        if (!(cmd.Fields ?? []).Any(f => f.Name == field && f.IdAttribute == true))
+        {
+            _report.Error($"automation \"{slice.Id}\": command \"{slice.CommandId}\" must declare \"{field}\" with " +
+                "idAttribute: true, the identity of the stream it acts on (the automation's targetIdField)");
+            ok = false;
+        }
+        return ok;
     }
 
     private Domain.Command BuildCommand(string aggregate, string id, CommandDef cmd, IReadOnlyList<string> eventIds, bool once, bool requiresExisting,

@@ -6,9 +6,9 @@ namespace Generated.Order;
 
 /// <summary>Reacts to "order"'s events by dispatching order/ShipOrder
 /// -- one reaction per triggering event, its payload the causing event's own data
-/// untouched. The target is the one the source stream names: its id is the source stream's, so a
-/// redelivery hits the target's own "already exists" rejection instead of dispatching twice -- keep it
-/// deterministic if you change it.</summary>
+/// untouched. The target is the order stream the event's orderId names (the model's
+/// targetIdField). Delivery is at-least-once; a redelivery reaches the same stream, and the registry skips a
+/// reaction already applied.</summary>
 public sealed class AutoShipPendingOrdersReactor : IReactor
 {
     public string Name => "autoShipPendingOrders";
@@ -17,6 +17,6 @@ public sealed class AutoShipPendingOrdersReactor : IReactor
     {
         if (ev.Type is not ("OrderPlaced")) return [];
 
-        return [new Reaction("order", "" + ev.AggregateId, new Command("ShipOrder", ev.Data))];
+        return [new Reaction("order", ReactorTarget.Id(ev, "orderId"), new Command("ShipOrder", ev.Data))];
     }
 }

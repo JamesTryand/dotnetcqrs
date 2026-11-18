@@ -193,6 +193,19 @@ public static class ScenarioVerifier
         // simply not replayed (the harness doesn't need to know they existed).
         var (own, _) = SplitGiven(index, aggregate, scenario.Given);
         var streamId = StreamId(document, scenario.Given);
+        if (slice is AutomationSlice automation)
+        {
+            // The command goes where the trigger's targetIdField says (schema 5.0.0), so that is the stream the
+            // scenario runs on, and a command naming any other id is the model's mistake. Without this check every
+            // scenario passed with its command going to the wrong stream.
+            var (target, problem) = AutomationTarget(automation, scenario, payload);
+            if (problem is not null)
+            {
+                results.Add(new ScenarioResult(slice.Id, scenario.Id, scenario.Name, KindOf(scenario), Passed: false, Skipped: false, problem));
+                return;
+            }
+            streamId = target!;
+        }
 
         // The read models the command's authorization reads, built from every given event (a read model is
         // cross-cutting), each keyed for its own projection, as a view scenario's are.
@@ -392,6 +405,33 @@ public static class ScenarioVerifier
     /// — a stateView scenario queries by the same value, and a fixed placeholder id
     /// would make such a query miss for a reason unrelated to the projection under
     /// test.</summary>
+    /// <summary>The stream an automation scenario's command goes to: the value of the slice's targetIdField on the
+    /// scenario's trigger event (the last given event that is one of the slice's triggers). A problem when the
+    /// scenario shows no trigger, the trigger has no value for the field, or the command carries another
+    /// value for it.</summary>
+    private static (string? Target, string? Problem) AutomationTarget(AutomationSlice slice, Scenario scenario, JsonElement? payload)
+    {
+        var field = slice.TargetIdField ?? "";
+        var trigger = scenario.Given.LastOrDefault(g => slice.TriggerEventIds.Contains(g.EventId));
+        if (trigger is null)
+            return (null, $"an automation scenario gives none of its trigger events ({string.Join(", ", slice.TriggerEventIds)}): " +
+                "the trigger names the stream the command goes to");
+        var want = StringField(trigger.Data, field);
+        if (string.IsNullOrEmpty(want))
+            return (null, $"the trigger event \"{trigger.EventId}\" gives no {field}: it names the stream the command goes to " +
+                "(the automation's targetIdField)");
+        var got = StringField(payload, field);
+        if (got != want)
+            return (null, $"the command goes to the stream its trigger names, {field} \"{want}\", but the scenario's command " +
+                $"carries {field} \"{got}\"");
+        return (want, null);
+    }
+
+    private static string StringField(JsonElement? data, string field) =>
+        data is { ValueKind: JsonValueKind.Object } d && d.TryGetProperty(field, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString() ?? ""
+            : "";
+
     private static string StreamId(Document document, IReadOnlyList<EventRef> given, string fallback = "scenario")
     {
         foreach (var g in given)

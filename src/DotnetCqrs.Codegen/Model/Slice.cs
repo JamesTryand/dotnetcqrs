@@ -37,7 +37,10 @@ public sealed record AutomationSlice(
     string Status, IReadOnlyList<Scenario> Scenarios,
     string AutomationId, IReadOnlyList<string> TriggerEventIds, string? ReadModelId,
     string CommandId, IReadOnlyList<string> ResultEventIds,
-    IReadOnlyList<OutcomeDef>? Outcomes = null)
+    IReadOnlyList<OutcomeDef>? Outcomes = null,
+    // schema 5.0.0, required with triggerEventIds: the trigger events' field whose value is the id of the
+    // stream the command acts on; the command declares the same field as its idAttribute
+    string? TargetIdField = null)
     : Slice(Id, Name, SwimlaneId, ChapterId, BusinessCapability, Status, Scenarios);
 
 public sealed class SliceConverter() : DiscriminatedUnionConverter<Slice>("pattern", new Dictionary<string, Type>

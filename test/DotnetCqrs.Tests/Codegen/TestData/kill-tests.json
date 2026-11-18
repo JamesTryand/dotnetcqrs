@@ -64,11 +64,25 @@
     },
     "create-stamp": {
       "name": "Create Stamp",
-      "aggregate": "Stamp"
+      "aggregate": "Stamp",
+      "fields": [
+        {
+          "name": "noteId",
+          "type": "string",
+          "idAttribute": true
+        }
+      ]
     },
     "touch-note": {
       "name": "Touch Note",
-      "aggregate": "Note"
+      "aggregate": "Note",
+      "fields": [
+        {
+          "name": "noteId",
+          "type": "string",
+          "idAttribute": true
+        }
+      ]
     }
   },
   "readModels": {
@@ -164,6 +178,7 @@
       "triggerEventIds": [
         "note-created"
       ],
+      "targetIdField": "noteId",
       "commandId": "create-stamp",
       "resultEventIds": [
         "stamp-created"
@@ -184,7 +199,9 @@
           ],
           "when": {
             "commandId": "create-stamp",
-            "data": {}
+            "data": {
+              "noteId": "note-1"
+            }
           },
           "then": {
             "events": [
@@ -207,6 +224,7 @@
       "triggerEventIds": [
         "note-created"
       ],
+      "targetIdField": "noteId",
       "commandId": "touch-note",
       "resultEventIds": [
         "note-touched"
@@ -227,7 +245,9 @@
           ],
           "when": {
             "commandId": "touch-note",
-            "data": {}
+            "data": {
+              "noteId": "note-1"
+            }
           },
           "then": {
             "events": [

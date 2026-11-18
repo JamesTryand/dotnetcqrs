@@ -46,7 +46,8 @@ public static class OrderDecider
                 case "ShipOrder":
                 {
                     if (!state.Exists) throw new InvalidOperationException("order does not exist");
-                    return [new NewEvent(OrderEvents.OrderShipped, "{}")];
+                    var payload = JsonSerializer.Deserialize<OrderShippedPayload>(cmd.Payload, JsonOptions)!;
+                    return [new NewEvent(OrderEvents.OrderShipped, JsonSerializer.Serialize(payload, JsonOptions))];
                 }
                 default:
                     throw new InvalidOperationException($"unknown command: {cmd.Name}");
@@ -62,14 +63,19 @@ public static class OrderDecider
                     return state with { Exists = true, OrderId = data.OrderId, CustomerId = data.CustomerId, CustomerEmail = data.CustomerEmail, Items = data.Items };
                 }
                 case OrderEvents.OrderShipped:
-                    return state with { Exists = true };
+                {
+                    var data = JsonSerializer.Deserialize<OrderShippedPayload>(ev.Data, JsonOptions)!;
+                    return state with { Exists = true, OrderId = data.OrderId };
+                }
                 default:
                     return state;
             }
         },
     };
 
-    private sealed record OrderPlacedPayload(string OrderId, string CustomerId, Pii<string>? CustomerEmail, JsonElement Items);
+    private sealed record OrderPlacedPayload(string? OrderId, string? CustomerId, Pii<string>? CustomerEmail, JsonElement? Items);
+
+    private sealed record OrderShippedPayload(string? OrderId);
 
     /// <summary>Encrypts this aggregate's field.pii values after Decide, before they are
     /// appended, and reveals stored ones only when a decision reads them. Register it next

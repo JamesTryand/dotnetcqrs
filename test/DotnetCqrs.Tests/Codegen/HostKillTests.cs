@@ -187,7 +187,7 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
                 Assert.Equal(backlog, touches.Count);
                 for (var i = 0; i < backlog; i++)
                 {
-                    var stamp = $"stamp-notes-n{i}-1";
+                    var stamp = $"n{i}"; // the stamp stream the note's noteId names (targetIdField)
                     Assert.True(stamps.TryGetValue(stamp, out var n) && n == 1,
                         $"round {round}: {stamp} has {stamps.GetValueOrDefault(stamp)} events, want exactly 1");
                     Assert.True(touches.GetValueOrDefault($"n{i}") == 1,

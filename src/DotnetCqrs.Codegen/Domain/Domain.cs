@@ -365,18 +365,9 @@ public sealed class Reactor
     public required string Aggregate { get; init; }
     public required string Command { get; init; }
 
-    /// <summary>Prefixes the source aggregate id to build the target id (e.g.
-    /// <c>"fulfill-"</c> → <c>"fulfill-&lt;orderId&gt;"</c>). Deterministic on purpose: a
-    /// replay then hits the target's own "already exists" rule. Null for a same-aggregate
-    /// automation (e.g. auto-ship: order -> order) — the target is the trigger's own
-    /// existing stream, so the id must be the bare source aggregate id, not a derived
-    /// one nothing created.</summary>
-    public string? IdPrefix { get; init; }
-
-    /// <summary>A cross-aggregate reaction that creates a new target per trigger: the id also carries the triggering
-    /// event's sequence (<c>"fulfill-&lt;orderId&gt;-&lt;sequence&gt;"</c>), so a second trigger on the same source stream
-    /// creates a second target rather than being refused as "already exists", while a redelivery of the same event
-    /// still derives the same id. False for an upsert or update into the target the source stream names, and for a
-    /// same-aggregate reaction: those keep the stream's id.</summary>
-    public bool PerEvent { get; init; }
+    /// <summary>The triggering event's field whose value is the target stream's id (eventmodelschema 5.0.0
+    /// <c>targetIdField</c>): the same stream a command sent directly with that id reaches. Nothing else is
+    /// derived, so a redelivery reaches the same stream, where the registry skips a reaction already
+    /// applied.</summary>
+    public required string IdField { get; init; }
 }

@@ -104,9 +104,9 @@ public class DocumentMapperTests
         var reactor = Assert.Single(order.Reactors, r => r.Command == "ShipOrder");
         Assert.Equal(["OrderPlaced"], reactor.On);
         Assert.Equal("order", reactor.Aggregate);
-        // No IdPrefix: the target is the triggering order's own existing stream, not a
-        // new one -- a prefix here would dispatch to an id nothing ever created.
-        Assert.Null(reactor.IdPrefix);
+        // The model says where the command goes (schema 5.0.0 targetIdField): the order the
+        // trigger's orderId names, its own existing stream.
+        Assert.Equal("orderId", reactor.IdField);
     }
 
     [Fact]
@@ -122,7 +122,7 @@ public class DocumentMapperTests
         var reactor = Assert.Single(order.Reactors, r => r.Command == "NotifyShippingPartner");
         Assert.Equal(["OrderShipped"], reactor.On);
         Assert.Equal("shippingNotification", reactor.Aggregate);
-        Assert.Equal("notify-shipping-partner-", reactor.IdPrefix);
+        Assert.Equal("orderId", reactor.IdField); // the notification the shipped order's orderId names
 
         var command = Assert.Single(shipping.Commands);
         Assert.Equal("NotifyShippingPartner", command.Name);
@@ -140,12 +140,12 @@ public class DocumentMapperTests
               "eventModelingSchemaVersion": "3.14.0", "id": "upsert-automation", "name": "Upsert Automation",
               "swimlanes": [{"id":"s","name":"S","kind":"team"}],
               "events": {
-                "entry-logged": {"name": "Entry Logged", "swimlaneId": "s", "aggregate": "entry", "fields": [{"name": "entryId", "type": "string"}]},
+                "entry-logged": {"name": "Entry Logged", "swimlaneId": "s", "aggregate": "entry", "fields": [{"name": "entryId", "type": "string"}, {"name": "ledgerId", "type": "string"}]},
                 "pay-recorded": {"name": "Pay Recorded", "swimlaneId": "s", "aggregate": "ledger", "fields": [{"name": "entryId", "type": "string"}]}
               },
               "commands": {
                 "log-entry": {"name": "Log Entry", "aggregate": "entry", "fields": [{"name": "entryId", "type": "string"}]},
-                "record-pay": {"name": "Record Pay", "aggregate": "ledger", "fields": [{"name": "entryId", "type": "string"}]}
+                "record-pay": {"name": "Record Pay", "aggregate": "ledger", "fields": [{"name": "ledgerId", "type": "string", "idAttribute": true}, {"name": "entryId", "type": "string"}]}
               },
               "screens": {"scr": {"name": "Screen"}},
               "automations": {"record-pay-automation": {"name": "Record Pay"}},
@@ -154,7 +154,7 @@ public class DocumentMapperTests
                  "screenId": "scr", "commandId": "log-entry", "eventIds": ["entry-logged"], "scenarios": []},
                 {
                   "id": "record-pay-slice", "name": "Record Pay", "pattern": "automation", "swimlaneId": "s", "status": "created",
-                  "automationId": "record-pay-automation", "triggerEventIds": ["entry-logged"], "commandId": "record-pay", "resultEventIds": ["pay-recorded"],
+                  "automationId": "record-pay-automation", "triggerEventIds": ["entry-logged"], "targetIdField": "ledgerId", "commandId": "record-pay", "resultEventIds": ["pay-recorded"],
                   "scenarios": [
                     {"id": "first", "name": "The first record", "kind": "stateChange",
                      "given": [{"eventId": "entry-logged"}], "when": {"commandId": "record-pay"}, "then": {"events": [{"eventId": "pay-recorded"}]}},

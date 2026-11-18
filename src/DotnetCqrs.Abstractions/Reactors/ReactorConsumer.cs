@@ -31,6 +31,15 @@ public sealed class ReactorConsumer(IReactor reactor, DeciderRegistry registry, 
         var index = 0;
         foreach (var reaction in reactor.React(ev))
         {
+            // No target id: the event lacks the field its model names as the target (targetIdField).
+            // Permanent, like an unregistered aggregate, so said, and the log moves on.
+            if (string.IsNullOrEmpty(reaction.Id))
+            {
+                _log($"reaction dropped: the event has no target id (its targetIdField is missing or empty): " +
+                     $"reactor={reactor.Name} cause={ev.Id} target={reaction.Aggregate} command={reaction.Command.Name}");
+                index++;
+                continue;
+            }
             var meta = new Dictionary<string, object>
             {
                 ["actor"] = Name,

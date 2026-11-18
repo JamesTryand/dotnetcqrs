@@ -380,7 +380,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
                 try
                 {
                     response = await client.PostAsJsonAsync("/api/cqrs/order/o1/PlaceOrder",
-                        new { customerId = "11111111-1111-1111-1111-111111111111", items = new[] { new { sku = "widget", qty = 2 } } });
+                        new { orderId = "o1", customerId = "11111111-1111-1111-1111-111111111111", items = new[] { new { sku = "widget", qty = 2 } } });
                 }
                 catch (HttpRequestException)
                 {
@@ -607,7 +607,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
 
             // ---- A command sent to the reader is forwarded, decided and counted on the writer
             using (var forwarded = await readerTraffic.PostAsJsonAsync("/api/cqrs/order/o7/PlaceOrder",
-                new { customerId = "11111111-1111-1111-1111-111111111111", items = new[] { new { sku = "widget", qty = 1 } } }))
+                new { orderId = "o7", customerId = "11111111-1111-1111-1111-111111111111", items = new[] { new { sku = "widget", qty = 1 } } }))
             {
                 Assert.True(forwarded.StatusCode == HttpStatusCode.OK, $"forwarded command: {(int)forwarded.StatusCode} {await forwarded.Content.ReadAsStringAsync()}\n{Tail(readerLog)}");
             }
