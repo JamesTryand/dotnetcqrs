@@ -79,7 +79,13 @@ public static class DocumentSchema
         foreach (var child in invalid.Except(alternatives))
             found.AddRange(Collect(child));
         if (alternatives.Count > 0)
-            found.AddRange(alternatives.Select(Collect).OrderByDescending(Depth).First());
+            // An alternative whose constant failed (a target's "kind": "slice" against the alternative for
+            // "element") is one the document did not mean; of the rest, the deepest. If every constant failed,
+            // the deepest of all.
+            found.AddRange(alternatives
+                .Select(a => (Errors: Collect(a), Meant: !ConstFailed(a)))
+                .OrderByDescending(a => a.Meant).ThenByDescending(a => Depth(a.Errors))
+                .First().Errors);
 
         if (node.Errors is { Count: > 0 })
         {
@@ -96,6 +102,9 @@ public static class DocumentSchema
         var path = node.EvaluationPath.ToString().Split('/');
         return path.Length >= 2 && int.TryParse(path[^1], out _) && path[^2] is "oneOf" or "anyOf";
     }
+
+    private static bool ConstFailed(EvaluationResults node) =>
+        !node.IsValid && ((node.Errors?.ContainsKey("const") ?? false) || (node.Details ?? []).Any(ConstFailed));
 
     private static int Depth(List<ValidationError> errors) =>
         errors.Count == 0 ? -1 : errors.Max(e => e.InstanceLocation.Count(c => c == '/'));

@@ -59,4 +59,26 @@ public class SchemaRefusalTests
 
         Assert.Contains(ex.Errors, e => e.InstanceLocation == "/slices/3/carrier");
     }
+
+    [Fact]
+    public void The_alternative_whose_kind_matched_is_the_one_named()
+    {
+        // A hotspot target's alternatives are told apart by their kind. This one is a slice target written with the
+        // ordering target's list: the refusal is about the slice alternative, not the first one listed (element).
+        var doc = ReadAccess();
+        doc["hotspots"] = new JsonObject
+        {
+            ["open-question"] = new JsonObject
+            {
+                ["note"] = "Who may see a closed ticket?",
+                ["target"] = new JsonObject { ["kind"] = "slice", ["sliceIds"] = new JsonArray("view-tickets-slice") },
+            },
+        };
+
+        var ex = Assert.Throws<DocumentValidationException>(() => DocumentLoader.Parse(doc.ToJsonString()));
+
+        Assert.All(ex.Errors, e => Assert.Equal("/hotspots/open-question/target", e.InstanceLocation));
+        Assert.Contains(ex.Errors, e => e.Message.Contains("sliceId"));
+        Assert.DoesNotContain(ex.Errors, e => e.Message.Contains("elementType"));
+    }
 }
