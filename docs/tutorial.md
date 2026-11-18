@@ -348,7 +348,7 @@ model (`GET /api/query/{collection}`):
 
 ```sh
 dotnet new tool-manifest          # once, in your own repository
-dotnet tool install JamesTryand.DotnetCqrs.Codegen.Cli --version 0.39.1
+dotnet tool install JamesTryand.DotnetCqrs.Codegen.Cli --version 0.40.0
 dotnet tool run dotnetcqrs-codegen generate \
   --input order-fulfillment.json --output OrderFulfillment --host \
   --aggregate-override notify-shipping-partner=ShippingNotification
