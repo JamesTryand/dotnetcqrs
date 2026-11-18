@@ -554,7 +554,10 @@ reaction copies fields by name, and no scenario would show the mismatch.
 their sources, so the parts that cross the edge are read and only their model
 is generated. A `stateChange` slice started by an ingress (`ingressId`)
 generates its command; the ingress generates nothing (how its message arrives
-is surface tooling's). An automation with a delay generates its command, and
+is surface tooling's). One with neither a screen nor an ingress (schema 6.1.0,
+0.44.0) is sent by another of your systems over a coordinating document's
+edge: its command must be `public`, is generated like any other, and the
+report names it. An automation with a delay generates its command, and
 one with an effect its answer and give-up commands, but no reaction: firing
 them is their source's. The answer and the give-up may each begin the stream
 (0.43.0: several commands may), and whichever comes first does: the other is

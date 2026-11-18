@@ -21,7 +21,12 @@ public sealed record CommandDef(
     CommandFieldGatedRoleDef? FieldGatedRole,
     CommandOwnershipDef? RequiredOwnership,
     CommandScopeDef? Scope,
-    IReadOnlyList<CommandRefusalDef>? RefuseWhen = null);
+    IReadOnlyList<CommandRefusalDef>? RefuseWhen = null,
+    PublicMarkerDef? Public = null);
+
+/// <summary>Schema 4.2.0 <c>public</c>: part of the system's public contract, at a version. Read since 6.1.0, when a
+/// public command's slice may name neither a screen nor an ingress (another system sends it).</summary>
+public sealed record PublicMarkerDef(int Version);
 
 /// <summary>Schema 3.10.0 <c>command.refuseWhen</c>: one rule. It refuses the command, with
 /// <c>Message</c>, when every condition in <c>All</c> holds.</summary>

@@ -172,6 +172,13 @@ public sealed class DocumentMapper
             case StateChangeSlice s:
                 if (!string.IsNullOrEmpty(s.IngressId) && _document.Ingresses?.ContainsKey(s.IngressId) != true)
                     _report.Error($"slice \"{s.Id}\" references ingress \"{s.IngressId}\", which does not exist");
+                // 6.1.0: neither a screen nor an ingress means another system sends it, over a coordinating
+                // document's edge, which needs the command public
+                if (string.IsNullOrEmpty(s.ScreenId) && string.IsNullOrEmpty(s.IngressId)
+                    && _document.Commands?.TryGetValue(s.CommandId, out var started) == true && started.Public is null)
+                    _report.Error($"slice \"{s.Id}\" has no screenId or ingressId, and its command \"{s.CommandId}\" " +
+                        "is not public: nothing starts it (a screen for a person, an ingress for an outside input, or, " +
+                        "for a public command, another system over a coordinating document's edge)");
                 if (!CommandExists(s.CommandId))
                     _report.Error($"slice \"{s.Id}\" references command \"{s.CommandId}\", which does not exist");
                 foreach (var id in s.EventIds)
@@ -333,6 +340,10 @@ public sealed class DocumentMapper
     private void MapStateChange(StateChangeSlice slice)
     {
         if (!TryGetCommand(slice.CommandId, out var cmd)) return;
+        if (string.IsNullOrEmpty(slice.ScreenId) && string.IsNullOrEmpty(slice.IngressId))
+            _report.Warn($"slice \"{slice.Id}\": {slice.CommandId} is sent by another system (no screen or ingress): its " +
+                "command is generated; the reaction that sends it comes from the coordinating document's edge, not this " +
+                "document");
         var (aggregate, ok) = AggregateFor("command", slice.CommandId, cmd.Aggregate);
         if (!ok) return;
 
