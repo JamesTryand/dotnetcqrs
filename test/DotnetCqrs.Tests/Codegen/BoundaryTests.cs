@@ -28,6 +28,21 @@ public class BoundaryTests
                     """);
             if ((string?)slice["id"] == "auto-ship-slice")
                 slice.AsObject().Remove("outcomes");
+            // either outcome may begin the stream, and the other is then refused (hub L16): one outcome per call
+            if ((string?)slice["id"] == "notify-shipping-partner-slice")
+                foreach (var extra in JsonNode.Parse("""
+                    [{"id": "no-give-up-after-an-answer", "name": "no give-up after an answer", "kind": "error",
+                      "given": [{"eventId": "order-shipped", "data": {"orderId": "order-1"}},
+                                {"eventId": "shipment-notified", "data": {"orderId": "order-1"}}],
+                      "when": {"commandId": "record-partner-notification-abandoned", "data": {"orderId": "order-1", "reason": "timed out"}},
+                      "then": {"error": {"message": "shipment notice already exists"}}},
+                     {"id": "no-answer-after-a-give-up", "name": "no answer after a give-up", "kind": "error",
+                      "given": [{"eventId": "order-shipped", "data": {"orderId": "order-1"}},
+                                {"eventId": "partner-notification-abandoned", "data": {"orderId": "order-1"}}],
+                      "when": {"commandId": "record-partner-notified", "data": {"orderId": "order-1"}},
+                      "then": {"error": {"message": "shipment notice already exists"}}}]
+                    """)!.AsArray().ToList())
+                    slice["scenarios"]!.AsArray().Add(extra!.DeepClone());
         }
         return node;
     }
@@ -61,7 +76,7 @@ public class BoundaryTests
         var boundary = new HashSet<string> { "record-delivery-slice", "delivery-overdue-slice", "notify-shipping-partner-slice" };
         var results = (await ScenarioVerifier.VerifyAsync(doc, mapped))
             .Where(r => boundary.Contains(r.SliceId) && r.ScenarioId != "delivery-before-shipment-rejected").ToList();
-        Assert.Equal(4, results.Count);
+        Assert.Equal(6, results.Count);
         Assert.All(results, r => Assert.True(r.Passed, $"{r.SliceId}/{r.ScenarioId}: {r.Detail}"));
     }
 

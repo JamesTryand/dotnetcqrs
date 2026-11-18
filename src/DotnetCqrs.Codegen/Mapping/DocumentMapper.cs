@@ -410,15 +410,11 @@ public sealed class DocumentMapper
             canBeginAgain: isCreate && HasBeginAgainEvidence(slice, aggregate), sliceId: slice.Id, outcomes: slice.Outcomes));
         if (slice.Effect is { } fx && gaveUpCmd is not null)
         {
-            // the answer and the give-up are alternatives, either of which may be the first on the stream; a stream
-            // has one beginning, so the answer keeps the create and the give-up (sent only when no answer came) is
-            // an upsert: neither guard
-            target.Commands.Add(BuildCommand(aggregate, fx.GaveUp.CommandId, gaveUpCmd, fx.GaveUp.ResultEventIds, once: false,
-                requiresExisting: false, sliceId: slice.Id, outcomes: fx.GaveUp.Outcomes));
-            if (isCreate)
-                _report.Warn($"automation \"{slice.Id}\": its give-up \"{fx.GaveUp.CommandId}\" may begin the stream as its " +
-                    $"answer \"{slice.CommandId}\" does; a stream has one beginning, so the answer is the create and the " +
-                    "give-up runs on a fresh or existing stream alike");
+            // the answer and the give-up are alternatives: either may begin the stream, guarded alike, so whichever
+            // comes first begins it and the other is refused ("already exists"): a call has exactly one outcome
+            // (hub L16: several commands may begin a stream)
+            target.Commands.Add(BuildCommand(aggregate, fx.GaveUp.CommandId, gaveUpCmd, fx.GaveUp.ResultEventIds, isCreate,
+                requiresExisting: !hasCreate, sliceId: slice.Id, outcomes: fx.GaveUp.Outcomes));
         }
         // A delay or an effect is fired by its source (a timer; the call and its answer), configured by surface
         // tooling: the commands are the model's and are generated, but a reaction sending at once would be wrong.

@@ -31,7 +31,6 @@ public static class DomainValidation
             Add("declare at least one command: an aggregate that accepts nothing can never produce an event");
 
         var seenCommands = new HashSet<string>();
-        var creates = 0;
         foreach (var command in domain.Commands)
         {
             if (!Names.IsValidIdentifier(command.Name))
@@ -49,15 +48,14 @@ public static class DomainValidation
                     ValidateField(Add, $"command \"{command.Name}\", event \"{@event.Name}\"", field);
             }
 
-            if (command.Once) creates++;
             if (command.Once && command.RequiresExisting)
                 Add($"command \"{command.Name}\" cannot be both the create and require an existing aggregate");
 
             foreach (var field in command.Fields)
                 ValidateField(Add, $"command \"{command.Name}\"", field);
         }
-        if (creates > 1)
-            Add("more than one command is marked as the create; a stream has one beginning");
+        // Several commands may begin a stream (hub QUESTIONS L16, 2026-11-18): each is refused as "already exists" once
+        // any event is on it, so whichever comes first begins it and the rest are refused.
 
         // NOTE: an event produced by more than one command is NOT an error -- a
         // document may legitimately reference one event id from several slices.

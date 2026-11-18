@@ -556,8 +556,10 @@ is generated. A `stateChange` slice started by an ingress (`ingressId`)
 generates its command; the ingress generates nothing (how its message arrives
 is surface tooling's). An automation with a delay generates its command, and
 one with an effect its answer and give-up commands, but no reaction: firing
-them is their source's. The answer is the stream's create, and the give-up
-runs on a fresh or an existing stream alike. An output generates nothing; the
+them is their source's. The answer and the give-up may each begin the stream
+(0.43.0: several commands may), and whichever comes first does: the other is
+refused as "already exists", so a call has exactly one outcome. An output
+generates nothing; the
 generator checks each field it says leaves is on its trigger events. Each is
 named in the report.
 The value has to be on the event: a command sent directly puts its stream's id
