@@ -9,8 +9,8 @@ using DotnetCqrs.Codegen.Verification;
 // here, a call rechecked when --host/--project-name were added.
 if (args.Length == 0 || (args[0] != "generate" && args[0] != "verify"))
 {
-    Console.Error.WriteLine("usage: dotnetcqrs-codegen generate --input <path> --output <dir> [--host [--project-name <name>] [--dotnetcqrs-version <v> | --dotnetcqrs-project <path>]] [--aggregate-override <id>=<aggregate>]...");
-    Console.Error.WriteLine("       dotnetcqrs-codegen verify --input <path> [--aggregate-override <id>=<aggregate>]...");
+    Console.Error.WriteLine("usage: dotnetcqrs-codegen generate --input <path> --output <dir> [--host [--project-name <name>] [--dotnetcqrs-version <v> | --dotnetcqrs-project <path>]] [--aggregate-override <id>=<aggregate>]... [--architecture <coordinating document> --system <id>]");
+    Console.Error.WriteLine("       dotnetcqrs-codegen verify --input <path> [--aggregate-override <id>=<aggregate>]... [--architecture <coordinating document> --system <id>]");
     return 1;
 }
 
@@ -20,6 +20,8 @@ string? output = null;
 string? dotnetCqrsProject = null;
 string? dotnetCqrsVersion = null;
 string? projectName = null;
+string? architecture = null;
+string? system = null;
 var host = false;
 var overrides = new Dictionary<string, string>();
 
@@ -45,6 +47,14 @@ for (var i = 1; i < args.Length; i++)
             break;
         case "--host":
             host = true;
+            break;
+        case "--architecture":
+            if (i + 1 >= args.Length) { Console.Error.WriteLine("--architecture requires a value"); return 1; }
+            architecture = args[++i];
+            break;
+        case "--system":
+            if (i + 1 >= args.Length) { Console.Error.WriteLine("--system requires a value"); return 1; }
+            system = args[++i];
             break;
         case "--project-name":
             if (i + 1 >= args.Length) { Console.Error.WriteLine("--project-name requires a value"); return 1; }
@@ -87,6 +97,11 @@ if (command == "verify" && input is null)
     Console.Error.WriteLine("--input is required");
     return 1;
 }
+if ((architecture is null) != (system is null))
+{
+    Console.Error.WriteLine("--architecture and --system go together: a coordinating document, and this document's system id in it");
+    return 1;
+}
 
 try
 {
@@ -97,6 +112,21 @@ try
     // CLI prints and continues, never refuses, on a warning alone.
     foreach (var warning in result.Report.Warnings)
         Console.WriteLine($"warning: {warning}");
+
+    // a coordinating document's edges for this system (architecture 0.2.0): the edges into it, the events it
+    // publishes, and their examples run against DotnetCqrs.Edges
+    SystemEdges? systemEdges = null;
+    if (architecture is not null)
+    {
+        systemEdges = ArchitectureEdges.For(architecture, system!, document, input!, overrides);
+        Console.WriteLine($"edges of \"{system}\" in \"{systemEdges.Architecture}\": {systemEdges.In.Count} in, {systemEdges.Out.Count} published event(s)");
+        foreach (var e in systemEdges.In)
+            Console.WriteLine($"  in  {e.Id}: {e.FromSystem} {e.FromEvent} v{e.FromVersion} -> {e.Command} on {e.Aggregate}, its id from {e.TargetField}");
+        foreach (var o in systemEdges.Out)
+            Console.WriteLine($"  out {o.Event} v{o.Version} ({o.EventType}): only {string.Join(", ", o.Fields)}");
+        foreach (var r in systemEdges.Examples)
+            Console.WriteLine($"  {(r.Passed ? "ok" : "FAIL")} example {r.Edge} / {r.Name}: {r.Detail}");
+    }
 
     if (command == "generate")
     {
@@ -129,6 +159,11 @@ try
             }
             File.Copy(input!, Path.Combine(output!, "document.json"), overwrite: true);
             written++;
+            if (systemEdges is not null)
+            {
+                File.WriteAllText(Path.Combine(output!, EdgesGenerator.FileName), EdgesGenerator.Generate(systemEdges).Source);
+                written++;
+            }
 
             Console.WriteLine($"generated {written} file(s) to {output}");
             Console.WriteLine(dotnetCqrsProject is null
@@ -143,6 +178,11 @@ try
                 File.WriteAllText(Path.Combine(output!, file.Name), file.Source);
                 written++;
             }
+        if (systemEdges is not null)
+        {
+            File.WriteAllText(Path.Combine(output!, EdgesGenerator.FileName), EdgesGenerator.Generate(systemEdges).Source);
+            written++;
+        }
 
         Console.WriteLine($"generated {written} file(s) to {output}");
         return 0;

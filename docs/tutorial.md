@@ -565,6 +565,19 @@ refused as "already exists", so a call has exactly one outcome. An output
 generates nothing; the
 generator checks each field it says leaves is on its trigger events. Each is
 named in the report.
+
+**A system's edges (0.45.0).** Given a coordinating document (eventmodelschema's
+`architecture.schema.json`, 0.2.0) and this document's system in it,
+`generate` and `verify` also read its edges: `--architecture
+model/landing-pages.architecture.json --system commerce`. `generate` writes
+`Edges.g.cs`, two tables, `Generated.SystemEdgeTables.In` (the internal edges
+into this system) and `.Out` (the public events it publishes, with only the
+fields some edge maps). `DotnetCqrs.Edges` is what they mean: `Edges.Publish`
+makes an `EdgeMessage` of an event, `EdgeIn.Translate` the command it becomes.
+Each edge's `examples` run against that code, and one that fails refuses the
+run. pocketcqrs (v0.28.0) writes the same tables and reads and sends the same
+message, so a system on either runtime can be on either end of an edge. No
+carrier is named; dotnetcqrs has none of its own yet.
 The value has to be on the event: a command sent directly puts its stream's id
 in its body too (`orderId` in `PlaceOrder`'s), or the reaction has no target
 and is dropped, and logged.

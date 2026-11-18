@@ -9,7 +9,8 @@ namespace DotnetCqrs.Codegen.Model;
 /// shaped and need polymorphic deserialization.</summary>
 public sealed record Swimlane(string Id, string Name, string Kind, string? Description);
 
-public sealed record EventDef(string Name, string SwimlaneId, string? Description, string? Aggregate, bool? EndsStream, IReadOnlyList<Field>? Fields);
+public sealed record EventDef(string Name, string SwimlaneId, string? Description, string? Aggregate, bool? EndsStream, IReadOnlyList<Field>? Fields,
+    PublicMarkerDef? Public = null);
 
 /// <summary><c>RequiredRole</c>/<c>FieldGatedRole</c>/<c>RequiredOwnership</c>/<c>Scope</c>
 /// are schema 2.5.0's command-authorization declarations -- see
