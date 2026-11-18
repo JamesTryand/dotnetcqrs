@@ -122,6 +122,25 @@ public sealed class DocumentMapper
             CheckSlice(slice, swimlaneIds);
         }
 
+        // an output (schema 6.0.0): its trigger events exist, and each field it says leaves is on every one of them,
+        // so what leaves (personal data too) is what the model says
+        foreach (var (id, output) in (_document.Outputs ?? new Dictionary<string, OutputDef>()).OrderBy(o => o.Key, StringComparer.Ordinal))
+        {
+            if (!swimlaneIds.Contains(output.SwimlaneId))
+                _report.Error($"output \"{id}\" references swimlane \"{output.SwimlaneId}\", which does not exist");
+            foreach (var eventId in output.TriggerEventIds)
+            {
+                if (_document.Events?.GetValueOrDefault(eventId) is not { } ev)
+                {
+                    _report.Error($"output \"{id}\" references event \"{eventId}\", which does not exist");
+                    continue;
+                }
+                foreach (var f in output.Fields ?? [])
+                    if (!(ev.Fields ?? []).Any(x => x.Name == f))
+                        _report.Error($"output \"{id}\": field \"{f}\", which it says leaves, is not a field of trigger event \"{eventId}\"");
+            }
+        }
+
         if (_document.ReadModels is not null)
             foreach (var (id, rm) in _document.ReadModels)
             {
@@ -151,6 +170,8 @@ public sealed class DocumentMapper
         switch (slice)
         {
             case StateChangeSlice s:
+                if (!string.IsNullOrEmpty(s.IngressId) && _document.Ingresses?.ContainsKey(s.IngressId) != true)
+                    _report.Error($"slice \"{s.Id}\" references ingress \"{s.IngressId}\", which does not exist");
                 if (!CommandExists(s.CommandId))
                     _report.Error($"slice \"{s.Id}\" references command \"{s.CommandId}\", which does not exist");
                 foreach (var id in s.EventIds)
@@ -288,7 +309,10 @@ public sealed class DocumentMapper
         {
             if (!TryGetCommand(slice.CommandId, out var cmd)) continue;
             var (aggregate, ok) = AggregateFor("command", slice.CommandId, cmd.Aggregate);
-            if (ok) Assign(aggregate, slice.ResultEventIds);
+            if (!ok) continue;
+            Assign(aggregate, slice.ResultEventIds);
+            if (slice.Effect is { } effect)
+                Assign(aggregate, effect.GaveUp.ResultEventIds);
         }
 
         return owners;
@@ -333,7 +357,23 @@ public sealed class DocumentMapper
         if (!TryGetCommand(slice.CommandId, out var cmd)) return;
         var (aggregate, ok) = AggregateFor("command", slice.CommandId, cmd.Aggregate);
         if (!ok) return;
-        if (!CheckTarget(slice, cmd)) return;
+        if (!CheckTarget(slice, slice.CommandId, cmd)) return;
+        CommandDef? gaveUpCmd = null;
+        if (slice.Effect is { } effect)
+        {
+            if (!TryGetCommand(effect.GaveUp.CommandId, out var g)) return;
+            var (gAggregate, gOk) = AggregateFor("command", effect.GaveUp.CommandId, g.Aggregate);
+            if (!gOk) return;
+            if (gAggregate != aggregate)
+            {
+                _report.Error($"automation \"{slice.Id}\": its give-up command \"{effect.GaveUp.CommandId}\" is on {gAggregate}, " +
+                    $"its answer \"{slice.CommandId}\" on {aggregate}; both come back to the stream the trigger names, so they " +
+                    "must be on one aggregate");
+                return;
+            }
+            if (!CheckTarget(slice, effect.GaveUp.CommandId, g)) return;
+            gaveUpCmd = g;
+        }
 
         // the reactor belongs to whichever aggregate OWNS the trigger events -- that's
         // the stream it consumes, and it may well not be the target
@@ -368,6 +408,33 @@ public sealed class DocumentMapper
         var isCreate = hasCreate && !HasUpdateEvidence(slice, aggregate);
         target.Commands.Add(BuildCommand(aggregate, slice.CommandId, cmd, slice.ResultEventIds, isCreate, requiresExisting: !hasCreate,
             canBeginAgain: isCreate && HasBeginAgainEvidence(slice, aggregate), sliceId: slice.Id, outcomes: slice.Outcomes));
+        if (slice.Effect is { } fx && gaveUpCmd is not null)
+        {
+            // the answer and the give-up are alternatives, either of which may be the first on the stream; a stream
+            // has one beginning, so the answer keeps the create and the give-up (sent only when no answer came) is
+            // an upsert: neither guard
+            target.Commands.Add(BuildCommand(aggregate, fx.GaveUp.CommandId, gaveUpCmd, fx.GaveUp.ResultEventIds, once: false,
+                requiresExisting: false, sliceId: slice.Id, outcomes: fx.GaveUp.Outcomes));
+            if (isCreate)
+                _report.Warn($"automation \"{slice.Id}\": its give-up \"{fx.GaveUp.CommandId}\" may begin the stream as its " +
+                    $"answer \"{slice.CommandId}\" does; a stream has one beginning, so the answer is the create and the " +
+                    "give-up runs on a fresh or existing stream alike");
+        }
+        // A delay or an effect is fired by its source (a timer; the call and its answer), configured by surface
+        // tooling: the commands are the model's and are generated, but a reaction sending at once would be wrong.
+        if (slice.Delay is not null)
+        {
+            _report.Warn($"automation \"{slice.Id}\" waits before sending \"{slice.CommandId}\": the command is generated; " +
+                "sending it after the delay is its source's (surface tooling), so no reaction is generated");
+            return;
+        }
+        if (slice.Effect is not null)
+        {
+            _report.Warn($"automation \"{slice.Id}\" calls out: its answer \"{slice.CommandId}\" and give-up " +
+                $"\"{slice.Effect.GaveUp.CommandId}\" are generated; the call is its source's (surface tooling), so no " +
+                "reaction is generated");
+            return;
+        }
 
         var triggers = slice.TriggerEventIds.Select(EventTypeName).ToList();
         if (!string.IsNullOrEmpty(slice.ReadModelId))
@@ -392,13 +459,13 @@ public sealed class DocumentMapper
     /// <summary>Refuses an automation that doesn't say where its command goes (schema 5.0.0
     /// <c>targetIdField</c>), or names a field a trigger event doesn't carry or the command doesn't declare as
     /// its identity (<c>idAttribute</c>).</summary>
-    private bool CheckTarget(AutomationSlice slice, CommandDef cmd)
+    private bool CheckTarget(AutomationSlice slice, string commandId, CommandDef cmd)
     {
         var field = slice.TargetIdField;
         if (string.IsNullOrEmpty(field))
         {
             _report.Error($"automation \"{slice.Id}\" names no targetIdField: name the trigger event's field whose " +
-                $"value is the id of the stream \"{slice.CommandId}\" acts on (schema 5.0.0; the stream is no longer derived)");
+                $"value is the id of the stream \"{commandId}\" acts on (schema 5.0.0; the stream is no longer derived)");
             return false;
         }
         var ok = true;
@@ -413,7 +480,7 @@ public sealed class DocumentMapper
         }
         if (!(cmd.Fields ?? []).Any(f => f.Name == field && f.IdAttribute == true))
         {
-            _report.Error($"automation \"{slice.Id}\": command \"{slice.CommandId}\" must declare \"{field}\" with " +
+            _report.Error($"automation \"{slice.Id}\": command \"{commandId}\" must declare \"{field}\" with " +
                 "idAttribute: true, the identity of the stream it acts on (the automation's targetIdField)");
             ok = false;
         }
@@ -428,7 +495,7 @@ public sealed class DocumentMapper
                 var ef = eventFields.FirstOrDefault(f => f.Name == cf.Name);
                 if (ef is null || (ef.Type == cf.Type && Cardinality(ef) == Cardinality(cf))) continue;
                 _report.Error($"automation \"{slice.Id}\": \"{cf.Name}\" is {Shape(ef)} on trigger event \"{id}\" but " +
-                    $"{Shape(cf)} on command \"{slice.CommandId}\"; the reaction copies it by name, so they must match");
+                    $"{Shape(cf)} on command \"{commandId}\"; the reaction copies it by name, so they must match");
                 ok = false;
             }
         }
@@ -1666,6 +1733,9 @@ public sealed class DocumentMapper
             _report.Note($"{_document.Hotspots.Count} hotspot(s) are open questions about the model; not carried into generated code");
         if (_document.Screens is { Count: > 0 })
             _report.Note($"{_document.Screens.Count} screen(s) have no runtime concept here");
+        foreach (var (id, output) in (_document.Outputs ?? new Dictionary<string, OutputDef>()).OrderBy(o => o.Key, StringComparer.Ordinal))
+            _report.Warn($"output \"{id}\" leaves after {string.Join(", ", output.TriggerEventIds)}: nothing is generated; " +
+                "its carrier is surface tooling's");
 
         var statuses = _document.Slices.GroupBy(s => s.Status).ToDictionary(g => g.Key, g => g.Count());
         if (statuses.Count > 0)

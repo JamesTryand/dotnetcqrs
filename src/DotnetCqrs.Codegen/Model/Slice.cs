@@ -22,8 +22,10 @@ public abstract record Slice(
 public sealed record StateChangeSlice(
     string Id, string Name, string SwimlaneId, string? ChapterId, string? BusinessCapability,
     string Status, IReadOnlyList<Scenario> Scenarios,
-    string ScreenId, string CommandId, IReadOnlyList<string> EventIds,
-    IReadOnlyList<OutcomeDef>? Outcomes = null)
+    string? ScreenId, string CommandId, IReadOnlyList<string> EventIds,
+    IReadOnlyList<OutcomeDef>? Outcomes = null,
+    // schema 3.4.0: started by an outside input instead of a screen
+    string? IngressId = null)
     : Slice(Id, Name, SwimlaneId, ChapterId, BusinessCapability, Status, Scenarios);
 
 public sealed record StateViewSlice(
@@ -40,7 +42,10 @@ public sealed record AutomationSlice(
     IReadOnlyList<OutcomeDef>? Outcomes = null,
     // schema 5.0.0, required with triggerEventIds: the trigger events' field whose value is the id of the
     // stream the command acts on; the command declares the same field as its idAttribute
-    string? TargetIdField = null)
+    string? TargetIdField = null,
+    // a delay or a call out: fired by its source (surface tooling), so no reaction is generated
+    AutomationDelayDef? Delay = null,
+    AutomationEffectDef? Effect = null)
     : Slice(Id, Name, SwimlaneId, ChapterId, BusinessCapability, Status, Scenarios);
 
 public sealed class SliceConverter() : DiscriminatedUnionConverter<Slice>("pattern", new Dictionary<string, Type>

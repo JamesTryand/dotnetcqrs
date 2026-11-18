@@ -549,6 +549,17 @@ to the wrong stream. The generator refuses an automation without the field,
 or whose field a trigger event or the command lacks, and (0.41.0) one whose
 trigger and command declare a field of one name with different types: the
 reaction copies fields by name, and no scenario would show the mismatch.
+
+**The boundary (schema 6.0.0, 0.42.0).** A document names messages, never
+their sources, so the parts that cross the edge are read and only their model
+is generated. A `stateChange` slice started by an ingress (`ingressId`)
+generates its command; the ingress generates nothing (how its message arrives
+is surface tooling's). An automation with a delay generates its command, and
+one with an effect its answer and give-up commands, but no reaction: firing
+them is their source's. The answer is the stream's create, and the give-up
+runs on a fresh or an existing stream alike. An output generates nothing; the
+generator checks each field it says leaves is on its trigger events. Each is
+named in the report.
 The value has to be on the event: a command sent directly puts its stream's id
 in its body too (`orderId` in `PlaceOrder`'s), or the reaction has no target
 and is dropped, and logged.

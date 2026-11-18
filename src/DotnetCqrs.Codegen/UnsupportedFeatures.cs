@@ -23,8 +23,6 @@ public static class UnsupportedFeatures
         void Refuse(string location, string what) =>
             found.Add(new ValidationError(location, $"{what} is not supported by the dotnetcqrs generator yet"));
 
-        if (root.TryGetProperty("ingresses", out var ingresses) && ingresses.ValueKind == JsonValueKind.Object && ingresses.EnumerateObject().Any())
-            Refuse("/ingresses", "an ingress (schema 3.4.0)");
         if (root.TryGetProperty("partitioning", out _))
             Refuse("/partitioning", "partitioning (schema 3.7.0)");
 
@@ -41,17 +39,6 @@ public static class UnsupportedFeatures
                 foreach (var (property, what) in SliceFeatures)
                     if (slice.TryGetProperty(property, out _))
                         Refuse($"/slices/{i}/{property}", what);
-                if (slice.TryGetProperty("scenarios", out var scenarios) && scenarios.ValueKind == JsonValueKind.Array)
-                {
-                    var j = 0;
-                    foreach (var scenario in scenarios.EnumerateArray())
-                    {
-                        if (scenario.TryGetProperty("given", out var given) && given.ValueKind == JsonValueKind.Array
-                            && given.EnumerateArray().Any(g => g.ValueKind == JsonValueKind.Object && g.TryGetProperty("elapsed", out _)))
-                            Refuse($"/slices/{i}/scenarios/{j}/given", "an elapsed step in a scenario (schema 3.5.0)");
-                        j++;
-                    }
-                }
                 i++;
             }
         }
@@ -60,10 +47,6 @@ public static class UnsupportedFeatures
 
     private static readonly (string Property, string What)[] SliceFeatures =
     [
-        ("ingressId", "a slice started by an ingress (schema 3.4.0)"),
-        ("delay", "an automation started by a delay (schema 3.5.0)"),
-        ("schedule", "an automation started by a schedule (schema 3.5.0)"),
-        ("effect", "an automation effect (schema 3.6.0)"),
         ("partitionFrom", "partitionFrom (schema 3.7.0)"),
     ];
 }

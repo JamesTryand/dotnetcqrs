@@ -101,6 +101,25 @@ public sealed record ScreenDef(string Name, string? Description, string? ActorLa
 
 public sealed record AutomationDef(string Name, string? Description);
 
+/// <summary>A message entering from outside as a command (schema 3.4.0; from 6.0.0 only its name, description and
+/// swimlane: how it is carried and checked is its source's, configured by surface tooling).</summary>
+public sealed record IngressDef(string Name, string? Description, string? SwimlaneId);
+
+/// <summary>A message leaving after an event with nothing coming back (schema 6.0.0). <c>Fields</c> names what leaves,
+/// from its trigger events. Nothing is generated from it.</summary>
+public sealed record OutputDef(string Name, string? Description, string SwimlaneId, IReadOnlyList<string> TriggerEventIds,
+    IReadOnlyList<string>? Fields);
+
+/// <summary>An automation's delay (schema 3.5.0; its length only from 6.0.0): the business's rule. Firing it is a
+/// source's. <c>After</c> is a duration or a named setting with a default, kept raw.</summary>
+public sealed record AutomationDelayDef(System.Text.Json.JsonElement? After, string? At, string? Key);
+
+/// <summary>An automation's call out (schema 3.6.0): its answer comes back as the slice's command, its give-up as
+/// <c>GaveUp</c>'s.</summary>
+public sealed record AutomationEffectDef(string SwimlaneId, string? Description, EffectGaveUpDef GaveUp);
+
+public sealed record EffectGaveUpDef(string CommandId, IReadOnlyList<string> ResultEventIds, IReadOnlyList<OutcomeDef>? Outcomes = null);
+
 public sealed record Chapter(string Name, string? Description);
 
 public sealed record ActorLane(string Name, string? Description);

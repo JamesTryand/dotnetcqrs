@@ -18,7 +18,11 @@ public sealed record Document(
     IReadOnlyDictionary<string, AutomationDef>? Automations,
     IReadOnlyList<Slice> Slices,
     IReadOnlyDictionary<string, Hotspot>? Hotspots,
-    DataSubjectsDef? DataSubjects = null);
+    DataSubjectsDef? DataSubjects = null,
+    // schema 6.0.0: messages entering (an ingress names one; how it is carried is a source's) and leaving with
+    // nothing coming back. Nothing is generated from either.
+    IReadOnlyDictionary<string, IngressDef>? Ingresses = null,
+    IReadOnlyDictionary<string, OutputDef>? Outputs = null);
 
 /// <summary>The document-wide <c>dataSubjects</c> (schema 3.2.0): per-subject rules for the runtime's
 /// built-in <c>dataSubject</c> aggregate, which no document declares as an aggregate of its own.</summary>
