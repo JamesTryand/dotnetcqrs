@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "edgeMessage and the id it refers to, copied from eventmodelschema tag v6.1.1, schema/architecture.schema.json (architecture 0.2.0); only for checking the wire shape in EdgesNatsTests",
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "edgeMessage": {
+      "description": "Since 0.2.0: the message that crosses between two systems, whatever carries it. Not part of a coordinating document: the contract both runtimes send and read, so a system on either runtime can be on either end of an edge. A sending system publishes each public event an internal edge starts from, at its public version, with only the fields some edge from it maps (nothing else of the event leaves, personal data included). It says nothing about how it is carried: no subject, stream or credential.",
+      "type": "object",
+      "required": [
+        "id",
+        "system",
+        "event",
+        "version",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The source event's own id: a carrier may drop duplicates by it, and a receiver derives its command's id from it."
+        },
+        "system": {
+          "$ref": "#/$defs/id"
+        },
+        "event": {
+          "$ref": "#/$defs/id"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The event's public version."
+        },
+        "data": {
+          "type": "object",
+          "description": "Only the fields some internal edge from this event maps."
+        },
+        "correlationId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$ref": "#/$defs/edgeMessage"
+}

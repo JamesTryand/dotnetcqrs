@@ -14,6 +14,7 @@
     <Project Path="src/DotnetCqrs.Codegen/DotnetCqrs.Codegen.csproj" />
     <Project Path="src/DotnetCqrs.Codegen.Cli/DotnetCqrs.Codegen.Cli.csproj" />
     <Project Path="src/DotnetCqrs.Crypto/DotnetCqrs.Crypto.csproj" />
+    <Project Path="src/DotnetCqrs.Edges.Nats/DotnetCqrs.Edges.Nats.csproj" />
     <Project Path="src/DotnetCqrs.Host/DotnetCqrs.Host.csproj" />
     <Project Path="src/DotnetCqrs.Postgres/DotnetCqrs.Postgres.csproj" />
     <Project Path="src/DotnetCqrs.Retention/DotnetCqrs.Retention.csproj" />
@@ -22,5 +23,6 @@
   </Folder>
   <Folder Name="/test/">
     <Project Path="test/DotnetCqrs.Tests/DotnetCqrs.Tests.csproj" />
+    <Project Path="test/EdgesKillPeer/EdgesKillPeer.csproj" />
   </Folder>
 </Solution>

@@ -577,7 +577,39 @@ makes an `EdgeMessage` of an event, `EdgeIn.Translate` the command it becomes.
 Each edge's `examples` run against that code, and one that fails refuses the
 run. pocketcqrs (v0.28.0) writes the same tables and reads and sends the same
 message, so a system on either runtime can be on either end of an edge. No
-carrier is named; dotnetcqrs has none of its own yet.
+carrier is named in the document or the generated code.
+
+**Carrying an edge over NATS (0.46.0).** `JamesTryand.DotnetCqrs.Edges.Nats`
+carries the tables over NATS JetStream, wire-compatible with
+pocketcqrs-extensions' `federation` (the same subjects, stream, durable consumer
+and command ids), so a dotnetcqrs system and a pocketcqrs one share an edge either
+way. The host wires it by hand, from its own configuration, never from the
+document: the carrier is a source, surface tooling's to configure.
+
+```csharp
+var js = new NatsJSContext(EdgesNatsConnection.Open(url, user, password, "my-system"));
+// the sending side: a consumer of its own log
+var publisher = new EdgePublisher(js, "personal-data", Generated.SystemEdgeTables.Out);
+engine.Register(publisher);
+_ = publisher.EnsureStreamUntilAsync(TimeSpan.FromSeconds(2), Console.WriteLine, stopping);
+// the receiving side: one ingest per peer, its dead letters in the host's own store
+foreach (var peer in Generated.SystemEdgeTables.In.Select(e => e.FromSystem).Distinct())
+    _ = new EdgeIngest(js, peer, Generated.SystemEdgeTables.In.Where(e => e.FromSystem == peer).ToList(),
+        registry, deadLetterStore).RunAsync(stopping);
+```
+
+The publisher waits for the server's acknowledgement before its checkpoint moves,
+and publishes again under the event's id after a crash (the stream drops the
+duplicate). The ingest applies a message and then acknowledges it, with a command
+id from the message and the edge, so a redelivery is skipped. A refusal by the
+decider is acknowledged (the domain's answer), a conflict or a failure around
+the decision is redelivered after a pause and dead-lettered once its deliveries
+are used up, and an aggregate the system does not have is dead-lettered. A
+message of a version no edge names is skipped, so deploy a version change
+receiver first. Both start while the carrier is down and carry once it is back.
+Tested against a real `nats-server` (`DOTNETCQRS_NATS_SERVER`), including kill
+tests that fail against a publisher that does not wait and an ingest that
+acknowledges first.
 The value has to be on the event: a command sent directly puts its stream's id
 in its body too (`orderId` in `PlaceOrder`'s), or the reaction has no target
 and is dropped, and logged.

@@ -31,6 +31,9 @@
     <ProjectReference Include="..\..\src\DotnetCqrs.Crypto\DotnetCqrs.Crypto.csproj" />
     <ProjectReference Include="..\..\src\DotnetCqrs.Retention\DotnetCqrs.Retention.csproj" />
     <ProjectReference Include="..\..\src\DotnetCqrs.Telemetry.Nats\DotnetCqrs.Telemetry.Nats.csproj" />
+    <ProjectReference Include="..\..\src\DotnetCqrs.Edges.Nats\DotnetCqrs.Edges.Nats.csproj" />
+    <!-- built alongside, run as a separate process by EdgesNatsKillTests -->
+    <ProjectReference Include="..\EdgesKillPeer\EdgesKillPeer.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <!-- For CqrsGatewayAuthTests: JwtBearerDefaults, AddJwtBearer, TokenValidationParameters. -->
@@ -40,6 +43,10 @@
 
   <ItemGroup>
     <None Include="Codegen\TestData\*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Edges\edgeMessage.schema.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

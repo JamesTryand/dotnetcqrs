@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackageId>JamesTryand.DotnetCqrs.Edges.Nats</PackageId>
+    <Description>Carries a system's internal edges (eventmodelschema's coordinating document, edgeMessage) over NATS JetStream: a publishing consumer and an in-process ingest, wire-compatible with pocketcqrs-extensions' federation, so a dotnetcqrs and a pocketcqrs system can share an edge either way.</Description>
+  </PropertyGroup>
+
+  <!-- The JetStream client is this package's only PackageReference, kept out of DotnetCqrs.Host so a host that
+       carries no edge carries no bus client: the same split as DotnetCqrs.Telemetry.Nats and DotnetCqrs.Postgres. -->
+  <ItemGroup>
+    <PackageReference Include="NATS.Client.JetStream" Version="3.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DotnetCqrs.Abstractions\DotnetCqrs.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>
