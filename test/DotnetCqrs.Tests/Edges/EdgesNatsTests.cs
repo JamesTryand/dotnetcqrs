@@ -134,9 +134,9 @@ public class EdgesNatsTests
         return found;
     }
 
-    private static async Task<IReadOnlyList<Event>> EventuallyAsync(SqliteEventStore store, string aggregate, string id, int want)
+    private static async Task<IReadOnlyList<Event>> EventuallyAsync(SqliteEventStore store, string aggregate, string id, int want, int seconds = 20)
     {
-        var until = DateTime.UtcNow.AddSeconds(20);
+        var until = DateTime.UtcNow.AddSeconds(seconds);
         IReadOnlyList<Event> stream = [];
         while (DateTime.UtcNow < until)
         {
@@ -196,7 +196,9 @@ public class EdgesNatsTests
         {
             // the receiver upgraded: its edge names version 3
             var run = new EdgeIngest(js, "personal-data", [InAt(3)], registry, store, retry).RunAsync(stop.Token);
-            for (var i = 0; i < 60; i++) Assert.Single(await EventuallyAsync(store, "lead", $"new-{i}", 1));
+            // a message delivered to the stopped receiver and not yet answered comes back only after JetStream's ack
+            // wait (30 s by default): a delay, not a loss, so these waits are longer
+            for (var i = 0; i < 60; i++) Assert.Single(await EventuallyAsync(store, "lead", $"new-{i}", 1, 45));
             await Task.Delay(1000);
             stop.Cancel();
             await run;
@@ -241,7 +243,7 @@ public class EdgesNatsTests
         using (var stop = new CancellationTokenSource())
         {
             var run = new EdgeIngest(js, "personal-data", [InAt(3)], registry, store, retry).RunAsync(stop.Token);
-            Assert.Single(await EventuallyAsync(store, "lead", "late", 1));
+            Assert.Single(await EventuallyAsync(store, "lead", "late", 1, 45)); // after the stopped one: up to the 30 s ack wait
             stop.Cancel();
             await run;
         }
