@@ -147,6 +147,107 @@ public class EdgesNatsTests
         return stream;
     }
 
+    private static EdgeIn InAt(int version) => In with { FromVersion = version };
+
+    private static async Task<NatsJSContext> StreamAsync(NatsConnection nats)
+    {
+        var js = new NatsJSContext(nats);
+        await js.CreateOrUpdateStreamAsync(new StreamConfig(EdgesNats.StreamName("personal-data"), [EdgesNats.SubscribeSubject("personal-data")]));
+        return js;
+    }
+
+    private static Task SendVersionAsync(INatsJSContext js, string id, int version) =>
+        js.PublishAsync(EdgesNats.PublishSubject("personal-data", "contact", id),
+            Encoding.UTF8.GetBytes(new JsonObject { ["id"] = id, ["system"] = "personal-data", ["event"] = "contact-captured", ["version"] = version, ["data"] = new JsonObject { ["contactId"] = id } }.ToJsonString()),
+            headers: new NatsHeaders { ["Nats-Msg-Id"] = id }).AsTask();
+
+    // Its sender deployed first: a newer version than the receiver names is held, not skipped, while sixty held
+    // messages do not stop one of the version it names; once the receiver names the new version, each held message
+    // is applied, once.
+    [SkippableFact]
+    public async Task A_newer_version_is_held_until_a_receiver_names_it_and_does_not_block_others()
+    {
+        Skip.If(Server is null, "DOTNETCQRS_NATS_SERVER is not set");
+        using var server = new NatsServer();
+        server.Start();
+        await using var nats = new NatsConnection(new NatsOpts { Url = server.Url });
+        var js = await StreamAsync(nats);
+        for (var i = 0; i < 60; i++) await SendVersionAsync(js, $"new-{i}", 3);
+        await SendVersionAsync(js, "known", 2);
+
+        await using var store = await SqliteEventStore.OpenAsync(":memory:");
+        var registry = new DeciderRegistry(store);
+        registry.Register("lead", CountingLeadDecider());
+        var log = new List<string>();
+        var retry = new EdgeRetry(Hold: TimeSpan.FromMilliseconds(300));
+        using (var stop = new CancellationTokenSource())
+        {
+            var run = new EdgeIngest(js, "personal-data", [InAt(2)], registry, store, retry, l => { lock (log) log.Add(l); }).RunAsync(stop.Token);
+            Assert.Single(await EventuallyAsync(store, "lead", "known", 1)); // not stuck behind the held ones
+            await Task.Delay(1500); // each held message offered again several times meanwhile
+            stop.Cancel();
+            await run;
+        }
+        Assert.Empty(await store.LoadStreamAsync("lead", "new-0"));
+        Assert.Empty(await store.ListDeadLettersAsync());
+        lock (log) Assert.Equal(60, log.Count(l => l.Contains("held until one names it"))); // the first delivery only
+
+        using (var stop = new CancellationTokenSource())
+        {
+            // the receiver upgraded: its edge names version 3
+            var run = new EdgeIngest(js, "personal-data", [InAt(3)], registry, store, retry).RunAsync(stop.Token);
+            for (var i = 0; i < 60; i++) Assert.Single(await EventuallyAsync(store, "lead", $"new-{i}", 1));
+            await Task.Delay(1000);
+            stop.Cancel();
+            await run;
+        }
+        for (var i = 0; i < 60; i++) Assert.Single(await store.LoadStreamAsync("lead", $"new-{i}"));
+        Assert.Empty(await store.ListDeadLettersAsync());
+    }
+
+    // The deliveries a message spent held do not count against the retry budget: held many times, then failing once
+    // when it can first be applied, it is retried, not dead-lettered at once.
+    [SkippableFact]
+    public async Task Deliveries_spent_held_do_not_use_up_the_retry_budget()
+    {
+        Skip.If(Server is null, "DOTNETCQRS_NATS_SERVER is not set");
+        using var server = new NatsServer();
+        server.Start();
+        await using var nats = new NatsConnection(new NatsOpts { Url = server.Url });
+        var js = await StreamAsync(nats);
+        await SendVersionAsync(js, "late", 3);
+        await using var store = await SqliteEventStore.OpenAsync(":memory:");
+        var retry = new EdgeRetry(MaxAttempts: 3, Backoff: TimeSpan.FromMilliseconds(200), Hold: TimeSpan.FromMilliseconds(100));
+
+        var held = new DeciderRegistry(store);
+        held.Register("lead", CountingLeadDecider());
+        using (var stop = new CancellationTokenSource())
+        {
+            var run = new EdgeIngest(js, "personal-data", [InAt(2)], held, store, retry).RunAsync(stop.Token);
+            await Task.Delay(1500); // held about ten times
+            stop.Cancel();
+            await run;
+        }
+
+        // the first try once it can be applied fails around the decision (not a refusal), then succeeds
+        var failures = 1;
+        var registry = new DeciderRegistry(store);
+        registry.Register("lead", new Decider<int>
+        {
+            InitialState = () => Interlocked.Decrement(ref failures) >= 0 ? throw new IOException("store unreachable") : 0,
+            Decide = (_, c) => [new NewEvent("LeadStarted", c.Payload)],
+            Evolve = (n, _) => n + 1,
+        });
+        using (var stop = new CancellationTokenSource())
+        {
+            var run = new EdgeIngest(js, "personal-data", [InAt(3)], registry, store, retry).RunAsync(stop.Token);
+            Assert.Single(await EventuallyAsync(store, "lead", "late", 1));
+            stop.Cancel();
+            await run;
+        }
+        Assert.Empty(await store.ListDeadLettersAsync());
+    }
+
     [SkippableFact]
     public async Task What_leaves_is_one_edgeMessage_per_event_with_only_the_mapped_fields()
     {
@@ -262,6 +363,9 @@ public class EdgesNatsTests
         Assert.Single(letters, l => l.Error == "not an edge message");
         Assert.All(letters, l => Assert.Equal(EdgesNats.ConsumerName("personal-data"), l.Consumer));
         Assert.Contains(log, l => l.Contains("no-target") && l.Contains("dropped"));
+        // an older version than the edges name is skipped (acknowledged), never held: nothing here will ever apply it
+        Assert.Contains(log, l => l.Contains("message v1 ") && l.Contains("skipped"));
+        Assert.DoesNotContain(log, l => l.Contains("held"));
     }
 
     // The receiving side's retry is what this catches (without it the ingest gives up while the carrier is down).

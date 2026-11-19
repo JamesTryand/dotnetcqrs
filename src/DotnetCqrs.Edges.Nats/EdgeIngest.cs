@@ -11,9 +11,12 @@ namespace DotnetCqrs.Edges.Nats;
 /// <param name="MaxAttempts">Deliveries of one message before it is dead-lettered instead of retried again.</param>
 /// <param name="Backoff">The pause JetStream waits before redelivering (a delayed negative acknowledgement; this
 /// process never sleeps on it).</param>
-public sealed record EdgeRetry(int MaxAttempts = 10, TimeSpan? Backoff = null)
+/// <param name="Hold">How long a message of a newer version than any edge names waits before it is offered again
+/// (30 s when null): it is held until a receiver that names its version reads it.</param>
+public sealed record EdgeRetry(int MaxAttempts = 10, TimeSpan? Backoff = null, TimeSpan? Hold = null)
 {
     public TimeSpan Delay => Backoff ?? TimeSpan.FromSeconds(2);
+    public TimeSpan HoldFor => Hold ?? TimeSpan.FromSeconds(30);
 }
 
 /// <summary>
@@ -32,7 +35,11 @@ public sealed record EdgeRetry(int MaxAttempts = 10, TimeSpan? Backoff = null)
 /// failure is retried instead);</item>
 /// <item>an aggregate this system does not have, or a message that is not an edge message: dead-lettered and
 /// acknowledged;</item>
-/// <item>an event or version no edge names: acknowledged and skipped (deploy a version change receiver first);</item>
+/// <item>a newer version of an event this system has edges for than any of them names (its sender was deployed
+/// first): held, offered again after <see cref="EdgeRetry.HoldFor"/>, until a receiver that names the version applies
+/// it; not counted against the retry budget, and only its first delivery logged;</item>
+/// <item>an older version than the edges name, or an event no edge names: acknowledged and skipped (nothing here will
+/// ever apply it; keep the old version's edge in the coordinating document while a version changes);</item>
 /// <item>no value for an edge's target field: that edge's command is dropped, as an automation drops one.</item>
 /// </list>
 /// </summary>
@@ -42,6 +49,9 @@ public sealed class EdgeIngest(
 {
     private readonly EdgeRetry _retry = retry ?? new EdgeRetry();
     private readonly Action<string> _log = log ?? (_ => { });
+    // message id -> the delivery at which it was first found applicable and retried, so deliveries spent held are
+    // not counted against the retry budget
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _applicable = new();
 
     public string Name => EdgesNats.ConsumerName(peer);
 
@@ -92,9 +102,17 @@ public sealed class EdgeIngest(
             return;
         }
 
+        var delivered = (int)(msg.Metadata?.NumDelivered ?? 1);
         var matched = Edges.Find(ins, m);
         if (matched.Count == 0)
         {
+            if (NewerThanNamed(m))
+            {
+                if (delivered <= 1)
+                    _log($"edges: message {m.Id} ({m.System} {m.Event} v{m.Version}) is newer than this receiver names, held until one names it");
+                await msg.NakAsync(new AckOpts { NakDelay = _retry.HoldFor }, ct);
+                return;
+            }
             _log($"edges: message {m.Id} ({m.System} {m.Event} v{m.Version}) no edge names, skipped");
             await msg.AckAsync(cancellationToken: ct);
             return;
@@ -115,17 +133,26 @@ public sealed class EdgeIngest(
 
         if (again is null)
         {
+            _applicable.TryRemove(m.Id, out _);
             await msg.AckAsync(cancellationToken: ct);
             return;
         }
-        var delivered = (int)(msg.Metadata?.NumDelivered ?? 1);
-        if (delivered >= _retry.MaxAttempts)
+        var first = _applicable.GetOrAdd(m.Id, delivered);
+        if (delivered - first + 1 >= _retry.MaxAttempts)
         {
+            _applicable.TryRemove(m.Id, out _);
             await DeadLetterAsync(AsEvent(m), $"retry budget exhausted: {again.Message}", ct);
             await msg.AckAsync(cancellationToken: ct);
             return;
         }
         await msg.NakAsync(new AckOpts { NakDelay = _retry.Delay }, ct);
+    }
+
+    // a later version of an event the edges name than any of them names
+    private bool NewerThanNamed(EdgeMessage m)
+    {
+        var named = ins.Where(e => e.FromSystem == m.System && e.FromEvent == m.Event).Select(e => e.FromVersion).DefaultIfEmpty(0).Max();
+        return named > 0 && m.Version > named;
     }
 
     private enum Outcome { Done, Retry, DeadLetter }

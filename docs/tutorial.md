@@ -604,9 +604,15 @@ duplicate). The ingest applies a message and then acknowledges it, with a comman
 id from the message and the edge, so a redelivery is skipped. A refusal by the
 decider is acknowledged (the domain's answer), a conflict or a failure around
 the decision is redelivered after a pause and dead-lettered once its deliveries
-are used up, and an aggregate the system does not have is dead-lettered. A
-message of a version no edge names is skipped, so deploy a version change
-receiver first. Both start while the carrier is down and carry once it is back.
+are used up, and an aggregate the system does not have is dead-lettered.
+**Since 0.47.0** a newer version of an event the system has edges for than any of
+them names is held (offered again after `EdgeRetry.Hold`, 30 s by default) until
+a receiver that names it reads it, then applied once; the deliveries it spent
+held do not count against the retry budget. So a version change can deploy its
+sender first. An older version, or an event no edge names, is skipped: keep the
+old version's edge in the coordinating document while a version changes, or a
+receiver deployed first skips what the old sender still sends. Both start while
+the carrier is down and carry once it is back.
 Tested against a real `nats-server` (`DOTNETCQRS_NATS_SERVER`), including kill
 tests that fail against a publisher that does not wait and an ingest that
 acknowledges first.
