@@ -56,6 +56,7 @@ public class HostKillTests(KillHostFixture host) : IClassFixture<CliUnderTestFix
             using (var node = await host.StartAsync(postgres))
             {
                 using var client = new HttpClient { BaseAddress = node.BaseAddress, Timeout = TimeSpan.FromSeconds(30) };
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", host.Token);
                 var burst = Enumerable.Range(0, commands).Select(async i =>
                 {
                     var id = $"k{i}";
@@ -271,7 +272,14 @@ public sealed class KillHostFixture : IDisposable
             "--output", _dir, "--host", "--dotnetcqrs-project", project]);
         Run("dotnet", ["build", _dir, "-v", "quiet"]);
         _dll = Directory.GetFiles(Path.Combine(_dir, "bin"), "KillTests.dll", SearchOption.AllDirectories).Single();
+        Token = new DotnetCqrs.Host.ServiceTokenStore(TokensPath).Issue("kill-test", "caller").Token;
     }
+
+    /// <summary>The token file the host is pointed at, outside its data directory so a reset keeps it.</summary>
+    private string TokensPath => Path.Combine(_dir, "service-tokens.json");
+
+    /// <summary>A service token the host takes commands from (the gateway contract's G2).</summary>
+    public string Token { get; }
 
     /// <summary>The host's data directory, beside its build output.</summary>
     public string DataDir => Path.Combine(Path.GetDirectoryName(_dll)!, "data");
@@ -329,6 +337,7 @@ public sealed class KillHostFixture : IDisposable
         psi.Environment["CQRS_OPS_BIND"] = "127.0.0.1";
         psi.Environment["CQRS_STATE_DIR"] = Path.Combine(_dir, "node-state");
         psi.Environment["DOTNETCQRS_POSTGRES"] = postgres ? PostgresDatabase : "";
+        psi.Environment["DOTNETCQRS_TOKENS_PATH"] = TokensPath;
         psi.Environment.Remove("CQRS_NODE_ID");
         var node = new HostProcess(Process.Start(psi)!, new Uri($"http://127.0.0.1:{port}"));
         using var client = new HttpClient { BaseAddress = node.BaseAddress };

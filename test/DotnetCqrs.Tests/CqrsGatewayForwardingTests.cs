@@ -87,8 +87,8 @@ public sealed class CqrsGatewayForwardingTests : IAsyncDisposable
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var events = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal(1, events.GetArrayLength());
-        Assert.Equal("TaskCreated", events[0].GetProperty("type").GetString());
+        Assert.Equal(1, events.GetProperty("events").GetArrayLength());
+        Assert.Equal("TaskCreated", events.GetProperty("events")[0].GetProperty("type").GetString());
 
         var stream = await _masterStore.LoadStreamAsync("task", "t1");
         Assert.Single(stream);

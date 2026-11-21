@@ -153,6 +153,9 @@ the generated code: set `DOTNETCQRS_POSTGRES` to a connection string and the eve
 (the database's default schema), the read models (schema `read_models`) and any search
 index (schema `search`) all live in that database; leave it unset for the SQLite files
 under `data/`. One application per database, as one set of files per application.
+Since 0.49.0 the gateway's `Idempotency-Key` records live there too, in the table
+`cqrs_idempotency` beside the event log (`PostgresIdempotencyStore`; `data/idempotency.db`
+on SQLite). The service-token file (`DOTNETCQRS_TOKENS_PATH`) is a file either way.
 
 What it took (found on 2026-09-24 by running the generators' SQL against
 `postgres:17-alpine`):

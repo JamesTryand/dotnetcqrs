@@ -39,13 +39,13 @@ public static class OrderDecider
             {
                 case "PlaceOrder":
                 {
-                    if (state.Exists) throw new InvalidOperationException("order already exists");
+                    if (state.Exists) throw new AlreadyExistsException("order already exists");
                     var payload = JsonSerializer.Deserialize<OrderPlacedPayload>(cmd.Payload, JsonOptions)!;
                     return [NewEvent.Of(OrderEvents.OrderPlaced, payload)];
                 }
                 case "ShipOrder":
                 {
-                    if (!state.Exists) throw new InvalidOperationException("order does not exist");
+                    if (!state.Exists) throw new DoesNotExistException("order does not exist");
                     var payload = JsonSerializer.Deserialize<OrderShippedPayload>(cmd.Payload, JsonOptions)!;
                     return [new NewEvent(OrderEvents.OrderShipped, JsonSerializer.Serialize(payload, JsonOptions))];
                 }

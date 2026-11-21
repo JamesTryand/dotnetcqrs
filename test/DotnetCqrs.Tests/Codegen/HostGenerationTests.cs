@@ -130,6 +130,20 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
 
     /// <summary>Binds then immediately releases a loopback port -- the ordinary
     /// (small-race) way to pick a free port for a child process to listen on.</summary>
+    /// <summary>The token file a generated host under test is pointed at (<c>DOTNETCQRS_TOKENS_PATH</c>): a writer
+    /// takes a command only with a service token (the gateway contract's G2).</summary>
+    private string TokensPath => Path.Combine(_scratchDir, "test-service-tokens.json");
+
+    private string? _token;
+
+    /// <summary><paramref name="client"/>, sending a service token issued into <see cref="TokensPath"/>.</summary>
+    private HttpClient Authorized(HttpClient client)
+    {
+        _token ??= new DotnetCqrs.Host.ServiceTokenStore(TokensPath).Issue("test-caller", "caller").Token;
+        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
+        return client;
+    }
+
     private static int FreeTcpPort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -192,7 +206,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             .Single(f => f.Name == "Program.cs").Source;
 
         // Closed by default: no authorize unless the throwaway switch is set, and the switch is loud.
-        Assert.Contains("app.MapCqrsGateway(authorize: allowUnauthorizedErasure ? (_, _, _, _, _, _) => Task.FromResult(true) : null);", program);
+        Assert.Contains("app.MapCqrsGateway(authorize: allowUnauthorizedErasure ? (_, _, _, _, _, _) => Task.FromResult(true) : null).RequireAuthorization();", program);
         Assert.Contains("DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE", program);
         Assert.Contains("WARNING: DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE=1", program);
         Assert.DoesNotContain("app.MapCqrsGateway();", program.Replace("app.MapCqrsGateway(forward", ""));
@@ -229,16 +243,22 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
     public Task Generate_host_builds_self_verifies_and_dispatches_a_real_command_over_http()
         => RunOrderFulfillmentHostAsync(postgres: null);
 
-    /// <summary>A generated host enforces the command permissions its document declares, with nothing
-    /// wired by hand: this scaffold signs no one in, so a command whose scope the caller can't meet is
-    /// refused with the scope's own message, and a command declaring nothing is accepted as before.</summary>
+    /// <summary>A generated host authenticates every command by a service token it issues itself (the gateway contract's
+    /// G2), and enforces the command permissions its document declares with nothing wired by hand. No token, or one
+    /// it never issued, is a 401; a token whose role a command's <c>requiredRole</c> refuses is a 403; a command whose
+    /// scope the caller can't meet is refused with the scope's own message; a command declaring nothing is accepted
+    /// from any service account. The token comes from the host's own <c>--issue-token</c>, run beside it.</summary>
     [Fact(Timeout = 300000)]
-    public async Task A_generated_host_enforces_declared_command_permissions_over_http()
+    public async Task A_generated_host_authenticates_service_tokens_and_enforces_declared_command_permissions_over_http()
     {
+        var document = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(TestDataPath("state-ownership.json")))!;
+        document["commands"]!["join-branch"]!["requiredRole"] = "member";
+        var input = Path.Combine(_scratchDir, "state-ownership-gated.json");
+        await File.WriteAllTextAsync(input, document.ToJsonString());
         var (genExit, genOutput) = await RunAsync("dotnet",
         [
             await CliUnderTest.DllAsync(), "generate",
-            "--input", TestDataPath("state-ownership.json"),
+            "--input", input,
             "--output", _scratchDir, "--host",
             "--dotnetcqrs-project", DotnetCqrsProjectPath(),
         ]);
@@ -254,6 +274,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         psi.Environment["CQRS_OPS_BIND"] = "127.0.0.1";
         psi.Environment["CQRS_STATE_DIR"] = Path.Combine(_scratchDir, "node-state");
         psi.Environment["DOTNETCQRS_POSTGRES"] = "";
+        psi.Environment.Remove("DOTNETCQRS_TOKENS_PATH");
         psi.Environment.Remove("CQRS_NODE_ID");
 
         var hostLog = new System.Text.StringBuilder();
@@ -261,13 +282,13 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         try
         {
             using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
-            HttpResponseMessage? requested = null;
-            for (var attempt = 0; attempt < 60 && requested is null; attempt++)
+            HttpResponseMessage? anonymous = null;
+            for (var attempt = 0; attempt < 60 && anonymous is null; attempt++)
             {
                 await Task.Delay(500);
                 try
                 {
-                    requested = await client.PostAsJsonAsync("/api/cqrs/loanRequest/l1/RequestLoan",
+                    anonymous = await client.PostAsJsonAsync("/api/cqrs/loanRequest/l1/RequestLoan",
                         new { toolId = "t1", branchId = "b1", loanDays = 7 });
                 }
                 catch (HttpRequestException)
@@ -275,18 +296,65 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
                     // not listening yet
                 }
             }
-            Assert.True(requested is not null, $"generated host never answered:\n{Tail(hostLog)}");
-            Assert.True(requested!.StatusCode == HttpStatusCode.OK,
-                $"a command declaring nothing should be accepted, got {requested.StatusCode}: {await requested.Content.ReadAsStringAsync()}\n{Tail(hostLog)}");
+            Assert.True(anonymous is not null, $"generated host never answered:\n{Tail(hostLog)}");
+            Assert.True(anonymous!.StatusCode == HttpStatusCode.Unauthorized,
+                $"a command with no token is a 401, got {anonymous.StatusCode}: {await anonymous.Content.ReadAsStringAsync()}\n{Tail(hostLog)}");
+            Assert.Equal("application/problem+json", anonymous.Content.Headers.ContentType?.MediaType);
 
-            using var approve = await client.PostAsJsonAsync("/api/cqrs/loanRequest/l1/ApproveLoanRequest", new { });
-            Assert.Equal(HttpStatusCode.Forbidden, approve.StatusCode);
-            Assert.Contains("only a volunteer at this loan request's branch may approve it", await approve.Content.ReadAsStringAsync());
+            // Issued by the host's own command while it runs, into the same default token file.
+            async Task<string> IssueAsync(string name, string role)
+            {
+                var (exit, output) = await RunAsync("dotnet", ["run", "--project", _scratchDir, "--no-build", "--", "--issue-token", name, "--role", role]);
+                Assert.True(exit == 0, $"--issue-token exited {exit}:\n{output}");
+                return output.Split('\n', StringSplitOptions.TrimEntries).Single(l => l.StartsWith(DotnetCqrs.Host.ServiceTokenDefaults.TokenPrefix, StringComparison.Ordinal));
+            }
+            var member = await IssueAsync("member-app", "member");
+            var guest = await IssueAsync("guest-app", "guest");
+            Assert.DoesNotContain(member, await File.ReadAllTextAsync(Directory.GetFiles(_scratchDir, "service-tokens.json", SearchOption.AllDirectories).Single()));
 
-            // nothing was recorded for the refused command
+            Task<HttpResponseMessage> SendAsync(string path, object body, string? token)
+            {
+                var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = JsonContent.Create(body) };
+                if (token is not null)
+                    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                return client.SendAsync(request);
+            }
+
+            using (var unknown = await SendAsync("/api/cqrs/loanRequest/l1/RequestLoan", new { toolId = "t1", branchId = "b1", loanDays = 7 },
+                DotnetCqrs.Host.ServiceTokenDefaults.TokenPrefix + "never-issued"))
+                Assert.Equal(HttpStatusCode.Unauthorized, unknown.StatusCode);
+
+            using (var requested = await SendAsync("/api/cqrs/loanRequest/l1/RequestLoan", new { toolId = "t1", branchId = "b1", loanDays = 7 }, member))
+                Assert.True(requested.StatusCode == HttpStatusCode.OK,
+                    $"a command declaring nothing should be accepted from any service account, got {requested.StatusCode}: {await requested.Content.ReadAsStringAsync()}\n{Tail(hostLog)}");
+
+            using (var approve = await SendAsync("/api/cqrs/loanRequest/l1/ApproveLoanRequest", new { }, member))
+            {
+                Assert.Equal(HttpStatusCode.Forbidden, approve.StatusCode);
+                Assert.Contains("only a volunteer at this loan request's branch may approve it", await approve.Content.ReadAsStringAsync());
+            }
+
+            // join-branch requires the member role: the guest's token is refused, the member's is not.
+            using (var refused = await SendAsync("/api/cqrs/branch/b1/JoinBranch", new { branchId = "b1", volunteerId = "member-app" }, guest))
+                Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
+            using (var joined = await SendAsync("/api/cqrs/branch/b1/JoinBranch", new { branchId = "b1", volunteerId = "member-app" }, member))
+                Assert.True(joined.StatusCode == HttpStatusCode.OK, $"{joined.StatusCode}: {await joined.Content.ReadAsStringAsync()}");
+
+            // A revoked token is refused at once, with no restart.
+            var (revokeExit, revokeOutput) = await RunAsync("dotnet", ["run", "--project", _scratchDir, "--no-build", "--", "--revoke-token", "member-app"]);
+            Assert.True(revokeExit == 0, revokeOutput);
+            using (var revoked = await SendAsync("/api/cqrs/loanRequest/l2/RequestLoan", new { toolId = "t1", branchId = "b1", loanDays = 7 }, member))
+                Assert.Equal(HttpStatusCode.Unauthorized, revoked.StatusCode);
+
+            // nothing was recorded for the refused commands, and the actor is the service account
             await using var store = await OpenEventStoreAsync(null);
             var stream = await store.LoadStreamAsync("loanRequest", "l1");
             Assert.DoesNotContain(stream, e => e.Type.Contains("Approved", StringComparison.Ordinal));
+            Assert.Contains("\"actor\":\"member-app\"", Assert.Single(stream).Metadata);
+            Assert.Empty(await store.LoadStreamAsync("loanRequest", "l2"));
+            // no token reached the log
+            Assert.DoesNotContain(member, Tail(hostLog));
+            Assert.DoesNotContain(guest, Tail(hostLog));
         }
         finally
         {
@@ -386,13 +454,14 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         psi.Environment["KMS_FACADE_URL"] = facade.BaseUrl;
         psi.Environment["DOTNETCQRS_POSTGRES"] = postgres ?? "";
         psi.Environment["CQRS_STATE_DIR"] = stateDir;
+        psi.Environment["DOTNETCQRS_TOKENS_PATH"] = TokensPath;
         psi.Environment.Remove("CQRS_NODE_ID");
 
         var hostLog = new System.Text.StringBuilder();
         using var process = StartHost(psi, hostLog);
         try
         {
-            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            using var client = Authorized(new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") });
             HttpResponseMessage? response = null;
             for (var attempt = 0; attempt < 60 && response is null; attempt++)
             {
@@ -411,9 +480,10 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             Assert.False(process.HasExited, $"generated host process exited early (code {(process.HasExited ? process.ExitCode : (int?)null)}):\n{Tail(hostLog)}");
             Assert.True(response is not null, $"generated host never answered:\n{Tail(hostLog)}");
             Assert.Equal(HttpStatusCode.OK, response!.StatusCode);
-            var events = await response.Content.ReadFromJsonAsync<JsonElement>();
+            var events = (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("events");
             Assert.Equal(1, events.GetArrayLength());
             Assert.Equal("OrderPlaced", events[0].GetProperty("type").GetString());
+            Assert.Equal(JsonValueKind.Object, events[0].GetProperty("data").ValueKind);
 
             // First boot with a state directory: a new id, written there, logged once.
             var nodeId = File.ReadAllText(Path.Combine(stateDir, "node-id")).Trim();
@@ -554,6 +624,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             psi.Environment["DOTNETCQRS_POSTGRES"] = postgres ?? "";
             psi.Environment["DOTNETCQRS_EVENTS_PATH"] = sharedEvents;
             psi.Environment["DOTNETCQRS_STALE_THRESHOLD_SECONDS"] = "2";
+            psi.Environment["DOTNETCQRS_TOKENS_PATH"] = TokensPath;
             psi.Environment.Remove("CQRS_NODE_ID");
             psi.Environment.Remove("DOTNETCQRS_ROLE");
             psi.Environment.Remove("DOTNETCQRS_WRITER_URL");
@@ -612,7 +683,8 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             readerPsi.Environment["DOTNETCQRS_WRITER_URL"] = $"http://127.0.0.1:{writerPort}";
             reader = StartHost(readerPsi, readerLog);
             using var readerOps = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{readerOpsPort}") };
-            using var readerTraffic = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{readerPort}") };
+            // The reader forwards the token to the writer, which authenticates it.
+            using var readerTraffic = Authorized(new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{readerPort}") });
 
             // ---- Fresh: a ready reader, the writer a dependency
             var fresh = await EventuallyReadyzAsync(readerOps, "the reader to be ready",
@@ -879,11 +951,12 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
         // so the throwaway local-run switch is set explicitly (the default is covered by
         // The_generated_pii_host_refuses_erasure_unless_an_authorize_policy_is_wired).
         psi.Environment["DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE"] = "1";
+        psi.Environment["DOTNETCQRS_TOKENS_PATH"] = TokensPath;
 
         // Reassigned by the restart below; local functions capture the variables.
         var hostLog = new System.Text.StringBuilder();
         var process = StartHost(psi, hostLog);
-        var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+        var client = Authorized(new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") });
         try
         {
 
@@ -989,7 +1062,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             psi.Environment["CQRS_OPS_BIND"] = "127.0.0.1";
             process = StartHost(psi, hostLog);
             client.Dispose();
-            client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            client = Authorized(new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") });
             for (var attempt = 0; attempt < 60; attempt++)
             {
                 await Task.Delay(500);
@@ -1081,7 +1154,7 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             psi.Environment["CQRS_OPS_BIND"] = "127.0.0.1";
             process = StartHost(psi, hostLog);
             client.Dispose();
-            client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            client = Authorized(new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") });
             int? restoredHits = null;
             for (var attempt = 0; attempt < 60 && restoredHits is null; attempt++)
             {

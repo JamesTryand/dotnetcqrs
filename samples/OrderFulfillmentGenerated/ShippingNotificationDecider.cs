@@ -35,7 +35,7 @@ public static class ShippingNotificationDecider
             {
                 case "NotifyShippingPartner":
                 {
-                    if (state.Exists) throw new InvalidOperationException("shipping notification already exists");
+                    if (state.Exists) throw new AlreadyExistsException("shipping notification already exists");
                     return [new NewEvent(ShippingNotificationEvents.ShipmentNotified, "{}")];
                 }
                 default:

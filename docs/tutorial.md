@@ -94,13 +94,13 @@ public static class OrderDecider
             {
                 case "PlaceOrder":
                 {
-                    if (state.Exists) throw new InvalidOperationException("order already exists");
+                    if (state.Exists) throw new AlreadyExistsException("order already exists");
                     var payload = JsonSerializer.Deserialize<OrderPlacedPayload>(cmd.Payload, JsonOptions)!;
                     return [NewEvent.Of(OrderEvents.OrderPlaced, payload)];
                 }
                 case "ShipOrder":
                 {
-                    if (!state.Exists) throw new InvalidOperationException("order does not exist");
+                    if (!state.Exists) throw new DoesNotExistException("order does not exist");
                     return [new NewEvent(OrderEvents.OrderShipped, "{}")];
                 }
                 // ...
@@ -120,7 +120,11 @@ public static class OrderDecider
 
 This is a real, compilable `Decider<OrderState>` — the create-guard
 (`if (state.Exists) throw ...`), the existence check on `ShipOrder`, the
-event names, all generated straight from the document's slices. Because
+event names, all generated straight from the document's slices. The two
+refusals are typed, `AlreadyExistsException` and `DoesNotExistException`
+(both `InvalidOperationException`s carrying a `Reason`), so the gateway can
+tell a caller which one it was without the caller reading the words (see
+[the gateway's answers](#the-command-gateways-answers)). Because
 `customerEmail` is personal data, it is typed `Pii<string>` rather than
 `string`, and the decider comes with a `PiiProtector`. Register the two
 together:
@@ -411,8 +415,101 @@ It then wires everything from the previous section: each protector (with the
 erased-subject guard and the reveal cache), the `dataSubject` aggregate, the
 key destroyer and the cache evictor. Erasing a person is an ordinary command
 through the gateway: `POST /api/cqrs/dataSubject/{subjectId}/EraseSubject`.
-Who may call it is your authorization decision, like every other command;
-the generated host is unauthenticated until you add a scheme.
+Who may call it is your authorization decision: like every command it needs a
+service token (next section), and on top of that the `dataSubject` commands
+stay refused until you wire a policy saying who may send them.
+
+### Who may send commands: service tokens
+
+A writer takes a command only from a caller it knows: `Authorization: Bearer <token>`,
+where the token is one the host issued itself. No identity provider is involved, so an
+outside caller (a webhook receiver, a scheduler, another system) can be given one directly:
+
+```sh
+dotnet run --project OrderFulfillment -- --issue-token payments --role payments
+# dcq_...   (printed once, on standard output)
+```
+
+Each token belongs to one service account: a name and one role. The name is the `actor`
+stamped on the events its commands produce. The role is issued under the claim named by
+`Cqrs:RoleClaim` (default `role`), the claim the document's command permissions read (see
+[the end of this tutorial](#checking-a-documents-own-scenarios-automatically)). The host keeps
+only a SHA-256 of each token, in `DOTNETCQRS_TOKENS_PATH` (default `data/service-tokens.json`
+beside the build output, owner-only on Unix). The token itself is shown once and never logged;
+keep it as a secret. `--revoke-token payments` removes an account, and `--list-tokens` lists
+them (name, role, date issued; never a token). Both work beside a running host, which sees the
+change on its next request. To rotate a token without a gap, issue one under a new name, move
+the caller over, then revoke the old one. A host whose `data/` does not survive a restart or a redeploy
+(a container with no volume, a fresh publish folder) loses its accounts with it, and every
+caller gets `401`: point `DOTNETCQRS_TOKENS_PATH` at storage that persists.
+
+No token, a header that is not `Bearer`, or a token never issued or since revoked: `401`
+with `WWW-Authenticate: Bearer`. A token whose role may not send that command: `403`. A
+reader forwards the header to its writer, which decides. The query and live routes are not
+part of this and behave as before.
+
+A host you wire by hand gets the same scheme from `DotnetCqrs.Host`:
+
+```csharp
+var tokens = new ServiceTokenStore(tokensPath);
+if (ServiceTokenCommand.Handles(args))                 // --issue-token, --revoke-token, --list-tokens
+    return ServiceTokenCommand.Run(args, tokensPath, Console.Out, Console.Error);
+builder.Services.AddAuthentication(ServiceTokenDefaults.Scheme).AddServiceTokens(tokens);
+builder.Services.AddAuthorization();
+// ...
+app.MapCqrsGateway().RequireAuthorization();
+```
+
+### The command gateway's answers
+
+The gateway answers as the command gateway HTTP contract shared by both stacks (v0.1) says,
+so a caller written for pocketcqrs works against dotnetcqrs unchanged.
+
+- **`200`, decided:** `{"events":[...]}`. Each event is
+  `{position, id, aggregate, aggregateId, sequence, type, data, metadata, created}`, with
+  `data` and `metadata` as JSON objects. A command that produced nothing answers
+  `{"events":[]}`.
+- **Every other status** is an RFC 9457 problem body (`application/problem+json`) with
+  `status`, `title` and `detail`.
+- **`400`, refused or malformed:** a refusal's `detail` is the decider's message exactly as
+  the decider wrote it. The two generated refusals add `reason`:
+  - `does-not-exist`: the stream the command needs is not there yet, so sending it again
+    later may succeed;
+  - `already-exists`: a create sent to a stream that exists, which is final.
+
+  A caller decides on `reason`, never on the words. A body that is not one JSON object is a
+  `400` too (an empty body means `{}`), as is an `Idempotency-Key` over 200 characters.
+- **`401` and `403`:** the caller (above).
+- **`404`:** an unknown aggregate.
+- **`409`:** the command lost a race for the stream and nothing was applied; send it again.
+- **`410`:** the subject was erased.
+- **`422`:** an `Idempotency-Key` reused for a different request.
+- **`503`:** not taken, nothing applied (a dependency down, a reader with no writer). It
+  carries `Retry-After` in seconds.
+- **`500`, `502` and `504`:** it may or may not have been applied; send it again with the
+  same `Idempotency-Key`.
+
+**`Idempotency-Key`** is an optional header, at most 200 characters. The same key with the
+same aggregate, id, command and body replays the first `200`, byte for byte, without
+deciding again. Nothing else is replayed: a `409` is decided again, and a `400`, `401`,
+`403`, `404`, `410` or `503` is never recorded, so a `does-not-exist` refusal sent again
+under the same key succeeds once the stream exists. The key is checked after the caller is,
+so a replay never skips the role check, and duplicates arriving together are decided once.
+A writer keeps the answers beside its event log (`data/idempotency.db`, or the
+`cqrs_idempotency` table on Postgres) for `DOTNETCQRS_IDEMPOTENCY_RETENTION_DAYS` (default
+`7`, the least the contract allows; a smaller or non-numeric value refuses to start). A host
+wired by hand registers an `IIdempotencyStore` (`SqliteIdempotencyStore`,
+`PostgresIdempotencyStore`); without one, the gateway keeps answers in memory, which a
+restart loses.
+
+**Since 0.49.0** the gateway meets that contract. Before it, the accepted body was a bare
+array whose `data` and `metadata` were strings holding JSON, a refusal had no `reason`,
+`Idempotency-Key` was ignored, a 503 had no `Retry-After`, a body that did not parse was a
+`500` when command permissions were wired, and an id holding a `/` reached the decider still
+encoded as `%2F`. And the generated host signed no one in: a command declaring no permission
+was open to anyone, and one declaring a permission was refused to everyone. Now every command
+to a generated writer needs a service token. A caller that reads the accepted body, or sends
+commands to a generated host without a token, has to change.
 
 Every host also has a node identity, the same on dotnetcqrs and pocketcqrs: a
 `node_id` that survives restarts and tells several nodes on one machine
@@ -509,7 +606,8 @@ single-writer/multi-reader topology:
 - **Side effects happen once, on the writer.** A reader runs no reactors and never destroys a
   key; it still empties its own reveal cache when a subject is erased.
 - **Commands go to the writer.** With `DOTNETCQRS_WRITER_URL` (the writer's traffic port) a reader
-  forwards each command there, where it is decided and counted; a writer that can't be reached
+  forwards each command there, with its `Authorization` and `Idempotency-Key`, where it is
+  authenticated, decided and counted; a writer that can't be reached
   gives `502`, one that times out `504`. Without it every command is refused with `503`, counted
   on the reader as `unavailable`.
 - **Health.** `/healthz` and `/readyz` say `role: reader`. The reader measures the writer's
@@ -656,13 +754,13 @@ writes `Program.cs` to pass `Generated.CommandAuthorization.AuthorizeAsync` to
 `MapCqrsGateway(authorize: ...)`, reading the caller's role from the claim
 named by `Cqrs:RoleClaim` (default `role`) and their own subject id from
 `Cqrs:SubjectClaim` (default the name-identifier claim). A command that
-declares nothing is allowed as before, and a document that declares nothing
-generates the gateway exactly as it always has. The policy is found whatever
+declares nothing is allowed to any service account, and a document that
+declares nothing generates no authorization hook at all. The policy is found whatever
 the case of the request's aggregate and command. The `dataSubject` aggregate
 keeps the refusal it has with no hook: who may erase whom is the host's own
-delegate. The scaffold signs no one in, so until the host adds authentication
-every declared command is refused (`403`), as a read model with access rules
-refuses every query until its hooks are wired. Replace the line to resolve
+delegate. The caller's role is its service token's (see
+[who may send commands](#who-may-send-commands-service-tokens)): a token whose
+role a command's declarations refuse gets `403`. Replace the line to resolve
 roles some other way.
 
 ## Where next

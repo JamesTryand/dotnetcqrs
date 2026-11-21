@@ -97,7 +97,7 @@ _ = governor.Reviews!.RunAsync(stoppingToken);                 // reviews on the
 
 **Authorise every command.** Erasure cannot be undone, so the gateway **fails closed for this aggregate**: while no
 `authorize` policy is wired at all, it refuses every `dataSubject` command with `403` and records nothing. (A generated
-host is an unauthenticated scaffold and wires none, so erasure is closed there by default; for a throwaway local run
+host wires none of its own, so erasure is closed there by default whatever the caller's service token; for a throwaway local run
 only, `DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE=1` opens it, with a warning at startup.) Once you wire a policy it
 decides, and it must cover every command in `GovernedSubject.Commands`: a policy that returns true for a command it
 has no rule for opens erasure again. Which roles may send which is yours to decide. Typically a wider group may ask

@@ -3,6 +3,7 @@ using System.Text.Json;
 using DotnetCqrs.Crypto;
 using DotnetCqrs.Deciders;
 using DotnetCqrs.EventStore;
+using DotnetCqrs.Idempotency;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -14,9 +15,14 @@ namespace DotnetCqrs.Host;
 /// <summary>
 /// The HTTP gateway: turns a <see cref="DeciderRegistry"/> already wired up by the
 /// consuming app into a runnable command endpoint, same shape as pocketcqrs's
-/// <c>gateway.go</c> — <c>POST /{aggregate}/{id}/{command}</c>. This is gateway *core*
-/// plus the auth plugin seam; idempotency/forwarding/batching are not ported (see this
-/// issue's "Host + plugins" survey for why).
+/// <c>gateway.go</c> — <c>POST /{aggregate}/{id}/{command}</c>. It meets the command gateway
+/// HTTP contract v0.1 (both stacks', frozen 2026-11-21; <c>GatewayContractProbeTests</c> is its
+/// conformance probe): every error an RFC 9457 problem body with the decider's message verbatim
+/// in <c>detail</c> and, for the generated refusals, a <c>reason</c>
+/// (<see cref="CommandRefusedException"/>); the accepted body <c>{"events":[...]}</c> with
+/// <c>data</c> and <c>metadata</c> as objects; <c>Idempotency-Key</c> replaying a 200 from an
+/// <see cref="IIdempotencyStore"/>; <c>Retry-After</c> on a 503. Batching and maintenance mode
+/// are not ported.
 ///
 /// Auth is deliberately not built into this library: <see cref="MapCqrsGateway"/>
 /// returns the ordinary ASP.NET Core route builder, so the consuming app decides
@@ -82,6 +88,10 @@ public static class CqrsGatewayEndpoints
         RequestDelegate? forward = null)
     {
         resolveActor ??= DefaultResolveActor;
+        // The host's IIdempotencyStore from DI (resolved per request, never a handler parameter: an unregistered
+        // one would poison every endpoint, see above), else one in this process's memory for this mapping.
+        var fallbackIdempotency = new Lazy<IIdempotencyStore>(() => new InMemoryIdempotencyStore());
+        var keyLocks = new KeyedLocks();
         return endpoints.MapPost($"{prefix}/{{aggregate}}/{{aggregateId}}/{{command}}",
             async (string aggregate, string aggregateId, string command, HttpRequest request, HttpContext httpContext,
              DeciderRegistry registry, CancellationToken ct) =>
@@ -96,7 +106,9 @@ public static class CqrsGatewayEndpoints
                 // a NodeMetrics; without one nothing is recorded.
                 var metrics = httpContext.RequestServices.GetService<NodeMetrics>();
                 var started = System.Diagnostics.Stopwatch.GetTimestamp();
-                var result = await HandleAsync(aggregate, aggregateId, command, request, httpContext, registry, resolveActor, authorize, ct);
+                var idempotency = httpContext.RequestServices.GetService<IIdempotencyStore>() ?? fallbackIdempotency.Value;
+                var result = await HandleAsync(aggregate, aggregateId, command, request, httpContext, registry, resolveActor, authorize,
+                    idempotency, keyLocks, ct);
                 metrics?.RecordCommand(
                     (result as IStatusCodeHttpResult)?.StatusCode ?? StatusCodes.Status200OK,
                     System.Diagnostics.Stopwatch.GetElapsedTime(started));
@@ -123,14 +135,19 @@ public static class CqrsGatewayEndpoints
     public static RequestDelegate ForwardTo(HttpClient masterClient) => async httpContext =>
     {
         var request = httpContext.Request;
-        using var forwardRequest = new HttpRequestMessage(HttpMethod.Post, $"{request.Path}{request.QueryString}")
+        // The target as the caller sent it, so a percent-encoded id (a %2F above all) reaches the writer unchanged.
+        var rawTarget = httpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpRequestFeature>()?.RawTarget;
+        var target = rawTarget is { Length: > 0 } && rawTarget[0] == '/' ? rawTarget : $"{request.Path}{request.QueryString}";
+        using var forwardRequest = new HttpRequestMessage(HttpMethod.Post, target)
         {
             Content = new StreamContent(request.Body),
         };
         if (request.ContentType is not null)
             forwardRequest.Content.Headers.TryAddWithoutValidation("Content-Type", request.ContentType);
-        if (request.Headers.Authorization.Count > 0)
-            forwardRequest.Headers.TryAddWithoutValidation("Authorization", (IEnumerable<string?>)request.Headers.Authorization);
+        // The writer authenticates the caller and keeps the idempotency record, so both go with the command.
+        foreach (var header in ForwardedHeaders)
+            if (request.Headers[header].Count > 0)
+                forwardRequest.Headers.TryAddWithoutValidation(header, (IEnumerable<string?>)request.Headers[header]);
 
         HttpResponseMessage response;
         try
@@ -158,8 +175,14 @@ public static class CqrsGatewayEndpoints
 
         httpContext.Response.StatusCode = (int)response.StatusCode;
         httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "application/json";
+        if (response.Headers.RetryAfter is { } retryAfter)
+            httpContext.Response.Headers.RetryAfter = retryAfter.ToString();
+        if (response.Headers.WwwAuthenticate.Count > 0)
+            httpContext.Response.Headers.WWWAuthenticate = response.Headers.WwwAuthenticate.ToString();
         await response.Content.CopyToAsync(httpContext.Response.Body, httpContext.RequestAborted);
     };
+
+    private static readonly string[] ForwardedHeaders = ["Authorization", "Idempotency-Key", "Causation-Id", "Correlation-Id"];
 
     /// <summary>A <see cref="MapCqrsGateway"/> <c>forward</c> for a reader with no writer to
     /// forward to: every command is refused with <c>503</c> and a problem body, decided by nothing
@@ -170,6 +193,7 @@ public static class CqrsGatewayEndpoints
     public static readonly RequestDelegate RefuseReadOnly = async httpContext =>
     {
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        httpContext.Response.Headers.RetryAfter = RetryAfterSeconds;
         await Results.Problem("this node is a read-only reader with no writer configured to forward commands to; " +
             "send commands to the writer", statusCode: StatusCodes.Status503ServiceUnavailable, title: "read-only node")
             .ExecuteAsync(httpContext);
@@ -202,20 +226,48 @@ public static class CqrsGatewayEndpoints
             ?? "";
     }
 
+    /// <summary>The longest <c>Idempotency-Key</c> accepted (contract G7); a longer one is a 400.</summary>
+    public const int MaxIdempotencyKeyLength = 200;
+
     private static async Task<IResult> HandleAsync(
         string aggregate, string aggregateId, string command, HttpRequest request, HttpContext httpContext,
         DeciderRegistry registry, Func<ClaimsPrincipal, string> resolveActor,
-        Func<ClaimsPrincipal, string, string, string, JsonElement, CancellationToken, Task<bool>>? authorize, CancellationToken ct)
+        Func<ClaimsPrincipal, string, string, string, JsonElement, CancellationToken, Task<bool>>? authorize,
+        IIdempotencyStore idempotency, KeyedLocks keyLocks, CancellationToken ct)
     {
+        (aggregate, aggregateId, command) = DecodedRoute(httpContext, aggregate, aggregateId, command);
+
         using var reader = new StreamReader(request.Body);
         var payload = await reader.ReadToEndAsync(ct);
         if (string.IsNullOrWhiteSpace(payload))
             payload = "{}";
 
-        if (ContainsPiiEnvelope(payload))
+        // Parsed once, strictly, here: a body that is not one JSON object is a malformed command (400) whatever is
+        // wired, and the same document serves the $pii check and the authorize hook.
+        JsonDocument payloadDocument;
+        try
+        {
+            payloadDocument = JsonDocument.Parse(payload);
+        }
+        catch (JsonException)
+        {
+            return Results.Problem("the command body is not valid JSON; send the payload as one JSON object",
+                statusCode: StatusCodes.Status400BadRequest, title: "malformed command");
+        }
+        using var _ = payloadDocument;
+        if (payloadDocument.RootElement.ValueKind != JsonValueKind.Object)
+            return Results.Problem("the command body must be one JSON object (an empty body is {})",
+                statusCode: StatusCodes.Status400BadRequest, title: "malformed command");
+
+        if (ContainsPiiEnvelope(payloadDocument.RootElement))
             return Results.Problem(
                 $"command payload contains a \"{PiiEnvelopeKey}\" object; send personal data as plaintext, " +
                 "the host encrypts it", statusCode: StatusCodes.Status400BadRequest);
+
+        var idempotencyKey = request.Headers["Idempotency-Key"].ToString();
+        if (idempotencyKey.Length > MaxIdempotencyKeyLength)
+            return Results.Problem($"Idempotency-Key is at most {MaxIdempotencyKeyLength} characters",
+                statusCode: StatusCodes.Status400BadRequest, title: "malformed command");
 
         // Erasure is permanent and cannot be undone, and a command with no declared policy is allowed
         // through this gateway, so the built-in dataSubject aggregate fails CLOSED: with no authorize
@@ -231,11 +283,8 @@ public static class CqrsGatewayEndpoints
 
         if (authorize is not null)
         {
-            // Parsed once, here, alongside the raw string still used for dispatch below
-            // -- no second body read. fieldGatedRole (schema 2.5.0) is the one
-            // authorization declaration that needs the payload itself, not just
-            // aggregate/command/aggregateId; every other declaration simply ignores it.
-            using var payloadDocument = JsonDocument.Parse(payload);
+            // fieldGatedRole (schema 2.5.0) is the one authorization declaration that needs the payload itself,
+            // not just aggregate/command/aggregateId; every other declaration simply ignores it.
             bool authorized;
             try
             {
@@ -245,6 +294,21 @@ public static class CqrsGatewayEndpoints
             {
                 // A refusal naming its own message (a scope's, schema 4.0.0): the caller is told why.
                 return Results.Problem(ex.Message, statusCode: StatusCodes.Status403Forbidden);
+            }
+            catch (Exception ex) when (InfrastructureFailure.IsInfrastructure(ex))
+            {
+                // The policy read something (a read model) that was not there to read: before the decision, so
+                // nothing applied and worth retrying (contract G3).
+                LogFailure(httpContext, ex, aggregate, aggregateId, command);
+                httpContext.Response.Headers.RetryAfter = RetryAfterSeconds;
+                return Results.Problem(UnavailableDetail(ex), statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "dependency unavailable");
+            }
+            catch (Exception ex)
+            {
+                LogFailure(httpContext, ex, aggregate, aggregateId, command);
+                return Results.Problem("the command's authorization failed inside the host before it could be decided; see the server log",
+                    statusCode: StatusCodes.Status500InternalServerError, title: "internal error");
             }
             if (!authorized)
                 return Results.Problem("not authorized", statusCode: StatusCodes.Status403Forbidden);
@@ -261,8 +325,7 @@ public static class CqrsGatewayEndpoints
         // for any authenticated caller: dotnetcqrs has no ExternalCallerCollection
         // allow-list the way pocketcqrs gates this (see its gateway.actorMeta), and this
         // is strictly provenance -- `actor` above stays token-derived and is never
-        // caller-settable. An Idempotency-Key header, if sent, is ignored: this gateway
-        // has no idempotency store yet (see the Host survey).
+        // caller-settable.
         var causationId = request.Headers["Causation-Id"].ToString();
         if (!string.IsNullOrEmpty(causationId))
             meta["causationId"] = causationId;
@@ -270,31 +333,98 @@ public static class CqrsGatewayEndpoints
         if (!string.IsNullOrEmpty(correlationId))
             meta["correlationId"] = correlationId;
 
+        if (idempotencyKey.Length == 0)
+            return (await DecideAsync(aggregate, aggregateId, command, payload, meta, httpContext, registry, ct)).Result;
+
+        // Contract G7. Looked up after authorization, so a replay never skips the role check. One request per key
+        // at a time on this node, so a duplicate sent while the first is deciding waits and is then replayed
+        // rather than decided twice. Only a 200 is recorded: a 409 is decided again, and nothing that was not
+        // decided (400, 401, 403, 404, 410, 503) is kept.
+        var requestHash = RequestHash(aggregate, aggregateId, command, payload);
+        using (await keyLocks.AcquireAsync(idempotencyKey, ct))
+        {
+            IdempotencyRecord? recorded;
+            try
+            {
+                recorded = await idempotency.FindAsync(idempotencyKey, ct);
+            }
+            catch (Exception ex) when (InfrastructureFailure.IsInfrastructure(ex))
+            {
+                LogFailure(httpContext, ex, aggregate, aggregateId, command);
+                httpContext.Response.Headers.RetryAfter = RetryAfterSeconds;
+                return Results.Problem("the idempotency store is unavailable; retry later",
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "dependency unavailable");
+            }
+            if (recorded is not null)
+                return recorded.RequestHash == requestHash
+                    ? Results.Bytes(recorded.Body, recorded.ContentType)
+                    : Results.Problem("Idempotency-Key already used for a different request",
+                        statusCode: StatusCodes.Status422UnprocessableEntity, title: "idempotency key reused");
+
+            var (result, accepted) = await DecideAsync(aggregate, aggregateId, command, payload, meta, httpContext, registry, ct);
+            if (accepted is not null)
+            {
+                try
+                {
+                    // Best effort: the command is decided and appended either way, so the caller gets its answer.
+                    await idempotency.TryAddAsync(idempotencyKey,
+                        new IdempotencyRecord(requestHash, StatusCodes.Status200OK, AcceptedContentType, accepted), CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger(typeof(CqrsGatewayEndpoints).FullName!)
+                        .LogError(ex, "command {Aggregate}/{AggregateId}/{Command} was decided, but its answer could not be recorded for replay",
+                            aggregate, aggregateId, command);
+                }
+            }
+            return result;
+        }
+    }
+
+    private const string AcceptedContentType = "application/json";
+
+    /// <summary>Sent with every 503 (contract G8): a dependency or a read-only node, worth trying again shortly.</summary>
+    private const string RetryAfterSeconds = "1";
+
+    /// <summary>Decides the command. The accepted body's bytes come back beside the result, so they can be recorded
+    /// and replayed exactly.</summary>
+    private static async Task<(IResult Result, byte[]? Accepted)> DecideAsync(
+        string aggregate, string aggregateId, string command, string payload, Dictionary<string, object> meta,
+        HttpContext httpContext, DeciderRegistry registry, CancellationToken ct)
+    {
         try
         {
             var metaArg = meta.Count == 0 ? null : meta;
             var events = await registry.HandleWithMetaAsync(aggregate, aggregateId, new Command(command, payload), metaArg, ct);
-            return Results.Ok(events);
+            var body = AcceptedBody(events);
+            return (Results.Bytes(body, AcceptedContentType), body);
         }
         catch (UnknownAggregateException ex)
         {
-            return Results.Problem(ex.Message, statusCode: StatusCodes.Status404NotFound);
+            return (Results.Problem(ex.Message, statusCode: StatusCodes.Status404NotFound), null);
         }
         catch (ConcurrencyException ex)
         {
-            return Results.Problem(ex.Message, statusCode: StatusCodes.Status409Conflict);
+            return (Results.Problem(ex.Message, statusCode: StatusCodes.Status409Conflict), null);
         }
         catch (SubjectErasedException ex)
         {
             // Permanent, unlike the 409 above: retrying with this id can never succeed, a
             // returning person needs a new one. Not the KMS facade's own 409 -- that's a
             // service-to-service detail, and here it would read as "reload and retry".
-            return Results.Problem(ex.Message, statusCode: StatusCodes.Status410Gone);
+            return (Results.Problem(ex.Message, statusCode: StatusCodes.Status410Gone), null);
         }
         catch (CommandForbiddenException ex) when (DeciderRegistry.IsRejection(ex))
         {
             // Schema 3.15.0: the aggregate refused the actor (not the owner its own state names), not the command.
-            return Results.Problem(ex.Message, statusCode: StatusCodes.Status403Forbidden);
+            return (Results.Problem(ex.Message, statusCode: StatusCodes.Status403Forbidden), null);
+        }
+        catch (CommandRefusedException ex) when (DeciderRegistry.IsRejection(ex))
+        {
+            // A refusal naming its reason (contract G5: the generated deciders' does-not-exist and
+            // already-exists), so a caller decides on the reason rather than the words.
+            return (Results.Problem(ex.Message, statusCode: StatusCodes.Status400BadRequest,
+                extensions: new Dictionary<string, object?> { ["reason"] = ex.Reason }), null);
         }
         catch (Exception ex) when (DeciderRegistry.IsRejection(ex))
         {
@@ -302,8 +432,8 @@ public static class CqrsGatewayEndpoints
             // Any type, same as pocketcqrs's Decide returning a plain error, so 400 covers
             // every business-rule failure -- refuse the command, don't guess why more
             // precisely than the decider said. The message is the decider's own, meant
-            // for the caller.
-            return Results.Problem(ex.Message, statusCode: StatusCodes.Status400BadRequest);
+            // for the caller, and goes in detail verbatim.
+            return (Results.Problem(ex.Message, statusCode: StatusCodes.Status400BadRequest), null);
         }
         catch (Exception ex) when (InfrastructureFailure.IsInfrastructure(ex))
         {
@@ -312,8 +442,9 @@ public static class CqrsGatewayEndpoints
             // body names the kind of failure only; the exception, which can carry hosts,
             // connection details or a ciphertext, goes to the server log.
             LogFailure(httpContext, ex, aggregate, aggregateId, command);
-            return Results.Problem(UnavailableDetail(ex), statusCode: StatusCodes.Status503ServiceUnavailable,
-                title: "dependency unavailable");
+            httpContext.Response.Headers.RetryAfter = RetryAfterSeconds;
+            return (Results.Problem(UnavailableDetail(ex), statusCode: StatusCodes.Status503ServiceUnavailable,
+                title: "dependency unavailable"), null);
         }
         catch (Exception ex)
         {
@@ -323,8 +454,152 @@ public static class CqrsGatewayEndpoints
             // used before it was ensured, or a plain bug. The caller did nothing wrong and
             // the command was never decided. The message stays in the server log.
             LogFailure(httpContext, ex, aggregate, aggregateId, command);
-            return Results.Problem("the command failed inside the host before it could be decided; see the server log",
-                statusCode: StatusCodes.Status500InternalServerError, title: "internal error");
+            return (Results.Problem("the command failed inside the host before it could be decided; see the server log",
+                statusCode: StatusCodes.Status500InternalServerError, title: "internal error"), null);
+        }
+    }
+
+    /// <summary>
+    /// The accepted body (contract G6): <c>{"events":[...]}</c>, each event an object whose <c>data</c> and
+    /// <c>metadata</c> are the JSON objects stored, not strings holding them; no events is <c>[]</c>.
+    /// </summary>
+    public static byte[] AcceptedBody(IReadOnlyList<Event> events)
+    {
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteStartArray("events");
+            foreach (var ev in events)
+            {
+                writer.WriteStartObject();
+                writer.WriteNumber("position", ev.Position);
+                writer.WriteString("id", ev.Id);
+                writer.WriteString("aggregate", ev.Aggregate);
+                writer.WriteString("aggregateId", ev.AggregateId);
+                writer.WriteNumber("sequence", ev.Sequence);
+                writer.WriteString("type", ev.Type);
+                WriteJson(writer, "data", ev.Data);
+                WriteJson(writer, "metadata", ev.Metadata);
+                writer.WriteString("created", ev.Created);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    /// <summary>Writes stored JSON as JSON. Empty is <c>{}</c>; text that does not parse (never written by the
+    /// registry) is written as a string rather than failing an answer whose events are already appended.</summary>
+    private static void WriteJson(Utf8JsonWriter writer, string name, string json)
+    {
+        writer.WritePropertyName(name);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            writer.WriteStartObject();
+            writer.WriteEndObject();
+            return;
+        }
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            document.RootElement.WriteTo(writer);
+        }
+        catch (JsonException)
+        {
+            writer.WriteStringValue(json);
+        }
+    }
+
+    /// <summary>What an idempotency record answers: the aggregate, id, command and body, each length-prefixed so
+    /// no two requests share one.</summary>
+    private static string RequestHash(string aggregate, string aggregateId, string command, string payload)
+    {
+        var text = string.Concat(
+            aggregate.Length.ToString(System.Globalization.CultureInfo.InvariantCulture), ":", aggregate,
+            aggregateId.Length.ToString(System.Globalization.CultureInfo.InvariantCulture), ":", aggregateId,
+            command.Length.ToString(System.Globalization.CultureInfo.InvariantCulture), ":", command,
+            payload);
+        return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)));
+    }
+
+    /// <summary>
+    /// The route's three values decoded from the request target as sent (contract G1: the caller percent-encodes
+    /// the id, the gateway decodes it). The server decodes the path before routing except for <c>%2F</c>, so an id
+    /// holding a <c>/</c> would otherwise reach the decider still encoded. Falls back to the route values when the
+    /// raw target is not a plain path.
+    /// </summary>
+    private static (string Aggregate, string AggregateId, string Command) DecodedRoute(
+        HttpContext httpContext, string aggregate, string aggregateId, string command)
+    {
+        var raw = httpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpRequestFeature>()?.RawTarget;
+        if (string.IsNullOrEmpty(raw) || raw[0] != '/')
+            return (aggregate, aggregateId, command);
+        var path = raw.Split('?', 2)[0];
+        if (path.EndsWith('/'))
+            path = path[..^1];
+        var segments = path.Split('/');
+        if (segments.Length < 4)
+            return (aggregate, aggregateId, command);
+        return (Uri.UnescapeDataString(segments[^3]), Uri.UnescapeDataString(segments[^2]), Uri.UnescapeDataString(segments[^1]));
+    }
+
+    /// <summary>One holder per key at a time, in this process. Entries go when nobody holds or waits for them.</summary>
+    internal sealed class KeyedLocks
+    {
+        private readonly Dictionary<string, (SemaphoreSlim Gate, int Users)> _locks = new(StringComparer.Ordinal);
+
+        public async Task<IDisposable> AcquireAsync(string key, CancellationToken ct)
+        {
+            SemaphoreSlim gate;
+            lock (_locks)
+            {
+                if (!_locks.TryGetValue(key, out var entry))
+                    entry = (new SemaphoreSlim(1, 1), 0);
+                _locks[key] = (entry.Gate, entry.Users + 1);
+                gate = entry.Gate;
+            }
+            try
+            {
+                await gate.WaitAsync(ct);
+            }
+            catch
+            {
+                Leave(key, held: false);
+                throw;
+            }
+            return new Holder(this, key);
+        }
+
+        private void Leave(string key, bool held)
+        {
+            lock (_locks)
+            {
+                var entry = _locks[key];
+                if (held)
+                    entry.Gate.Release();
+                if (entry.Users == 1)
+                {
+                    _locks.Remove(key);
+                    entry.Gate.Dispose();
+                }
+                else
+                {
+                    _locks[key] = (entry.Gate, entry.Users - 1);
+                }
+            }
+        }
+
+        private sealed class Holder(KeyedLocks owner, string key) : IDisposable
+        {
+            private int _disposed;
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                    owner.Leave(key, held: true);
+            }
         }
     }
 
@@ -372,27 +647,9 @@ public static class CqrsGatewayEndpoints
     /// appended as-is, bound to whatever subject the caller named. Broader than "the
     /// object's only key" (the converter's own rule) on purpose: no outside caller has a
     /// reason to send a <c>"$pii"</c> key at all, so refusing any leaves no near-miss shape
-    /// for a later converter change to reopen. Parsed leniently, so nothing the dispatcher
-    /// could read slips past, and property names are compared unescaped (a key spelled with
-    /// JSON escapes still counts); a body that doesn't parse at all is left for dispatch to
-    /// reject as before.</summary>
-    private static bool ContainsPiiEnvelope(string payload)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(payload, new JsonDocumentOptions
-            {
-                AllowTrailingCommas = true,
-                CommentHandling = JsonCommentHandling.Skip,
-            });
-            return ContainsPiiEnvelope(document.RootElement);
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
-
+    /// for a later converter change to reopen. Property names are compared unescaped (a key
+    /// spelled with JSON escapes still counts). The body has already been parsed strictly:
+    /// one that doesn't parse is a 400 before this runs.</summary>
     private static bool ContainsPiiEnvelope(JsonElement element)
     {
         switch (element.ValueKind)

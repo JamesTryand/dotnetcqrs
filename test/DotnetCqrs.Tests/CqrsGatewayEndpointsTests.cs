@@ -65,7 +65,7 @@ public class CqrsGatewayEndpointsTests : IAsyncDisposable
             new StringContent("""{"title":"write the docs"}""", Encoding.UTF8, "application/json"));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var events = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var events = (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("events");
         Assert.Equal(1, events.GetArrayLength());
         Assert.Equal("TaskCreated", events[0].GetProperty("type").GetString());
 

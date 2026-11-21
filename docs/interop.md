@@ -127,12 +127,15 @@ the `pocketcqrs`-side caller and the dotnetcqrs host trust.
    same body **replays the original response** instead of re-deciding.
    `GatewayFollowUpDispatcher` always sends a deterministic `Idempotency-Key` (derived
    from `FollowUpDispatch.CommandId`), so a redelivered source event is safe against
-   `pocketcqrs` for free. `DotnetCqrs.Host` has **no idempotency store yet** — it
-   ignores the header and re-decides, so a redelivered `CreateTask` there produces a
-   `400` ("already exists"), not a replayed `200`. Same dispatcher, different retry
-   contract depending on the target. (`verify.sh`'s duplicate-command checks use a
-   fresh key precisely so they exercise the *decider's* rejection on both sides rather
-   than `pocketcqrs`'s replay.)
+   `pocketcqrs` for free. **Since 0.49.0** `DotnetCqrs.Host` does the same, as the
+   command gateway HTTP contract (v0.1) both stacks now follow requires: the same key
+   and request replays the first `200` for at least 7 days (an `IIdempotencyStore`;
+   a generated host keeps it beside its event log), a `409` is decided again, and a
+   reused key with a different request is a `422`. Before 0.49.0 it ignored the
+   header and re-decided, so a redelivered `CreateTask` produced a `400` ("already
+   exists"), not a replayed `200`; the run recorded below predates the change.
+   (`verify.sh`'s duplicate-command checks use a fresh key precisely so they exercise
+   the *decider's* rejection on both sides rather than the replay.)
 2. **Provenance gating differs** — see Direction B above.
 
 ## Explicit non-goal

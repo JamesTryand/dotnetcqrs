@@ -67,11 +67,14 @@ curl -s -X POST "http://127.0.0.1:5289/api/cqrs/order/order-1/PlaceOrder" \
 ```
 
 ```json
-[{"position":1,"id":"e35cf6f2cc8e4fd8ab96a61f0ea2198c","aggregate":"order","aggregateId":"order-1","sequence":1,"type":"OrderPlaced","data":"{\"title\":\"My first order\"}","metadata":"{\"actor\":\"dev-user\",\"now\":\"2026-08-27T14:00:22.647Z\"}","created":"2026-08-27T14:00:22.691Z"}]
+{"events":[{"position":1,"id":"99f9eb31d6964241b2431a5e0820ef09","aggregate":"order","aggregateId":"order-1","sequence":1,"type":"OrderPlaced","data":{"title":"My first order"},"metadata":{"actor":"dev-user","now":"2026-11-21T03:04:59.620Z"},"created":"2026-11-21T03:04:59.669Z"}]}
 ```
 
-The response is the list of events the command produced — here, one
-`OrderPlaced`. `metadata.actor` is `"dev-user"`, read straight from the
+The response is `{"events":[...]}`, the events the command produced — here,
+one `OrderPlaced`, its `data` and `metadata` as JSON objects. (Since 0.49.0;
+before, it was a bare array with `data` and `metadata` as strings. The shape
+is the command gateway HTTP contract both stacks share; see the
+[tutorial](tutorial.md#the-command-gateways-answers).) `metadata.actor` is `"dev-user"`, read straight from the
 token's `oid` claim by `CqrsGatewayEndpoints.DefaultResolveActor`.
 
 ## The rejection
@@ -101,7 +104,7 @@ curl -s -X POST "http://127.0.0.1:5289/api/cqrs/order/order-1/ConfirmOrder" \
 ```
 
 ```json
-[{"position":2,"id":"3752ae65a3164877bbece8e9d22e8fe9","aggregate":"order","aggregateId":"order-1","sequence":2,"type":"OrderConfirmed","data":"{}","metadata":"{\"actor\":\"dev-user\",\"now\":\"2026-08-27T14:00:30.057Z\"}","created":"2026-08-27T14:00:30.057Z"}]
+{"events":[{"position":2,"id":"8db072d4bc064e39a20184d532124d5b","aggregate":"order","aggregateId":"order-1","sequence":2,"type":"OrderConfirmed","data":{},"metadata":{"actor":"dev-user","now":"2026-11-21T03:04:59.830Z"},"created":"2026-11-21T03:04:59.831Z"}]}
 ```
 
 And without a token at all, every one of these routes is just a 401:

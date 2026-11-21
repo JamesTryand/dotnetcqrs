@@ -42,10 +42,31 @@ public class CommandPermissionWiringTests
         Assert.Contains("builder.Configuration[\"Cqrs:SubjectClaim\"] ?? System.Security.Claims.ClaimTypes.NameIdentifier;", program);
         Assert.Contains("app.MapCqrsGateway(authorize: (user, aggregate, command, aggregateId, payload, ct) =>", program);
         Assert.Contains("Generated.CommandAuthorization.AuthorizeAsync(user, aggregate, command, aggregateId, payload,", program);
-        Assert.Contains("readModelDb, ResolveOwnRole, ResolveOwnSubjectId, ct));", program);
+        Assert.Contains("readModelDb, ResolveOwnRole, ResolveOwnSubjectId, ct)).RequireAuthorization();", program);
         // dataSubject keeps the refusal it had with no hook (no personal data here, so no throwaway switch).
         Assert.Contains("? (false ? Task.FromResult(true) : throw new CommandForbiddenException(", program);
         Assert.DoesNotContain("app.MapCqrsGateway();", program);
+    }
+
+    [Fact]
+    public void Every_generated_writer_requires_a_service_token_and_issues_the_role_under_the_configured_claim()
+    {
+        foreach (var program in new[] { ProgramFor("state-ownership.json"),
+                     ProgramFor("order-fulfillment.json", new Dictionary<string, string> { ["notify-shipping-partner"] = "ShippingNotification" }) })
+        {
+            // The host's own commands for service accounts run before anything binds or opens.
+            Assert.True(program.IndexOf("ServiceTokenCommand.Handles(args)", StringComparison.Ordinal)
+                < program.IndexOf("OpsServer.StartAsync", StringComparison.Ordinal));
+            Assert.Contains("var roleClaim = builder.Configuration[\"Cqrs:RoleClaim\"] ?? \"role\";", program);
+            Assert.Contains("builder.Services.AddAuthentication(ServiceTokenDefaults.Scheme).AddServiceTokens(new ServiceTokenStore(tokensPath), roleClaim);", program);
+            Assert.Contains("app.UseAuthentication();", program);
+            Assert.Contains("IdempotencyRetention.FromEnvironment()", program);
+            Assert.Contains("await SqliteIdempotencyStore.OpenAsync(Path.Combine(dataDir, \"idempotency.db\"), idempotencyRetention)", program);
+            Assert.Contains("await PostgresIdempotencyStore.OpenAsync(postgres!, idempotencyRetention)", program);
+            // a reader forwards, and its writer authenticates
+            Assert.Contains("    app.MapCqrsGateway(forward: writerUrl is not null", program);
+            Assert.Contains("        : CqrsGatewayEndpoints.RefuseReadOnly);", program);
+        }
     }
 
     [Fact]
@@ -54,10 +75,10 @@ public class CommandPermissionWiringTests
         var program = ProgramFor("order-fulfillment.json",
             new Dictionary<string, string> { ["notify-shipping-partner"] = "ShippingNotification" });
 
-        Assert.DoesNotContain("Cqrs:RoleClaim", program);
-        Assert.DoesNotContain("readModelDb, ResolveOwnRole, ResolveOwnSubjectId, ct));", program);
-        // its personal data keeps the erasure switch exactly as it was
-        Assert.Contains("app.MapCqrsGateway(authorize: allowUnauthorizedErasure ? (_, _, _, _, _, _) => Task.FromResult(true) : null);", program);
+        Assert.DoesNotContain("ResolveOwnRole", program);
+        Assert.DoesNotContain("Cqrs:SubjectClaim", program);
+        // its personal data keeps the erasure switch exactly as it was; every command still needs a service token
+        Assert.Contains("app.MapCqrsGateway(authorize: allowUnauthorizedErasure ? (_, _, _, _, _, _) => Task.FromResult(true) : null).RequireAuthorization();", program);
     }
 
     private const string RoleProgram = """

@@ -13,9 +13,18 @@ namespace DotnetCqrs.Codegen.Generation;
 /// <c>.csproj</c>, and a <c>Program.cs</c> that builds a <c>DeciderRegistry</c> (one
 /// decider per aggregate), one projection per read model, a combined
 /// <c>IReadModelStore.InstallWriteGuardAsync</c>, a <c>ConsumerEngine</c> (every projection plus one
-/// <c>ReactorConsumer</c> per reactor), and an unauthenticated <c>MapCqrsGateway()</c> —
-/// the exact pattern <c>samples/OrderFulfillment/Program.cs</c> hand-wires. Its design:
-/// two SQLite files, no auth/file-storage, a baked-in <c>--verify</c> mode.
+/// <c>ReactorConsumer</c> per reactor), and <c>MapCqrsGateway()</c> — the exact pattern
+/// <c>samples/OrderFulfillment/Program.cs</c> hand-wires. Its design: SQLite files, no file
+/// storage, a baked-in <c>--verify</c> mode.
+///
+/// <para><b>The command gateway's callers</b> (the gateway HTTP contract v0.1, G2): a writer's
+/// gateway requires a service token (<c>ServiceTokenStore</c>, DotnetCqrs.Host) the host issues
+/// itself with <c>--issue-token &lt;name&gt; --role &lt;role&gt;</c> (also <c>--revoke-token</c>,
+/// <c>--list-tokens</c>), kept as hashes in <c>DOTNETCQRS_TOKENS_PATH</c> (default
+/// <c>data/service-tokens.json</c>). The role is issued under <c>Cqrs:RoleClaim</c>, which the
+/// command permissions read. A reader forwards the header to its writer. Answers a retry may
+/// replay (<c>Idempotency-Key</c>, G7) are kept <c>DOTNETCQRS_IDEMPOTENCY_RETENTION_DAYS</c>
+/// (default 7, never less) beside the event log.</para>
 ///
 /// <para><b>SQLite or Postgres, chosen at startup:</b> with <c>DOTNETCQRS_POSTGRES</c> set to a
 /// connection string, the host keeps its event log (the database's default schema), read models
@@ -244,6 +253,7 @@ public static class HostProjectGenerator
         b.AppendLine("using DotnetCqrs.Host;");
         b.AppendLine("using DotnetCqrs.Host.Telemetry;");
         b.AppendLine("using DotnetCqrs.Host.Telemetry.Nats;");
+        b.AppendLine("using DotnetCqrs.Idempotency;");
         b.AppendLine("using DotnetCqrs.Postgres;");
         b.AppendLine("using DotnetCqrs.ReadModels;");
         b.AppendLine("using DotnetCqrs.Reactors;");
@@ -269,6 +279,16 @@ public static class HostProjectGenerator
         b.AppendLine("    var verifyResults = await ScenarioVerifier.VerifyAsync(verifyDocument, verifyMapped);");
         b.AppendLine("    return ScenarioReport.Print(verifyResults, Console.Out);");
         b.AppendLine("}");
+        b.AppendLine();
+        // Gateway contract G2: the service accounts an outside caller is issued, with no outside identity provider.
+        // Handled before anything binds or opens, so they run beside a live node (which sees the change at once) and
+        // need no other setting, not even a PII model's KMS_FACADE_URL.
+        b.AppendLine("// Service accounts, the command gateway's callers: --issue-token <name> --role <role> prints a new token");
+        b.AppendLine("// once (only its hash is kept), --revoke-token <name>, --list-tokens. The token file is DOTNETCQRS_TOKENS_PATH,");
+        b.AppendLine("// default data/service-tokens.json; these touch nothing else, so they run beside a live host.");
+        b.AppendLine("var tokensPath = ServiceTokenStore.PathFromEnvironment(Path.Combine(AppContext.BaseDirectory, \"data\", \"service-tokens.json\"));");
+        b.AppendLine("if (ServiceTokenCommand.Handles(args))");
+        b.AppendLine("    return ServiceTokenCommand.Run(args, tokensPath, Console.Out, Console.Error);");
         b.AppendLine();
 
         // Health/telemetry contract section 2: the ops port binds first, before configuration is
@@ -409,6 +429,19 @@ public static class HostProjectGenerator
         b.AppendLine("    return 1;");
         b.AppendLine("}");
         b.AppendLine();
+        b.AppendLine("// DOTNETCQRS_IDEMPOTENCY_RETENTION_DAYS: how long the gateway keeps an answer an Idempotency-Key may replay");
+        b.AppendLine("// (default 7, the least the gateway contract allows; anything else refuses to start).");
+        b.AppendLine("TimeSpan idempotencyRetention;");
+        b.AppendLine("try");
+        b.AppendLine("{");
+        b.AppendLine("    idempotencyRetention = IdempotencyRetention.FromEnvironment();");
+        b.AppendLine("}");
+        b.AppendLine("catch (InvalidIdempotencySettingException ex)");
+        b.AppendLine("{");
+        b.AppendLine("    Console.Error.WriteLine(ex.Message);");
+        b.AppendLine("    return 1;");
+        b.AppendLine("}");
+        b.AppendLine();
         b.AppendLine("// CQRS_OPS_URL: this node's ops port as readers reach it, carried in the writer heartbeat so a");
         b.AppendLine("// stale reader can ask whether this writer is up. Default http://<host>:<ops port>.");
         b.AppendLine("string opsUrl;");
@@ -453,6 +486,25 @@ public static class HostProjectGenerator
         // MapCqrsGateway command POST 500s too, since CompositeEndpointDataSource builds
         // all endpoints together and one bad inference poisons the whole data source).
         b.AppendLine("builder.Services.AddSingleton<IReadModelStore>(readModelDb);");
+        b.AppendLine();
+        // Gateway contract G7: a writer's recorded answers outlive a restart, beside the event log.
+        b.AppendLine("// Idempotency-Key: the answers a retry may replay, beside the event log (Postgres on a Postgres writer, else");
+        b.AppendLine("// data/idempotency.db). A reader keeps none: it forwards the key to the writer, which decides.");
+        b.AppendLine("if (!isReader)");
+        b.AppendLine("{");
+        b.AppendLine("    IIdempotencyStore idempotency = sharedStores");
+        b.AppendLine("        ? await PostgresIdempotencyStore.OpenAsync(postgres!, idempotencyRetention)");
+        b.AppendLine("        : await SqliteIdempotencyStore.OpenAsync(Path.Combine(dataDir, \"idempotency.db\"), idempotencyRetention);");
+        b.AppendLine("    builder.Services.AddSingleton(idempotency);");
+        b.AppendLine("}");
+        b.AppendLine();
+        // Gateway contract G2: who the caller is.
+        b.AppendLine("// Who sends a command: a service account, by the token --issue-token printed, as Authorization: Bearer <token>.");
+        b.AppendLine("// The account's name is the actor on its events; its role is issued under the claim named by Cqrs:RoleClaim");
+        b.AppendLine("// (default \"role\"), which the command permissions read. No token, or one unknown or revoked: 401.");
+        b.AppendLine("var roleClaim = builder.Configuration[\"Cqrs:RoleClaim\"] ?? \"role\";");
+        b.AppendLine("builder.Services.AddAuthentication(ServiceTokenDefaults.Scheme).AddServiceTokens(new ServiceTokenStore(tokensPath), roleClaim);");
+        b.AppendLine("builder.Services.AddAuthorization();");
         b.AppendLine();
         if (hasPii)
         {
@@ -662,6 +714,8 @@ public static class HostProjectGenerator
         b.AppendLine("// DOTNETCQRS_DRAIN_DEADLINE_SECONDS, default 30), then each consumer finishes the event in hand.");
         b.AppendLine("builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = readiness.DrainDeadline);");
         b.AppendLine("var app = builder.Build();");
+        b.AppendLine("app.UseAuthentication();");
+        b.AppendLine("app.UseAuthorization();");
         b.AppendLine("var drainStartedAt = 0L;");
         b.AppendLine("app.Lifetime.ApplicationStopping.Register(() =>");
         b.AppendLine("{");
@@ -693,11 +747,10 @@ public static class HostProjectGenerator
         if (hasCommandPolicies)
         {
             b.AppendLine("// Who may send a command, as the document declares it (Generated/CommandAuthorization.cs), is enforced");
-            b.AppendLine("// at the gateway below; a command that declares nothing is allowed as before. The caller's role and own");
-            b.AppendLine("// subject id are claims of the signed-in user, named by Cqrs:RoleClaim (default \"role\") and");
-            b.AppendLine("// Cqrs:SubjectClaim (default the name-identifier claim). This scaffold signs no one in, so a command");
-            b.AppendLine("// that declares a permission is refused (403) until the host adds authentication.");
-            b.AppendLine("var roleClaim = builder.Configuration[\"Cqrs:RoleClaim\"] ?? \"role\";");
+            b.AppendLine("// at the gateway below; a command that declares nothing is allowed to any service account. The caller's role");
+            b.AppendLine("// and own subject id are claims of its token, named by Cqrs:RoleClaim (default \"role\") and");
+            b.AppendLine("// Cqrs:SubjectClaim (default the name-identifier claim, the account's name). A token whose role may not");
+            b.AppendLine("// send the command is refused (403).");
             b.AppendLine("var subjectClaim = builder.Configuration[\"Cqrs:SubjectClaim\"] ?? System.Security.Claims.ClaimTypes.NameIdentifier;");
             b.AppendLine("string ResolveOwnRole(System.Security.Claims.ClaimsPrincipal user) => user.FindFirst(roleClaim)?.Value ?? \"\";");
             b.AppendLine("string ResolveOwnSubjectId(System.Security.Claims.ClaimsPrincipal user) => user.FindFirst(subjectClaim)?.Value ?? \"\";");
@@ -705,8 +758,8 @@ public static class HostProjectGenerator
         if (hasPii)
         {
             b.AppendLine("// Erasure is permanent, so the gateway refuses every dataSubject command (RequestErasure, EraseSubject)");
-            b.AppendLine("// while no `authorize` policy is wired, and this scaffold is unauthenticated, so it wires none: erasure is");
-            b.AppendLine("// closed by default. Wire a policy saying who may send them. Generated.CommandAuthorization.AuthorizeAsync");
+            b.AppendLine("// while no `authorize` policy is wired, and this scaffold wires none of its own: erasure is closed by");
+            b.AppendLine("// default, whatever the caller's token. Wire a policy saying who may send them. Generated.CommandAuthorization.AuthorizeAsync");
             b.AppendLine("// admits RequestErasure as the document's dataSubjects.erasure says (no one, without it) and refuses every");
             b.AppendLine("// other dataSubject command: allow erasing directly, holds or approvals in your own delegate around it.");
             b.AppendLine("// A request is recorded and nothing acts on it until something decides it: wire DotnetCqrs.Retention");
@@ -716,7 +769,8 @@ public static class HostProjectGenerator
             b.AppendLine("if (allowUnauthorizedErasure)");
             b.AppendLine("    Console.Error.WriteLine(\"WARNING: DOTNETCQRS_ALLOW_UNAUTHORIZED_ERASURE=1 -- anyone can erase any data subject. Never set this outside a throwaway local run.\");");
         }
-        b.AppendLine("// A reader decides nothing: it forwards each command to the writer, or refuses it (503).");
+        b.AppendLine("// A reader decides nothing: it forwards each command, with its Authorization and Idempotency-Key, to the writer,");
+        b.AppendLine("// which authenticates it, or refuses it (503). A writer requires a service token for every command.");
         b.AppendLine("if (isReader)");
         b.AppendLine("    app.MapCqrsGateway(forward: writerUrl is not null");
         b.AppendLine("        ? CqrsGatewayEndpoints.ForwardTo(new HttpClient { BaseAddress = writerUrl })");
@@ -732,12 +786,12 @@ public static class HostProjectGenerator
             b.AppendLine($"            ? ({erasureOpen} ? Task.FromResult(true) : throw new CommandForbiddenException(");
             b.AppendLine("                \"erasure commands are refused until the host wires an authorize policy deciding who may send them; nothing was recorded\"))");
             b.AppendLine("            : Generated.CommandAuthorization.AuthorizeAsync(user, aggregate, command, aggregateId, payload,");
-            b.AppendLine("                readModelDb, ResolveOwnRole, ResolveOwnSubjectId, ct));");
+            b.AppendLine("                readModelDb, ResolveOwnRole, ResolveOwnSubjectId, ct)).RequireAuthorization();");
         }
         else
             b.AppendLine(hasPii
-                ? "    app.MapCqrsGateway(authorize: allowUnauthorizedErasure ? (_, _, _, _, _, _) => Task.FromResult(true) : null);"
-                : "    app.MapCqrsGateway();");
+                ? "    app.MapCqrsGateway(authorize: allowUnauthorizedErasure ? (_, _, _, _, _, _) => Task.FromResult(true) : null).RequireAuthorization();"
+                : "    app.MapCqrsGateway().RequireAuthorization();");
         // Each Map{Model}Route() below (ReadModelQueryGenerator) takes its own optional
         // `resolveOwnRole` for a read model declaring `requiredRole` (schema 2.7.0) --
         // same "left unset here, wired by the operator" posture as authorize/resolveActor

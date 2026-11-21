@@ -32,10 +32,14 @@ Go/PocketBase to C#/.NET rather than wrapping it.
   external system, kept as its own consumer so decider/projection logic
   stays free of network calls.
 - **Host** (`DotnetCqrs.Host`): an ASP.NET Core gateway
-  (`POST /{prefix}/{aggregate}/{aggregateId}/{command}`) plus pluggable
-  auth (bring your own `AddJwtBearer`/Entra ID/etc. — the library only
-  reads whatever `HttpContext.User` your scheme populates) and file
-  storage (`IFileStore`, a local-disk implementation included).
+  (`POST /{prefix}/{aggregate}/{aggregateId}/{command}`) meeting the
+  command gateway HTTP contract both stacks share (problem bodies with a
+  `reason`, `{"events":[...]}`, `Idempotency-Key` replay, `Retry-After`),
+  plus pluggable auth (bring your own `AddJwtBearer`/Entra ID/etc. — the
+  library only reads whatever `HttpContext.User` your scheme populates —
+  or the service tokens a host issues itself, which a generated host
+  uses) and file storage (`IFileStore`, a local-disk implementation
+  included).
 - **Personal data** (`DotnetCqrs.Crypto`): GDPR erasure by
   crypto-shredding. A personal field is a `Pii<T>`, encrypted under its
   data subject's own key (held by a separate key-management service)
