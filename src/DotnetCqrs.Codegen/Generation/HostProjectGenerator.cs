@@ -745,6 +745,15 @@ public static class HostProjectGenerator
         // operator has a real one. Unset (the default below), every route stays open
         // regardless of any declared requiredRole -- unchanged behavior from before this
         // capability existed, same "generated code is a scaffold" posture throughout.
+        // A read model searchable by a personal field takes refusePersonalTermsInUrl (ReadModelQueryGenerator),
+        // read from configuration and off by default: turn it on once every caller sends such a search as a POST.
+        if (mapped.Domains.SelectMany(d => d.ReadModels).Any(rm => GenerationSupport.PersonalSearchParams(rm).Count > 0))
+        {
+            b.AppendLine("// A read-model query can be a POST with its terms in a JSON body, so a search by a personal field (an email");
+            b.AppendLine("// address) need not be in a URL. Cqrs:RefusePersonalTermsInUrl=true refuses such a search sent as a GET (400,");
+            b.AppendLine("// telling the caller to POST). Off by default: turn it on once every caller has moved to POST.");
+            b.AppendLine("var refusePersonalTermsInUrl = builder.Configuration.GetValue<bool>(\"Cqrs:RefusePersonalTermsInUrl\");");
+        }
         foreach (var domain in mapped.Domains)
         {
             foreach (var readModel in domain.ReadModels)
@@ -755,7 +764,9 @@ public static class HostProjectGenerator
                 if (readModel.HasAccessRules)
                     b.AppendLine($"// {readModel.Collection}: declares who may read which rows (schema 3.8.0), so it refuses every query " +
                         "until resolveOwnRole and resolveSubjectId are both wired.");
-                b.AppendLine($"app.Map{typeName}Route();");
+                b.AppendLine(GenerationSupport.PersonalSearchParams(readModel).Count > 0
+                    ? $"app.Map{typeName}Route(refusePersonalTermsInUrl: refusePersonalTermsInUrl);"
+                    : $"app.Map{typeName}Route();");
                 // The same query as a live view (SSE), wired with the same hooks.
                 b.AppendLine($"app.Map{typeName}LiveRoute();");
             }

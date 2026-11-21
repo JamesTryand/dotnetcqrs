@@ -140,6 +140,13 @@ internal static class GenerationSupport
     /// <summary>The hashed index's name, shared by all key versions (<c>IHashedSearchIndex.IndexName</c>).</summary>
     public static string HashedIndexName(string collection) => $"{collection}:hashed";
 
+    /// <summary>The params of a read model's <c>match</c> filters on a pii field, in any mode: a
+    /// search whose term is personal data (an email address). The generated route's
+    /// <c>refusePersonalTermsInUrl</c> refuses these in a GET's query string.</summary>
+    public static IReadOnlyList<string> PersonalSearchParams(Domain.ReadModel readModel) =>
+        readModel.Filters.Where(f => f.IsMatch && readModel.Fields.Any(field => field.Name == f.Field && field.Pii))
+            .Select(f => f.Param).Distinct().ToList();
+
     /// <summary>Whether a <c>match</c> filter searches a keyed-hash index: a pii field in
     /// mode <c>exact</c> or <c>prefix</c>. Its parameter is the facade's HMAC of the
     /// normalized term, not a pattern.</summary>

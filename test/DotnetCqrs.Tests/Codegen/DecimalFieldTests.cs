@@ -182,6 +182,7 @@ public class DecimalFieldTests
             var http = new DefaultHttpContext();
             var callArgs = query.GetParameters().Select(p =>
                 p.ParameterType == typeof(HttpRequest) ? http.Request
+                : p.ParameterType == typeof(IReadOnlyList<KeyValuePair<string, string>>) ? QueryTerms.FromQuery(http.Request.Query)
                 : p.ParameterType == typeof(IReadModelStore) ? readModel
                 : p.ParameterType == typeof(CancellationToken) ? (object?)CancellationToken.None
                 : null).ToArray();

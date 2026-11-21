@@ -160,6 +160,26 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
     }
 
     [Fact]
+    public void The_generated_host_reads_refusePersonalTermsInUrl_from_configuration_only_where_a_personal_field_is_searched()
+    {
+        var doc = DotnetCqrs.Codegen.DocumentLoader.Parse(PiiHostJson);
+        var program = DotnetCqrs.Codegen.Generation.HostProjectGenerator
+            .Generate(doc, DotnetCqrs.Codegen.Mapping.DocumentMapper.Map(doc), "PiiHost", DotnetCqrsProjectPath(), new Dictionary<string, string>())
+            .Single(f => f.Name == "Program.cs").Source;
+        Assert.Contains("builder.Configuration.GetValue<bool>(\"Cqrs:RefusePersonalTermsInUrl\")", program);
+        Assert.Contains("app.MapCustomersRoute(refusePersonalTermsInUrl: refusePersonalTermsInUrl);", program);
+
+        // order-fulfillment.json searches no personal field: its routes are mapped as before.
+        var overrides = new Dictionary<string, string> { ["notify-shipping-partner"] = "ShippingNotification" };
+        var plainDoc = DotnetCqrs.Codegen.DocumentLoader.LoadFromFile(TestDataPath("order-fulfillment.json"));
+        var plain = DotnetCqrs.Codegen.Generation.HostProjectGenerator
+            .Generate(plainDoc, DotnetCqrs.Codegen.Mapping.DocumentMapper.Map(plainDoc,
+                new DotnetCqrs.Codegen.Mapping.MappingOptions { AggregateOverrides = overrides }), "OrderFulfillment", DotnetCqrsProjectPath(), overrides)
+            .Single(f => f.Name == "Program.cs").Source;
+        Assert.DoesNotContain("RefusePersonalTermsInUrl", plain);
+    }
+
+    [Fact]
     public void The_generated_pii_host_refuses_erasure_unless_an_authorize_policy_is_wired()
     {
         // order-fulfillment.json has a field.pii value, so its host registers the dataSubject aggregate.
@@ -949,6 +969,13 @@ public class HostGenerationTests : IDisposable, IClassFixture<PostgresFixture>, 
             }
             Assert.Equal(1, await PollExactAsync(" ALICE@example.com", 1));
             Assert.Equal(0, await ExactHitsAsync("alice"));
+            // The same search as a POST, the address in the body rather than the URL.
+            using (var posted = await client.PostAsync("/api/query/customers",
+                new StringContent("""{"emailExact":"alice@example.com"}""", System.Text.Encoding.UTF8, "application/json")))
+            {
+                Assert.Equal(HttpStatusCode.OK, posted.StatusCode);
+                Assert.Equal(1, (await posted.Content.ReadFromJsonAsync<JsonElement>()).GetArrayLength());
+            }
 
             // Rotation: ops rotates the index key, and the host is restarted on the same data.
             // Startup sees version 2, rebuilds while searches stay on version 1, then switches.

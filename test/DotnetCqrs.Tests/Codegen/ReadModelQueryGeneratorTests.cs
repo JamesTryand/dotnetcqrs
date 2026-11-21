@@ -670,4 +670,138 @@ public class ReadModelQueryGeneratorTests : IClassFixture<PostgresFixture>
             Assert.Equal(["c2"], await IdsAsync("emailPrefix=bob"));
         }
     }
+
+    private static async Task<HttpClient> MatchHostClientAsync(InMemoryHost.Running host)
+    {
+        for (var attempt = 0; attempt < 60; attempt++)
+        {
+            await Task.Delay(500);
+            try { (await host.Client.GetAsync("/api/query/customers")).EnsureSuccessStatusCode(); break; }
+            catch (HttpRequestException) { /* not listening yet -- retry */ }
+        }
+        return host.Client;
+    }
+
+    private static Task<HttpResponseMessage> PostQueryAsync(HttpClient client, string body, string path = "/api/query/customers") =>
+        client.PostAsync(path, new StringContent(body, System.Text.Encoding.UTF8, "application/json"));
+
+    private static async Task<(HttpStatusCode Status, string Body)> AnswerAsync(Task<HttpResponseMessage> sending)
+    {
+        using var response = await sending;
+        return (response.StatusCode, await response.Content.ReadAsStringAsync());
+    }
+
+    private static List<GeneratedFile> MatchFiles()
+    {
+        var mapped = DocumentMapper.Map(DocumentLoader.Parse(MatchJson));
+        var domain = Assert.Single(mapped.Domains);
+        return new List<GeneratedFile>(CSharpGenerator.Generate(domain)) { ReadModelQueryGenerator.Generate(domain, Assert.Single(domain.ReadModels)) };
+    }
+
+    // The same query as a POST, its terms in a JSON body (decided 2026-11-21), so a search by
+    // a personal field (an email address) never has to be in a URL, where access logs,
+    // proxies and browser history keep it. Same answer, same refusals, same code path.
+    [Fact(Timeout = 300000)]
+    public async Task Generated_query_route_answers_a_POST_with_its_terms_in_the_body_exactly_as_the_GET()
+    {
+        await using var host = await InMemoryHost.StartAsync(MatchFiles(), MatchProgramCs);
+        var client = await MatchHostClientAsync(host);
+
+        foreach (var (query, body) in new[]
+        {
+            ("", "{}"),
+            ("nameSearch=NUNEZ", """{"nameSearch":"NUNEZ"}"""),
+            ("namePrefix=JO", """{"namePrefix":"JO"}"""),
+            ("customerId=c2", """{"customerId":"c2"}"""),
+            // Personal fields: the plaintext index (contains) and the keyed-hash index (exact, prefix).
+            ("emailSearch=ALICE%40", """{"emailSearch":"ALICE@"}"""),
+            ("emailExact=%20ALICE%40example.COM", """{"emailExact":" ALICE@example.COM"}"""),
+            ("emailPrefix=ALI", """{"emailPrefix":"ALI"}"""),
+            ("emailExact=alice", """{"emailExact":"alice"}"""),
+            // The same refusals, with the same answers.
+            ("namePrefix=j", """{"namePrefix":"j"}"""),
+            ("email=alice%40example.com", """{"email":"alice@example.com"}"""),
+            ("nope=1", """{"nope":1}"""),
+            ("emailPrefix=al", """{"emailPrefix":"al"}"""),
+        })
+        {
+            var get = await AnswerAsync(client.GetAsync($"/api/query/customers?{query}"));
+            var post = await AnswerAsync(PostQueryAsync(client, body));
+            Assert.True(get == post, $"GET ?{query} gave {(int)get.Status} {get.Body}; POST {body} gave {(int)post.Status} {post.Body}");
+        }
+
+        // A search by a personal field finds the row and reveals it, as the GET does.
+        var hit = JsonDocument.Parse((await AnswerAsync(PostQueryAsync(client, """{"emailExact":"alice@example.com"}"""))).Body).RootElement;
+        Assert.Equal("c1", Assert.Single(hit.EnumerateArray()).GetProperty("customer_id").GetString());
+        Assert.Equal("Alice@Example.com", hit[0].GetProperty("email").GetString());
+
+        // An empty body is no terms, as on the command route.
+        var empty = await AnswerAsync(PostQueryAsync(client, ""));
+        Assert.Equal(HttpStatusCode.OK, empty.Status);
+        Assert.Equal(3, JsonDocument.Parse(empty.Body).RootElement.GetArrayLength());
+    }
+
+    [Fact(Timeout = 300000)]
+    public async Task Generated_query_route_refuses_a_POST_body_that_is_not_an_object_of_terms_with_a_problem()
+    {
+        await using var host = await InMemoryHost.StartAsync(MatchFiles(), MatchProgramCs);
+        var client = await MatchHostClientAsync(host);
+
+        foreach (var body in new[]
+        {
+            "[]", "\"nameSearch\"", "1", "null", "true", "{\"nameSearch\":", "{\"nameSearch\":\"jo\"} {}", "nameSearch=jo",
+            "{\"nameSearch\":[\"jo\"]}", "{\"nameSearch\":{\"x\":1}}", "{\"nameSearch\":null}", "{\"nameSearch\":true}",
+        })
+        {
+            using var response = await PostQueryAsync(client, body);
+            Assert.True(response.StatusCode == HttpStatusCode.BadRequest, $"{body}: want 400, got {(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
+            Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+        }
+
+        // The terms go in the body only: a POST that also carries a query string is refused.
+        using (var both = await PostQueryAsync(client, "{}", "/api/query/customers?emailExact=alice%40example.com"))
+            Assert.Equal(HttpStatusCode.BadRequest, both.StatusCode);
+
+        // A body over the cap.
+        using var big = await PostQueryAsync(client, "{\"nameSearch\":\"" + new string('x', 1 << 20) + "\"}");
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, big.StatusCode);
+    }
+
+    // RefusePersonalTermsInUrl, off by default: to be turned on once callers have moved to POST.
+    [Fact(Timeout = 300000)]
+    public async Task With_refusePersonalTermsInUrl_a_GET_searching_a_personal_field_is_a_400_and_the_POST_works()
+    {
+        await using var host = await InMemoryHost.StartAsync(MatchFiles(),
+            MatchProgramCs.Replace("app.MapCustomersRoute();", "app.MapCustomersRoute(refusePersonalTermsInUrl: true);"));
+        var client = await MatchHostClientAsync(host);
+
+        foreach (var query in new[] { "emailExact=alice%40example.com", "emailPrefix=alice", "emailSearch=alice", "nameSearch=jo&emailExact=alice%40example.com" })
+        {
+            var get = await AnswerAsync(client.GetAsync($"/api/query/customers?{query}"));
+            Assert.True(get.Status == HttpStatusCode.BadRequest, $"?{query}: want 400, got {(int)get.Status} {get.Body}");
+            Assert.Contains("POST", get.Body);
+            Assert.DoesNotContain("alice", get.Body); // the term is not echoed back
+        }
+
+        // A search by a field that is not personal stays a GET.
+        var plain = await AnswerAsync(client.GetAsync("/api/query/customers?nameSearch=NUNEZ"));
+        Assert.Equal(HttpStatusCode.OK, plain.Status);
+        Assert.Equal(1, JsonDocument.Parse(plain.Body).RootElement.GetArrayLength());
+
+        var post = await AnswerAsync(PostQueryAsync(client, """{"emailExact":"alice@example.com"}"""));
+        Assert.Equal(HttpStatusCode.OK, post.Status);
+        Assert.Equal("c1", Assert.Single(JsonDocument.Parse(post.Body).RootElement.EnumerateArray()).GetProperty("customer_id").GetString());
+    }
+
+    [Fact]
+    public void RefusePersonalTermsInUrl_is_off_by_default_and_only_on_routes_that_search_a_personal_field()
+    {
+        var withPersonal = MatchFiles().Single(f => f.Name == "CustomersQueryRoute.cs").Source;
+        Assert.Contains("bool refusePersonalTermsInUrl = false", withPersonal);
+
+        var mapped = DocumentMapper.Map(DocumentLoader.Parse(PiiJson)); // a pii column, but no search over it
+        var domain = Assert.Single(mapped.Domains);
+        var without = ReadModelQueryGenerator.Generate(domain, Assert.Single(domain.ReadModels)).Source;
+        Assert.DoesNotContain("refusePersonalTermsInUrl", without);
+    }
 }

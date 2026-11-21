@@ -242,13 +242,23 @@ public class ReadAccessTests
         return rows.EnumerateArray().Select(r => r.GetProperty("ticket_id").GetString()!).Order().ToArray();
     }
 
-    private static async Task<HttpResponseMessage> SendAsync(HttpClient client, string? role, string? subject, string query = "")
+    // The same query as a POST, its terms in a JSON body.
+    private static async Task<string[]> PostedTicketIdsAsync(HttpClient client, string? role, string? subject, string body)
+    {
+        using var response = await SendAsync(client, role, subject, body: body);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var rows = await response.Content.ReadFromJsonAsync<JsonElement>();
+        return rows.EnumerateArray().Select(r => r.GetProperty("ticket_id").GetString()!).Order().ToArray();
+    }
+
+    private static async Task<HttpResponseMessage> SendAsync(HttpClient client, string? role, string? subject, string query = "", string? body = null)
     {
         for (var attempt = 0; ; attempt++)
         {
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, "/api/query/tickets" + query);
+                using var request = new HttpRequestMessage(body is null ? HttpMethod.Get : HttpMethod.Post, "/api/query/tickets" + query);
+                if (body is not null) request.Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
                 if (role is not null) request.Headers.Add("X-Test-Role", role);
                 if (subject is not null) request.Headers.Add("X-Test-Subject", subject);
                 return await client.SendAsync(request);
@@ -309,5 +319,42 @@ public class ReadAccessTests
             "app.MapTicketsRoute();"));
         using var response = await SendAsync(host.Client, "supervisor", "sup1");
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        using var posted = await SendAsync(host.Client, "supervisor", "sup1", body: "{}");
+        Assert.Equal(HttpStatusCode.Forbidden, posted.StatusCode);
+    }
+
+    [Fact(Timeout = 300000)]
+    [Trait("Category", "Compiles")]
+    public async Task The_generated_route_applies_the_rule_to_a_POST_exactly_as_to_the_GET()
+    {
+        await using var host = await InMemoryHost.StartAsync(GenerateReadAccessHost(), ProgramCsTemplate.Replace("{{MAP_CALL}}",
+            "app.MapTicketsRoute(resolveOwnRole: ResolveOwnRole, resolveSubjectId: ResolveSubjectId);"));
+        var client = host.Client;
+
+        Assert.Equal(["t1", "t2", "t3", "t4"], await PostedTicketIdsAsync(client, "supervisor", "sup1", "{}"));
+        Assert.Equal(["t4"], await PostedTicketIdsAsync(client, "supervisor", "sup1", """{"mine":"anything"}"""));
+        Assert.Equal(["t1", "t2"], await PostedTicketIdsAsync(client, "agent", "a1", "{}"));
+        Assert.Equal(Array.Empty<string>(), await PostedTicketIdsAsync(client, "agent", "a1", """{"agentId":"a3"}"""));
+        Assert.Equal(["t2"], await PostedTicketIdsAsync(client, "agent", "a1", """{"ledBy":"s2"}"""));
+        Assert.Equal(["t1"], await PostedTicketIdsAsync(client, "agent", "a1", """{"mine":"a3"}"""));
+        Assert.Equal(["t2"], await PostedTicketIdsAsync(client, "agent", "a1", """{"estimatedEffort":2}"""));
+        Assert.Equal(Array.Empty<string>(), await PostedTicketIdsAsync(client, "agent", "a9", "{}"));
+        Assert.Equal(Array.Empty<string>(), await PostedTicketIdsAsync(client, "agent", null, "{}"));
+    }
+
+    [Fact(Timeout = 300000)]
+    [Trait("Category", "Compiles")]
+    public async Task A_POST_fails_closed_like_the_GET_when_the_host_has_not_wired_the_hooks()
+    {
+        await using var host = await InMemoryHost.StartAsync(GenerateReadAccessHost(), ProgramCsTemplate.Replace("{{MAP_CALL}}",
+            "app.MapTicketsRoute(resolveOwnRole: ResolveOwnRole);"));
+        var client = host.Client;
+
+        using var agent = await SendAsync(client, "agent", "a1", body: "{}");
+        Assert.Equal(HttpStatusCode.Forbidden, agent.StatusCode);
+        Assert.Equal(["t1", "t2", "t3", "t4"], await PostedTicketIdsAsync(client, "supervisor", "sup1", "{}"));
+        // A bound param in the body needs the subject id just as it does in the query string.
+        using var mine = await SendAsync(client, "supervisor", "sup1", body: """{"mine":"1"}""");
+        Assert.Equal(HttpStatusCode.Forbidden, mine.StatusCode);
     }
 }

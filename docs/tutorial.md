@@ -338,13 +338,34 @@ search answers 503.
 A search returns the matching rows with their personal values revealed as
 usual. Searches and scenario checks run the same SQL.
 
+**Since 0.48.0** every query route also answers a `POST` at the same path,
+its terms a JSON object body whose keys and values are exactly the query
+string's, so a search by a personal field never has to be in a URL, where
+access logs, proxies and browser history keep it:
+
+```sh
+curl -X POST http://localhost:5000/api/query/customers \
+  -H 'Content-Type: application/json' -d '{"emailExact":"alice@example.com"}'
+```
+
+It runs the same query as the `GET`: the same access rules, the same rows,
+the same refusals. A value is a string or a number; an empty body is no
+terms. Anything else is a 400 (a body that is not one JSON object, a value
+that is null, a boolean, an array or an object, a key given twice, a query
+string on the `POST`), and a body over 1 MiB is a 413. A route searching a
+personal field takes `refusePersonalTermsInUrl` (default `false`); the
+generated host reads it from `Cqrs:RefusePersonalTermsInUrl`. When on, a
+`GET` whose query string carries such a search is a 400 telling the caller
+to use `POST`. Turn it on once every caller has moved. The live route stays
+`GET` only (a browser's `EventSource` cannot `POST`) and is not affected.
+
 ## Running it as a host
 
 `generate --host` writes a complete runnable ASP.NET Core project for the
 whole document instead of just the domain code: every decider registered,
 every projection running, the command gateway
 (`POST /api/cqrs/{aggregate}/{id}/{command}`) and one query route per read
-model (`GET /api/query/{collection}`):
+model (`GET /api/query/{collection}`, or `POST` with the terms in a JSON body):
 
 ```sh
 dotnet new tool-manifest          # once, in your own repository

@@ -27,6 +27,16 @@ namespace DotnetCqrs.Codegen.Generation;
 /// One canonical representation for both the real route and the verify harness's
 /// simulation of it, rather than inventing a second, HTTP-only shape.</para>
 ///
+/// <para><b>POST (since 0.48.0):</b> the same route answers a POST at the same path, its terms
+/// a JSON object body whose keys and values are exactly the query string's
+/// (<c>{"emailExact":"alice@example.com"}</c>; see <c>DotnetCqrs.Host.QueryTerms</c> for the
+/// body's rules). Both methods run the one <c>QueryAsync</c>, so the access rules, the answer
+/// and the refusals are the same. It exists so a search by a personal field never has to be in
+/// a URL. A route with such a search (<see cref="GenerationSupport.PersonalSearchParams"/>)
+/// takes <c>refusePersonalTermsInUrl</c>, default off, which answers 400 to a GET carrying one,
+/// telling the caller to POST; it is to be turned on once callers have moved. The live route
+/// stays GET only and is not affected by it.</para>
+///
 /// <para>Returns the raw route builder so the caller can chain
 /// <c>.RequireAuthorization()</c> — same posture <c>MapCqrsGateway</c> already takes;
 /// auth is out of scope here (deferred, per this project's own README, to whichever
@@ -183,11 +193,43 @@ public static class ReadModelQueryGenerator
             piiArgs += ", indexKey";
         }
         var hooks = $"Func<ClaimsPrincipal, string>? resolveOwnRole = null{subjectHook}";
-        b.AppendLine($"    public static RouteHandlerBuilder Map{typeName}Route(this IEndpointRouteBuilder endpoints, string prefix = \"/api/query\", {hooks})");
+        // A match filter on a pii field (any mode) searches by personal data: its term is a person's
+        // email or address. refusePersonalTermsInUrl (default off) refuses such a term in a GET's
+        // query string; only a route that has one takes the option, so every other signature is unchanged.
+        var personalParams = GenerationSupport.PersonalSearchParams(readModel);
+        var hasPersonalParams = personalParams.Count > 0;
+        if (hasPersonalParams)
+        {
+            b.AppendLine("    /// <summary>Params that search a personal field: refused in a GET's query string when");
+            b.AppendLine("    /// refusePersonalTermsInUrl is on.</summary>");
+            b.AppendLine($"    private static readonly string[] PersonalParams = {GenerationSupport.QuotedArray(personalParams)};");
+            b.AppendLine();
+        }
+        var routeOptions = hasPersonalParams ? ", bool refusePersonalTermsInUrl = false" : "";
+        b.AppendLine("    /// <summary>The query route: a GET with its terms in the query string, or a POST at the same path with the");
+        b.AppendLine("    /// same terms as a JSON object body (see QueryTerms), so a search by a personal field need not be in a URL.");
+        b.AppendLine("    /// Both run the same query, with the same access rules, answers and refusals.");
+        if (hasPersonalParams)
+        {
+            b.AppendLine("    /// <paramref name=\"refusePersonalTermsInUrl\"/> (default off) answers 400 to a GET whose query string searches");
+            b.AppendLine("    /// a personal field, telling the caller to send it as a POST. Turn it on once every caller has moved to");
+            b.AppendLine("    /// POST. The live route is not affected: a browser's EventSource can only GET.");
+        }
+        b.AppendLine("    /// </summary>");
+        b.AppendLine($"    public static RouteHandlerBuilder Map{typeName}Route(this IEndpointRouteBuilder endpoints, string prefix = \"/api/query\", {hooks}{routeOptions})");
         b.AppendLine("    {");
-        b.AppendLine($"        return endpoints.MapGet($\"{{prefix}}/{readModel.Collection}\", async (HttpRequest request, IReadModelStore store{piiParams}, CancellationToken ct) =>");
+        b.AppendLine($"        return endpoints.MapMethods($\"{{prefix}}/{readModel.Collection}\", [HttpMethods.Get, HttpMethods.Post], async (HttpRequest request, IReadModelStore store{piiParams}, CancellationToken ct) =>");
         b.AppendLine("        {");
-        b.AppendLine($"            var outcome = await QueryAsync(request, store{piiArgs}, resolveOwnRole{subjectArg}, ct);");
+        if (hasPersonalParams)
+        {
+            b.AppendLine("            if (refusePersonalTermsInUrl && !HttpMethods.IsPost(request.Method)");
+            b.AppendLine("                && request.Query.Keys.FirstOrDefault(k => PersonalParams.Contains(k)) is { } personal)");
+            b.AppendLine("                return Results.Problem($\"'{personal}' searches personal data: send this query as a POST with its terms in a JSON body, so the term is not in a URL\", statusCode: StatusCodes.Status400BadRequest);");
+        }
+        b.AppendLine("            var terms = await QueryTerms.FromRequestAsync(request, ct);");
+        b.AppendLine("            if (terms.Refusal is { } refused)");
+        b.AppendLine("                return refused;");
+        b.AppendLine($"            var outcome = await QueryAsync(request, terms.Terms, store{piiArgs}, resolveOwnRole{subjectArg}, ct);");
         b.AppendLine("            return outcome.Refusal ?? Results.Ok(outcome.Rows);");
         b.AppendLine("        });");
         b.AppendLine("    }");
@@ -200,12 +242,13 @@ public static class ReadModelQueryGenerator
         b.AppendLine($"    public static RouteHandlerBuilder Map{typeName}LiveRoute(this IEndpointRouteBuilder endpoints, string prefix = \"/api/query\", {hooks})");
         b.AppendLine("    {");
         b.AppendLine($"        return endpoints.MapGet($\"{{prefix}}/{readModel.Collection}/live\", (HttpContext http, IReadModelStore store, IReadModelChangeFeed feed{piiParams}) =>");
-        b.AppendLine($"            LiveView.StreamAsync(http, feed, LiveTables, ct => QueryAsync(http.Request, store{piiArgs}, resolveOwnRole{subjectArg}, ct)));");
+        b.AppendLine($"            LiveView.StreamAsync(http, feed, LiveTables, ct => QueryAsync(http.Request, QueryTerms.FromQuery(http.Request.Query), store{piiArgs}, resolveOwnRole{subjectArg}, ct)));");
         b.AppendLine("    }");
         b.AppendLine();
-        b.AppendLine("    /// <summary>One run of this read model's query for the caller of <paramref name=\"request\"/>: its rows, or the");
-        b.AppendLine("    /// refusal to answer instead. Shared by the query route and the live route, so they can't drift apart.</summary>");
-        b.AppendLine($"    private static async Task<LiveView.Outcome> QueryAsync(HttpRequest request, IReadModelStore store{piiDecl}, Func<ClaimsPrincipal, string>? resolveOwnRole{subjectDecl}, CancellationToken ct)");
+        b.AppendLine("    /// <summary>One run of this read model's query for the caller of <paramref name=\"request\"/>, with <paramref name=\"terms\"/>");
+        b.AppendLine("    /// (from the query string or a POST body): its rows, or the refusal to answer instead. Shared by the GET, the POST");
+        b.AppendLine("    /// and the live route, so they can't drift apart.</summary>");
+        b.AppendLine($"    private static async Task<LiveView.Outcome> QueryAsync(HttpRequest request, IReadOnlyList<KeyValuePair<string, string>> terms, IReadModelStore store{piiDecl}, Func<ClaimsPrincipal, string>? resolveOwnRole{subjectDecl}, CancellationToken ct)");
         b.AppendLine("    {");
         // The body below was the query route's handler; it is emitted one level deeper than a method body,
         // so it is collected separately and outdented.
@@ -218,7 +261,7 @@ public static class ReadModelQueryGenerator
             b.AppendLine("            if (standing == ReadAccess.Standing.Refused)");
             b.AppendLine("                return LiveView.Outcome.Refused(Results.Problem(\"not authorized\", statusCode: StatusCodes.Status403Forbidden));");
             b.AppendLine("            string? subjectId = null;");
-            b.AppendLine("            if (standing == ReadAccess.Standing.Restricted || request.Query.Keys.Any(AccessPolicy.IsBound))");
+            b.AppendLine("            if (standing == ReadAccess.Standing.Restricted || terms.Any(t => AccessPolicy.IsBound(t.Key)))");
             b.AppendLine("            {");
             b.AppendLine("                // Fail closed: without a way to know who is asking, the rule cannot be applied.");
             b.AppendLine("                if (resolveSubjectId is null)");
@@ -250,9 +293,8 @@ public static class ReadModelQueryGenerator
             b.AppendLine("            if (standing == ReadAccess.Standing.Restricted)");
             b.AppendLine("                i = ReadAccess.Restrict(AccessPolicy, subjectId, clauses, parameters, i);");
         }
-        b.AppendLine("            foreach (var (key, values) in request.Query)");
+        b.AppendLine("            foreach (var (key, raw) in terms)");
         b.AppendLine("            {");
-        b.AppendLine("                var raw = values.ToString();");
         b.AppendLine("                switch (key)");
         b.AppendLine("                {");
         foreach (var filter in readModel.Filters.Where(f => f.IsMatch))
