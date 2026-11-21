@@ -451,10 +451,11 @@ public static class CqrsGatewayEndpoints
             // Neither a rejection nor a known dependency failure: a fault in the host
             // around the decision -- e.g. a decision read protected state with no
             // IPiiProtector registered to reveal it (RevealRequiredException), a KMS key
-            // used before it was ensured, or a plain bug. The caller did nothing wrong and
-            // the command was never decided. The message stays in the server log.
+            // used before it was ensured, or a plain bug -- or, in a decider that declares
+            // TypedRejections (hub K8), a bug inside Decide itself. The caller did nothing
+            // wrong. The message stays in the server log.
             LogFailure(httpContext, ex, aggregate, aggregateId, command);
-            return (Results.Problem("the command failed inside the host before it could be decided; see the server log",
+            return (Results.Problem("the command failed inside the host; see the server log",
                 statusCode: StatusCodes.Status500InternalServerError, title: "internal error"), null);
         }
     }

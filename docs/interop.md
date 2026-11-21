@@ -33,9 +33,11 @@ Checked directly, not assumed:
   out of `400`: `503` when a dependency the command needs is unavailable -- the event
   store, the key service, a timeout, or a read-only node with no forwarding -- and `500`
   for any other failure around the decision (a wiring fault or bug in the host). `400`
-  means exactly "the decider threw": `DeciderRegistry.IsRejection` marks exceptions by
-  where they came from, not their type. The body names the kind of failure, not the
-  exception. A
+  means "the decider refused": since 0.50.0 a generated decider declares `TypedRejections`
+  and refuses only with a `CommandRejectedException` (or a type derived from it), so a bug
+  inside its `Decide` is a `500`, not a refusal; a hand-written decider without it is still
+  read by where the exception came from (anything its `Decide` throws is a refusal) until
+  it moves across. The body names the kind of failure, not the exception. A
   secondary forwarding writes answers `502` when the primary can't be reached and `504`
   when it times out.)
 - **The `task` aggregate.** Both ship a `task` decider with `CreateTask` →

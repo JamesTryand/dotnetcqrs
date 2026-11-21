@@ -122,9 +122,14 @@ This is a real, compilable `Decider<OrderState>` — the create-guard
 (`if (state.Exists) throw ...`), the existence check on `ShipOrder`, the
 event names, all generated straight from the document's slices. The two
 refusals are typed, `AlreadyExistsException` and `DoesNotExistException`
-(both `InvalidOperationException`s carrying a `Reason`), so the gateway can
+(both `CommandRejectedException`s carrying a `Reason`), so the gateway can
 tell a caller which one it was without the caller reading the words (see
-[the gateway's answers](#the-command-gateways-answers)). Because
+[the gateway's answers](#the-command-gateways-answers)). Since 0.50.0 every
+refusal a generated decider writes is a `CommandRejectedException`, and the
+decider declares `TypedRejections = true`: anything else escaping its `Decide`
+(a null reference, a broken invariant) is a fault the gateway answers `500`,
+not a refusal. A hand-written decider refuses the same way once it sets
+`TypedRejections`; until then anything its `Decide` throws is a refusal. Because
 `customerEmail` is personal data, it is typed `Pii<string>` rather than
 `string`, and the decider comes with a `PiiProtector`. Register the two
 together:

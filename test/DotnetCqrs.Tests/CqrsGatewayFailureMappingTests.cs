@@ -60,6 +60,17 @@ public class CqrsGatewayFailureMappingTests : IAsyncDisposable
         var registry = new DeciderRegistry(_store);
         registry.Register("task", TaskDecider(), _protector);
         registry.Register("plain", TaskDecider()); // no protector: RevealRequired escapes
+        registry.Register("typed", new Decider<bool> // hub K8: refuses only with the typed rejection
+        {
+            InitialState = () => false,
+            Decide = (_, cmd) => cmd.Name switch
+            {
+                "Close" => throw new CommandRejectedException("the gate is closed"),
+                _ => throw new NullReferenceException($"a bug near {Secret}"),
+            },
+            Evolve = (s, _) => s,
+            TypedRejections = true,
+        });
 
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -168,5 +179,18 @@ public class CqrsGatewayFailureMappingTests : IAsyncDisposable
 
         Assert.Equal(HttpStatusCode.Forbidden, status);
         Assert.Equal("only this task's own owner may take it", problem.GetProperty("detail").GetString());
+    }
+
+    [Fact]
+    public async Task A_bug_inside_a_typed_deciders_Decide_returns_500_and_its_refusal_400()
+    {
+        // hub K8, option b: before, any exception from Decide was a refusal, so a bug answered 400 with its message
+        var (status, problem) = await PostAsync("/api/cqrs/typed/g1/Open");
+        Assert.Equal(HttpStatusCode.InternalServerError, status);
+        Assert.DoesNotContain(Secret, problem.GetRawText());
+
+        (status, problem) = await PostAsync("/api/cqrs/typed/g1/Close");
+        Assert.Equal(HttpStatusCode.BadRequest, status);
+        Assert.Equal("the gate is closed", problem.GetProperty("detail").GetString());
     }
 }

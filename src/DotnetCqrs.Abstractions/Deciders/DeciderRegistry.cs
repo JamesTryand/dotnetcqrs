@@ -40,7 +40,8 @@ public sealed class DeciderRegistry(IEventStore store)
             Initial: () => decider.InitialState()!,
             Decide: (state, command) => decider.Decide((TState)state, command),
             Evolve: (state, ev) => decider.Evolve((TState)state, ev)!,
-            Protector: protector);
+            Protector: protector,
+            TypedRejections: decider.TypedRejections);
     }
 
     /// <summary>
@@ -126,9 +127,12 @@ public sealed class DeciderRegistry(IEventStore store)
     /// this to keep "rejected" apart from infrastructure failures and bugs (gateway 400 vs
     /// 5xx; a reactor drops a rejection but retries anything else).
     ///
-    /// <para>Rejection is defined by where the exception came from, not its type: Decide
-    /// may reject by throwing whatever it likes, so no type could say this. Consequence: a
-    /// bug inside Decide itself (a null reference, a bad cast) also counts as a rejection.
+    /// <para>For a decider that declares <see cref="Decider{TState}.TypedRejections"/> (every generated one), a
+    /// rejection is a <see cref="CommandRejectedException"/> thrown by its Decide, or a
+    /// <see cref="System.Text.Json.JsonException"/> (the command's payload could not be read): a bug inside Decide
+    /// (a null reference, a bad cast, a broken invariant) is a fault (hub K8, option b). For any other decider,
+    /// rejection is defined by where the exception came from, not its type: it may reject by throwing whatever it
+    /// likes, so a bug inside its Decide also counts as a rejection, until it moves across.
     /// <see cref="RevealRequiredException"/> is never one -- it is the registry's reveal
     /// signal, and escaping means no protector was registered to act on it.</para></summary>
     public static bool IsRejection(Exception ex) => Rejections.TryGetValue(ex, out _);
@@ -146,15 +150,17 @@ public sealed class DeciderRegistry(IEventStore store)
         {
             return decider.Decide(state, cmd);
         }
-        catch (Exception ex) when (MarkRejection(ex))
+        catch (Exception ex) when (MarkRejection(ex, decider.TypedRejections))
         {
             throw; // unreachable: MarkRejection always returns false
         }
     }
 
-    private static bool MarkRejection(Exception ex)
+    private static bool MarkRejection(Exception ex, bool typed)
     {
-        if (ex is not RevealRequiredException)
+        if (ex is RevealRequiredException)
+            return false;
+        if (!typed || ex is CommandRejectedException or System.Text.Json.JsonException)
             Rejections.AddOrUpdate(ex, Rejections);
         return false;
     }
@@ -205,5 +211,6 @@ public sealed class DeciderRegistry(IEventStore store)
         Func<object> Initial,
         Func<object, Command, IReadOnlyList<NewEvent>> Decide,
         Func<object, Event, object> Evolve,
-        IPiiProtector? Protector);
+        IPiiProtector? Protector,
+        bool TypedRejections);
 }

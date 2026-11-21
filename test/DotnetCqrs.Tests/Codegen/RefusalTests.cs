@@ -171,7 +171,19 @@ public class RefusalTests
 
         var decider = CSharpGenerator.Generate(domain).Single(f => f.Name.EndsWith("Decider.cs"));
 
-        Assert.Contains("throw new InvalidOperationException(\"the gate's locked\");", decider.Source);
+        Assert.Contains("throw new CommandRejectedException(\"the gate's locked\");", decider.Source);
+    }
+
+    [Fact]
+    public void A_generated_decider_refuses_only_with_the_typed_rejection()
+    {
+        // hub K8, option b: the generated decider declares TypedRejections, and every refusal it writes is a
+        // CommandRejectedException (or derived), so anything else escaping its Decide is a fault, not a 400
+        var domain = Assert.Single(DocumentMapper.Map(DocumentLoader.Parse(OperatorsJson)).Domains);
+        var decider = CSharpGenerator.Generate(domain).Single(f => f.Name.EndsWith("Decider.cs"));
+
+        Assert.Contains("TypedRejections = true,", decider.Source);
+        Assert.DoesNotContain("throw new InvalidOperationException(", decider.Source);
     }
 
     // Schema 3.11.0: the four numeric comparisons, against a literal and against a state field,

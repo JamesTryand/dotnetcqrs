@@ -78,6 +78,8 @@ internal static class DeciderGenerator
         b.AppendLine("    {");
         var initArgs = string.Join(", ", Enumerable.Repeat("false", endsForGood ? 2 : 1).Concat(fields.Select(_ => "null")));
         b.AppendLine($"        InitialState = () => new {aggregate}State({initArgs}),");
+        b.AppendLine("        // hub K8: it refuses only with a CommandRejectedException, so anything else escaping Decide is a fault");
+        b.AppendLine("        TypedRejections = true,");
         b.AppendLine("        Decide = (state, cmd) =>");
         b.AppendLine("        {");
         b.AppendLine("            switch (cmd.Name)");
@@ -89,7 +91,7 @@ internal static class DeciderGenerator
             if (command.Once)
                 b.AppendLine($"                    if (state.Exists) throw new AlreadyExistsException(\"{Domain.Names.Words(domain.Aggregate)} already exists\");");
             if (command.Once && !command.CanBeginAgain && endsForGood)
-                b.AppendLine($"                    if (state.Ended) throw new InvalidOperationException(\"{Domain.Names.Words(domain.Aggregate)} has ended and cannot begin again\");");
+                b.AppendLine($"                    if (state.Ended) throw new CommandRejectedException(\"{Domain.Names.Words(domain.Aggregate)} has ended and cannot begin again\");");
             if (command.RequiresExisting)
                 b.AppendLine($"                    if (!state.Exists) throw new DoesNotExistException(\"{Domain.Names.Words(domain.Aggregate)} does not exist\");");
             if (command.OwnedBy is { } ownedBy)
@@ -136,7 +138,7 @@ internal static class DeciderGenerator
             b.AppendLine("                }");
         }
         b.AppendLine("                default:");
-        b.AppendLine("                    throw new InvalidOperationException($\"unknown command: {cmd.Name}\");");
+        b.AppendLine("                    throw new CommandRejectedException($\"unknown command: {cmd.Name}\");");
         b.AppendLine("            }");
         b.AppendLine("        },");
         b.AppendLine("        Evolve = (state, ev) =>");
@@ -218,7 +220,7 @@ internal static class DeciderGenerator
         foreach (var refusal in command.Refusals)
         {
             var test = string.Join(" && ", refusal.All.Select(ConditionExpression));
-            b.AppendLine($"                    if ({test}) throw new InvalidOperationException({StringLiteral(refusal.Message)});");
+            b.AppendLine($"                    if ({test}) throw new CommandRejectedException({StringLiteral(refusal.Message)});");
         }
     }
 

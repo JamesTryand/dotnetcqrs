@@ -7,7 +7,7 @@ namespace DotnetCqrs.Deciders;
 /// refusal, so the registry marks it a rejection and nothing is appended. Any refusal may use it with a reason of its
 /// own; the generated deciders use the two below.
 /// </summary>
-public class CommandRefusedException(string message, string reason) : InvalidOperationException(message)
+public class CommandRefusedException(string message, string reason) : CommandRejectedException(message)
 {
     /// <summary>The reason, in lower-case words joined by hyphens, for example <c>does-not-exist</c>.</summary>
     public string Reason { get; } = reason;

@@ -224,4 +224,55 @@ public class DeciderRegistryTests
 
         Assert.False(DeciderRegistry.IsRejection(thrown));
     }
+
+    // K8 (the user, 2026-11-16, option b): a decider that declares TypedRejections refuses only by throwing a
+    // CommandRejectedException; anything else escaping its Decide is a fault, not a refusal.
+    private static async Task<Exception> ThrownByTypedDecider(Exception toThrow)
+    {
+        var store = await SqliteEventStore.OpenAsync(":memory:");
+        await using var _ = store;
+        var registry = new DeciderRegistry(store);
+        registry.Register("counter", new Decider<int>
+        {
+            InitialState = () => 0,
+            Decide = (_, _) => throw toThrow,
+            Evolve = (s, _) => s,
+            TypedRejections = true,
+        });
+        return await Assert.ThrowsAnyAsync<Exception>(() => registry.HandleAsync("counter", "c1", new Command("Increment", "{}")));
+    }
+
+    [Fact]
+    public async Task A_typed_decider_refuses_with_a_CommandRejectedException()
+    {
+        var thrown = await ThrownByTypedDecider(new CommandRejectedException("counter is closed"));
+        Assert.True(DeciderRegistry.IsRejection(thrown));
+        Assert.True(DeciderRegistry.IsRejection(await ThrownByTypedDecider(new DoesNotExistException("counter does not exist"))));
+        Assert.True(DeciderRegistry.IsRejection(await ThrownByTypedDecider(new CommandForbiddenException("not the owner"))));
+    }
+
+    [Fact]
+    public async Task A_bug_inside_a_typed_deciders_Decide_is_a_fault_not_a_refusal()
+    {
+        Assert.False(DeciderRegistry.IsRejection(await ThrownByTypedDecider(new NullReferenceException())));
+        Assert.False(DeciderRegistry.IsRejection(await ThrownByTypedDecider(new InvalidOperationException("email is pii but its piiSubject is null"))));
+    }
+
+    [Fact]
+    public async Task A_payload_a_typed_decider_cannot_read_is_still_the_callers_refusal()
+    {
+        // The command's own content is malformed: the caller's mistake, answered 400, not a host fault.
+        Assert.True(DeciderRegistry.IsRejection(await ThrownByTypedDecider(new System.Text.Json.JsonException("bad payload"))));
+    }
+
+    [Fact]
+    public async Task An_untyped_decider_still_refuses_by_throwing_anything()
+    {
+        // hand-written deciders move across when next touched (K8); until then their refusals stay 400
+        var (store, registry) = await SetUpAsync();
+        await using var _ = store;
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            registry.HandleAsync("counter", "c1", new Command("Decrement", "{}")));
+        Assert.True(DeciderRegistry.IsRejection(thrown));
+    }
 }
