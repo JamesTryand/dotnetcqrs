@@ -129,7 +129,11 @@ refusal a generated decider writes is a `CommandRejectedException`, and the
 decider declares `TypedRejections = true`: anything else escaping its `Decide`
 (a null reference, a broken invariant) is a fault the gateway answers `500`,
 not a refusal. A hand-written decider refuses the same way once it sets
-`TypedRejections`; until then anything its `Decide` throws is a refusal. Because
+`TypedRejections`; until then anything its `Decide` throws is a refusal.
+**A change for hand-written hooks:** a hook a generated decider calls (an outcome's
+condition, its repeated items) runs inside that typed decider, so a refusal it
+throws must be a `CommandRejectedException`; anything else it throws is now a
+`500`, and a reactor sending the command retries it rather than dropping it. Because
 `customerEmail` is personal data, it is typed `Pii<string>` rather than
 `string`, and the decider comes with a `PiiProtector`. Register the two
 together:
