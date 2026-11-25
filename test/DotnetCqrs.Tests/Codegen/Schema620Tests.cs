@@ -41,6 +41,51 @@ public class Schema620Tests
     }
 
     [Fact]
+    public async Task A_refused_command_fails_an_empty_then()
+    {
+        var lending = Fixture("links-lending.json");
+        lending["commands"]!["register-borrower"]!["refuseWhen"] = JsonNode.Parse(
+            """[{ "message": "that branch is closed", "all": [{ "command": "branchId", "equals": "closed-branch" }] }]""");
+        var scenarios = RegisterSlice(lending)["scenarios"]!.AsArray();
+        var refused = scenarios.Single(s => (string?)s!["id"] == "the-reading-room-lends-nothing")!.DeepClone();
+        refused["id"] = "refused-but-says-nothing";
+        refused["when"]!["data"]!["branchId"] = "closed-branch";
+        scenarios.Add(refused);
+        var doc = DocumentLoader.Parse(lending.ToJsonString());
+
+        var results = (await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc))).ToDictionary(r => r.ScenarioId);
+
+        Assert.False(results["refused-but-says-nothing"].Passed);
+        Assert.Contains("refused", results["refused-but-says-nothing"].Detail);
+    }
+
+    [Fact]
+    public async Task Against_a_hosts_own_decider_an_empty_then_passes_as_nothing_recorded()
+    {
+        var doc = DocumentLoader.Parse(Fixture("links-lending.json").ToJsonString());
+        void Register(DotnetCqrs.Deciders.DeciderRegistry registry, DotnetCqrs.Crypto.IKmsClient _) =>
+            registry.Register("borrower", new DotnetCqrs.Deciders.Decider<bool>
+            {
+                InitialState = () => false,
+                Decide = (_, cmd) =>
+                {
+                    using var payload = System.Text.Json.JsonDocument.Parse(cmd.Payload);
+                    var branch = payload.RootElement.GetProperty("branchId").GetString();
+                    return branch == "reading-room"
+                        ? []
+                        : [new DotnetCqrs.EventStore.NewEvent("BorrowerRegistered", cmd.Payload)];
+                },
+                Evolve = (_, _) => true,
+            });
+
+        var results = (await ScenarioVerifier.VerifyAsync(doc, DocumentMapper.Map(doc), new HostDeciders(Register)))
+            .ToDictionary(r => r.ScenarioId);
+
+        Assert.True(results["the-reading-room-lends-nothing"].Passed, results["the-reading-room-lends-nothing"].Detail);
+        Assert.Equal("accepted, nothing recorded", results["the-reading-room-lends-nothing"].Detail);
+    }
+
+    [Fact]
     public void A_then_without_events_is_refused()
     {
         var lending = Fixture("links-lending.json");
