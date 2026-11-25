@@ -135,4 +135,25 @@ public class SenderNameTests
             ArchitectureEdges.Published(Doc(MembersWithFields("\"memberId\", \"email\""))));
         Assert.Contains("\"email\" is personal data", ex.Message);
     }
+
+    // With a coordinating document too, a public event whose marker lists its fields is published even when no edge in
+    // this view starts from it: a link in another view may read it, and the sender's own document says what leaves.
+    [Fact]
+    public void A_listed_event_no_edge_here_starts_from_is_still_published()
+    {
+        var members = MembersWithFields("\"memberId\", \"branchId\"").Replace("\"events\": {", """
+            "events": {
+                "member-moved": { "name": "Member Moved", "swimlaneId": "members", "aggregate": "member",
+                  "public": { "version": 1, "fields": ["memberId"] },
+                  "fields": [{ "name": "memberId", "type": "string", "idAttribute": true }, { "name": "branchId", "type": "string" }] },
+                "member-noted": { "name": "Member Noted", "swimlaneId": "members", "aggregate": "member", "public": { "version": 1 },
+                  "fields": [{ "name": "memberId", "type": "string", "idAttribute": true }] },
+            """);
+        var (arch, dir) = View(members, ByPath, PeopleToLoans);
+        var sender = EdgesIn(arch, "people", Path.Combine(dir, "members.eventmodel.json"));
+        var got = sender.Out.ToDictionary(o => o.Event, o => string.Join(",", o.Fields));
+        Assert.Equal(2, got.Count);
+        Assert.Equal("branchId,memberId", got["member-joined"]);
+        Assert.Equal("memberId", got["member-moved"]);
+    }
 }

@@ -733,7 +733,9 @@ names the sender's stream by it. **With no coordinating document**, `generate`
 writes `Edges.g.cs` when some public event's marker lists its fields: those
 events with exactly those fields, and no edges in, so a sender is built from
 its own document alone. An event whose marker lists nothing publishes nothing
-then.
+then. **Since 0.52.1** the same holds with a coordinating document: every event
+whose marker lists its fields is in `Out`, whether or not an edge in that
+document starts from it, since a link in another view may read it.
 
 **Carrying an edge over NATS (0.46.0).** `JamesTryand.DotnetCqrs.Edges.Nats`
 carries the tables over NATS JetStream, wire-compatible with

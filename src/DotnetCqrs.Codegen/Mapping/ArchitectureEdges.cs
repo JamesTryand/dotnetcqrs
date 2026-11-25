@@ -119,6 +119,21 @@ public static class ArchitectureEdges
                     Refuse(id, $"event \"{evId}\" does not publish \"{f}\": its public marker lists only {string.Join(", ", listed)}");
             }
         }
+        // a public event whose marker lists its fields is published whether or not an edge here starts from it: a link
+        // in another view may read it, and the system's own document says what leaves it
+        foreach (var (evId, ev) in document.Events ?? new Dictionary<string, EventDef>())
+        {
+            if (ev.Public?.Fields is not { } listed || outs.ContainsKey((evId, ev.Public.Version))) continue;
+            var set = outs[(evId, ev.Public.Version)] = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var f in listed)
+            {
+                var field = ev.Fields?.FirstOrDefault(x => x.Name == f);
+                if (field is null) report.Error($"event \"{evId}\" publishes \"{f}\", which is not one of its fields");
+                else if (field.Pii == true)
+                    report.Error($"event \"{evId}\": \"{f}\" is personal data: carrying a personal field over an edge is not built");
+                else set.Add(f);
+            }
+        }
         var outList = outs.Select(kv => new EdgeOut(Names.TypeName(document.Events![kv.Key.Event].Name, kv.Key.Event),
             document.Id, kv.Key.Event, kv.Key.Version, kv.Value.ToList())).ToList();
 
