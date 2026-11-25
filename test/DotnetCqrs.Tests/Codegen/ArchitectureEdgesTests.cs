@@ -15,7 +15,7 @@ namespace DotnetCqrs.Tests.Codegen;
 /// </summary>
 public class ArchitectureEdgesTests
 {
-    private const string Members = """
+    internal const string Members = """
         {
           "eventModelingSchemaVersion": "6.1.0", "id": "members", "name": "Members",
           "swimlanes": [{ "id": "members", "name": "Members", "kind": "system" }],
@@ -36,7 +36,7 @@ public class ArchitectureEdgesTests
         }
         """;
 
-    private const string Lending = """
+    internal const string Lending = """
         {
           "eventModelingSchemaVersion": "6.1.0", "id": "lending", "name": "Lending",
           "swimlanes": [{ "id": "lending", "name": "Lending", "kind": "system" }],

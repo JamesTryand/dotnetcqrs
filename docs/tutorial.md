@@ -721,6 +721,20 @@ carrier is named in the document or the generated code. A document's
 generates nothing: an expected event is never this system's own. The mapping
 refuses `expects` naming the document's own id.
 
+**A message names its sender by its document id (0.52.0, coordinating
+document 0.3.1).** `SystemEdgeTables.System` and each `Out` entry's system are
+this document's `id`, never the name a view gives it, and each `In` entry's
+sender is the sender's document id, read from its document or its release. A
+system the view names by release generates too, when the document given is the
+one whose `id` the release names; an edge from a placeholder is refused, since
+it has no id yet. This is a change on the wire where a view named a system
+otherwise: regenerate both ends and deploy them together, since the carrier
+names the sender's stream by it. **With no coordinating document**, `generate`
+writes `Edges.g.cs` when some public event's marker lists its fields: those
+events with exactly those fields, and no edges in, so a sender is built from
+its own document alone. An event whose marker lists nothing publishes nothing
+then.
+
 **Carrying an edge over NATS (0.46.0).** `JamesTryand.DotnetCqrs.Edges.Nats`
 carries the tables over NATS JetStream, wire-compatible with
 pocketcqrs-extensions' `federation` (the same subjects, stream, durable consumer

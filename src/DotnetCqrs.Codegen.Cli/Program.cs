@@ -127,6 +127,18 @@ try
         foreach (var r in systemEdges.Examples)
             Console.WriteLine($"  {(r.Passed ? "ok" : "FAIL")} example {r.Edge} / {r.Name}: {r.Detail}");
     }
+    else if (command == "generate")
+    {
+        // with no coordinating document, a sender's build needs only its own document: the public events whose
+        // markers list their fields (schema 6.2.0) are published with exactly those
+        systemEdges = ArchitectureEdges.Published(document);
+        if (systemEdges is not null)
+        {
+            Console.WriteLine($"published by \"{systemEdges.System}\" from its own document: {systemEdges.Out.Count} event(s)");
+            foreach (var o in systemEdges.Out)
+                Console.WriteLine($"  out {o.Event} v{o.Version} ({o.EventType}): only {string.Join(", ", o.Fields)}");
+        }
+    }
 
     if (command == "generate")
     {
