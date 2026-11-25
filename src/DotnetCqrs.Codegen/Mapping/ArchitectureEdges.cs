@@ -46,8 +46,17 @@ public static class ArchitectureEdges
             .Where(e => (string?)e["kind"] == "internal" && e["from"] is JsonObject && e["to"] is JsonObject).ToList();
         void Refuse(string edge, string message) => report.Error($"edge \"{edge}\": {message}");
 
-        // the events this system publishes: each public event an edge starts from, only the fields some edge maps
+        // the events this system publishes: each public event an edge starts from. When its marker lists the fields it
+        // publishes (schema 6.2.0), those, and an edge may read only those: the system's own document says what leaves
+        // it, so a link in another document can rely on them. Otherwise only the fields some edge from it here maps.
         var outs = new SortedDictionary<(string Event, int Version), SortedSet<string>>();
+        void Publish(string edgeId, string evId, EventDef ev, string f, SortedSet<string> set)
+        {
+            var field = ev.Fields?.FirstOrDefault(x => x.Name == f);
+            if (field is null) { Refuse(edgeId, $"event \"{evId}\" has no field \"{f}\""); return; }
+            if (field.Pii == true) { Refuse(edgeId, $"\"{f}\" is personal data: carrying a personal field over an edge is not built"); return; }
+            set.Add(f);
+        }
         foreach (var e in edges.Where(e => (string?)e["from"]!["system"] == system))
         {
             var id = (string)e["id"]!;
@@ -63,13 +72,18 @@ public static class ArchitectureEdges
                 Refuse(id, $"event \"{evId}\" is not public at version {version} here");
                 continue;
             }
-            var set = outs.TryGetValue((evId, version), out var s) ? s : outs[(evId, version)] = new SortedSet<string>(StringComparer.Ordinal);
+            var listed = ev.Public.Fields;
+            if (!outs.TryGetValue((evId, version), out var set))
+            {
+                set = outs[(evId, version)] = new SortedSet<string>(StringComparer.Ordinal);
+                foreach (var f in listed ?? [])
+                    Publish(id, evId, ev, f, set);
+            }
             foreach (var f in PublishedBy(e))
             {
-                var field = ev.Fields?.FirstOrDefault(x => x.Name == f);
-                if (field is null) { Refuse(id, $"event \"{evId}\" has no field \"{f}\""); continue; }
-                if (field.Pii == true) { Refuse(id, $"\"{f}\" is personal data: carrying a personal field over an edge is not built"); continue; }
-                set.Add(f);
+                if (listed is null) Publish(id, evId, ev, f, set);
+                else if (!listed.Contains(f))
+                    Refuse(id, $"event \"{evId}\" does not publish \"{f}\": its public marker lists only {string.Join(", ", listed)}");
             }
         }
         var outList = outs.Select(kv => new EdgeOut(Names.TypeName(document.Events![kv.Key.Event].Name, kv.Key.Event),

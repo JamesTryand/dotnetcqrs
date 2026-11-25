@@ -22,7 +22,20 @@ public sealed record Document(
     // schema 6.0.0: messages entering (an ingress names one; how it is carried is a source's) and leaving with
     // nothing coming back. Nothing is generated from either.
     IReadOnlyDictionary<string, IngressDef>? Ingresses = null,
-    IReadOnlyDictionary<string, OutputDef>? Outputs = null);
+    IReadOnlyDictionary<string, OutputDef>? Outputs = null,
+    // schema 6.2.0: what this system relies on from others, by each one's document id. Nothing is generated from it:
+    // an expected event is never this system's own, and nothing here can append one.
+    IReadOnlyDictionary<string, ExpectationDef>? Expects = null);
+
+/// <summary>Schema 6.2.0 <c>expects</c>: what one system relies on from another, as written against that system's
+/// release <see cref="WrittenAgainst"/>: the public events it uses, each with only the fields it reads.</summary>
+public sealed record ExpectationDef(string WrittenAgainst, string? Description, IReadOnlyList<ExpectedEventDef> Events);
+
+/// <summary>One public event an expectation relies on, at its public version.</summary>
+public sealed record ExpectedEventDef(string Event, int Version, string? Description, IReadOnlyList<ExpectedFieldDef> Fields);
+
+/// <summary>One field relied on: its name and type, and its cardinality where it matters.</summary>
+public sealed record ExpectedFieldDef(string Name, string Type, string? Cardinality = null, string? Description = null);
 
 /// <summary>The document-wide <c>dataSubjects</c> (schema 3.2.0): per-subject rules for the runtime's
 /// built-in <c>dataSubject</c> aggregate, which no document declares as an aggregate of its own.</summary>

@@ -664,6 +664,13 @@ a `requiredOwnership.via` or `scope` whose `bypassRoles` name it is skipped.
 Without a role, the actor holds the command's required roles and none of its
 bypass roles.
 
+A `stateChange` scenario whose `then.events` is empty (schema 6.2.0) is an
+assertion too: it passes, as "accepted, nothing recorded", only when the
+command is accepted and records no events, so a forgotten event or a refusal
+fails it. A `then` with no `events` at all is refused by the schema. It is the
+scenario of an outcome whose `eventIds` is empty: a message that means nothing
+to its receiver is accepted this way rather than refused.
+
 An automation scenario runs on the stream its trigger names (schema 5.0.0):
 every automation started by an event has `targetIdField`, a field of each
 trigger event whose value is the id of the stream its command acts on, and
@@ -699,13 +706,20 @@ named in the report.
 `generate` and `verify` also read its edges: `--architecture
 model/landing-pages.architecture.json --system commerce`. `generate` writes
 `Edges.g.cs`, two tables, `Generated.SystemEdgeTables.In` (the internal edges
-into this system) and `.Out` (the public events it publishes, with only the
-fields some edge maps). `DotnetCqrs.Edges` is what they mean: `Edges.Publish`
+into this system) and `.Out` (the public events it publishes, with the fields
+each event's public marker lists, schema 6.2.0, or else only the fields some
+edge maps). An edge reading a field its event's marker does not list is
+refused, as is a personal field in the list; a listed field the event does
+not declare is refused by the mapping, so the system's own document says what
+leaves it. `DotnetCqrs.Edges` is what they mean: `Edges.Publish`
 makes an `EdgeMessage` of an event, `EdgeIn.Translate` the command it becomes.
 Each edge's `examples` run against that code, and one that fails refuses the
 run. pocketcqrs (v0.28.0) writes the same tables and reads and sends the same
 message, so a system on either runtime can be on either end of an edge. No
-carrier is named in the document or the generated code.
+carrier is named in the document or the generated code. A document's
+`expects` (schema 6.2.0), what its system relies on from others, is read and
+generates nothing: an expected event is never this system's own. The mapping
+refuses `expects` naming the document's own id.
 
 **Carrying an edge over NATS (0.46.0).** `JamesTryand.DotnetCqrs.Edges.Nats`
 carries the tables over NATS JetStream, wire-compatible with

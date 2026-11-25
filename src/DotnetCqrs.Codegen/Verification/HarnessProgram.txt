@@ -76,7 +76,8 @@ static async Task<ScenarioResultDto> RunCommandScenarioAsync(CommandScenarioInpu
             if (!got.SequenceEqual(want))
                 return Result(scenario, passed: false, $"expected [{string.Join(", ", want)}], got [{string.Join(", ", got)}]");
 
-            return Result(scenario, passed: true, $"would append {string.Join(", ", got)}");
+            // an empty then (schema 6.2.0) passes only here: accepted, and nothing recorded
+            return Result(scenario, passed: true, got.Count == 0 ? "accepted, nothing recorded" : $"would append {string.Join(", ", got)}");
         }
         catch (ChoiceByHandException)
         {

@@ -10,7 +10,7 @@ namespace DotnetCqrs.Codegen.Model;
 public sealed record Swimlane(string Id, string Name, string Kind, string? Description);
 
 public sealed record EventDef(string Name, string SwimlaneId, string? Description, string? Aggregate, bool? EndsStream, IReadOnlyList<Field>? Fields,
-    PublicMarkerDef? Public = null);
+    PublicEventMarkerDef? Public = null);
 
 /// <summary><c>RequiredRole</c>/<c>FieldGatedRole</c>/<c>RequiredOwnership</c>/<c>Scope</c>
 /// are schema 2.5.0's command-authorization declarations -- see
@@ -28,6 +28,12 @@ public sealed record CommandDef(
 /// <summary>Schema 4.2.0 <c>public</c>: part of the system's public contract, at a version. Read since 6.1.0, when a
 /// public command's slice may name neither a screen nor an ingress (another system sends it).</summary>
 public sealed record PublicMarkerDef(int Version);
+
+/// <summary>An event's <c>public</c> marker: its contract version and, since schema 6.2.0, the fields it publishes.
+/// With <see cref="Fields"/>, those fields of the event leave the system over an internal edge and nothing else of it,
+/// and an edge may read only those: the system's own document says what leaves it. Without, what leaves is what the
+/// edges from it map (6.1.0). A command's marker takes no list (the schema refuses one).</summary>
+public sealed record PublicEventMarkerDef(int Version, IReadOnlyList<string>? Fields = null);
 
 /// <summary>Schema 3.10.0 <c>command.refuseWhen</c>: one rule. It refuses the command, with
 /// <c>Message</c>, when every condition in <c>All</c> holds.</summary>

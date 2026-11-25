@@ -120,7 +120,8 @@ internal static class HostScenarioRunner
                 if (ScenarioValueMatch.Mismatch(JsonNode.Parse(expectedJson), actual, "") is { } mismatch)
                     return Result(scenario, false, $"{produced[i].Type}: {mismatch}");
             }
-            return Result(scenario, true, $"would append {string.Join(", ", got)}");
+            // an empty then (schema 6.2.0) passes only here: accepted, and nothing recorded
+            return Result(scenario, true, got.Count == 0 ? "accepted, nothing recorded" : $"would append {string.Join(", ", got)}");
         }
         catch (Exception ex)
         {

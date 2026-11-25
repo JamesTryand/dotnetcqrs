@@ -63,10 +63,10 @@ public class ArchitectureEdgesTests
             "then": { "targetId": "m-1", "fields": { "borrowerId": "m-1", "branchId": "north" } } }] }
         """;
 
-    private static SystemEdges EdgesOf(string edge, string system)
+    private static SystemEdges EdgesOf(string edge, string system, string? members = null)
     {
         var dir = Directory.CreateTempSubdirectory("architecture-edges-").FullName;
-        File.WriteAllText(Path.Combine(dir, "members.eventmodel.json"), Members);
+        File.WriteAllText(Path.Combine(dir, "members.eventmodel.json"), members ?? Members);
         File.WriteAllText(Path.Combine(dir, "lending.eventmodel.json"), Lending);
         var arch = Path.Combine(dir, "library.architecture.json");
         File.WriteAllText(arch, $$"""
@@ -120,6 +120,40 @@ public class ArchitectureEdgesTests
         var pii = Edge.Replace("\"branchId\": \"branchId\" }", "\"branchId\": \"email\" }");
 
         var ex = Assert.Throws<DocumentMappingException>(() => EdgesOf(pii, "members"));
+
+        Assert.Contains(ex.Report.Errors, e => e.Contains("\"email\" is personal data"));
+    }
+
+    /// <summary>Members with member-joined's marker listing the fields it publishes (schema 6.2.0).</summary>
+    private static string MembersListing(string fields) => Members
+        .Replace("\"public\": { \"version\": 1 }", $"\"public\": {{ \"version\": 1, \"fields\": [{fields}] }}")
+        .Replace("\"eventModelingSchemaVersion\": \"6.1.0\"", "\"eventModelingSchemaVersion\": \"6.2.0\"");
+
+    [Fact]
+    public void With_a_list_the_sender_publishes_what_its_marker_lists()
+    {
+        // another view's link may read what this document's edges do not
+        var onlyId = Edge.Replace("\"fields\": { \"borrowerId\": \"memberId\", \"branchId\": \"branchId\" }", "\"fields\": { \"borrowerId\": \"memberId\" }")
+            .Replace("\"fields\": { \"borrowerId\": \"m-1\", \"branchId\": \"north\" }", "\"fields\": { \"borrowerId\": \"m-1\" }");
+
+        var edges = EdgesOf(onlyId, "members", MembersListing("\"memberId\", \"branchId\""));
+
+        Assert.Equal(["branchId", "memberId"], Assert.Single(edges.Out).Fields);
+    }
+
+    [Fact]
+    public void An_edge_reading_a_field_its_event_does_not_list_is_refused()
+    {
+        var ex = Assert.Throws<DocumentMappingException>(() => EdgesOf(Edge, "members", MembersListing("\"memberId\"")));
+
+        Assert.Contains(ex.Report.Errors, e => e.Contains("does not publish \"branchId\""));
+    }
+
+    [Fact]
+    public void A_listed_personal_field_is_refused()
+    {
+        var ex = Assert.Throws<DocumentMappingException>(() =>
+            EdgesOf(Edge, "members", MembersListing("\"memberId\", \"branchId\", \"email\"")));
 
         Assert.Contains(ex.Report.Errors, e => e.Contains("\"email\" is personal data"));
     }

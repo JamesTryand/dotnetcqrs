@@ -141,6 +141,16 @@ public sealed class DocumentMapper
             }
         }
 
+        // the fields a public event publishes (schema 6.2.0) are its own
+        foreach (var (id, ev) in (_document.Events ?? new Dictionary<string, EventDef>()).OrderBy(e => e.Key, StringComparer.Ordinal))
+            foreach (var f in ev.Public?.Fields ?? [])
+                if (!(ev.Fields ?? []).Any(x => x.Name == f))
+                    _report.Error($"event \"{id}\" publishes \"{f}\", which is not one of its fields");
+
+        // expects (schema 6.2.0) is about other systems: a system never expects from itself
+        if (_document.Expects?.ContainsKey(_document.Id) == true)
+            _report.Error($"expects names \"{_document.Id}\", this document's own id: a system never expects from itself");
+
         if (_document.ReadModels is not null)
             foreach (var (id, rm) in _document.ReadModels)
             {
