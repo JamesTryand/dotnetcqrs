@@ -9,8 +9,8 @@ using DotnetCqrs.Codegen.Verification;
 // here, a call rechecked when --host/--project-name were added.
 if (args.Length == 0 || (args[0] != "generate" && args[0] != "verify"))
 {
-    Console.Error.WriteLine("usage: dotnetcqrs-codegen generate --input <path> --output <dir> [--host [--project-name <name>] [--dotnetcqrs-version <v> | --dotnetcqrs-project <path>]] [--aggregate-override <id>=<aggregate>]... [--architecture <coordinating document> --system <id>]");
-    Console.Error.WriteLine("       dotnetcqrs-codegen verify --input <path> [--aggregate-override <id>=<aggregate>]... [--architecture <coordinating document> --system <id>]");
+    Console.Error.WriteLine("usage: dotnetcqrs-codegen generate --input <path> --output <dir> [--host [--project-name <name>] [--dotnetcqrs-version <v> | --dotnetcqrs-project <path>]] [--aggregate-override <id>=<aggregate>]... [--architecture <coordinating document>]... [--system <id>]...");
+    Console.Error.WriteLine("       dotnetcqrs-codegen verify --input <path> [--aggregate-override <id>=<aggregate>]... [--architecture <coordinating document>]... [--system <id>]...");
     return 1;
 }
 
@@ -20,8 +20,8 @@ string? output = null;
 string? dotnetCqrsProject = null;
 string? dotnetCqrsVersion = null;
 string? projectName = null;
-string? architecture = null;
-string? system = null;
+var architectures = new List<string>();
+var systemNames = new List<string>();
 var host = false;
 var overrides = new Dictionary<string, string>();
 
@@ -50,11 +50,11 @@ for (var i = 1; i < args.Length; i++)
             break;
         case "--architecture":
             if (i + 1 >= args.Length) { Console.Error.WriteLine("--architecture requires a value"); return 1; }
-            architecture = args[++i];
+            architectures.Add(args[++i]);
             break;
         case "--system":
             if (i + 1 >= args.Length) { Console.Error.WriteLine("--system requires a value"); return 1; }
-            system = args[++i];
+            systemNames.Add(args[++i]);
             break;
         case "--project-name":
             if (i + 1 >= args.Length) { Console.Error.WriteLine("--project-name requires a value"); return 1; }
@@ -97,9 +97,11 @@ if (command == "verify" && input is null)
     Console.Error.WriteLine("--input is required");
     return 1;
 }
-if ((architecture is null) != (system is null))
+if (architectures.Count == 0 && systemNames.Count > 0)
 {
-    Console.Error.WriteLine("--architecture and --system go together: a coordinating document, and this document's system id in it");
+    // --architecture is repeatable (a system linked in several coordinating documents); --system names this
+    // document's system in them (once for all, or once per document), and omitted is found in each by this document
+    Console.Error.WriteLine("--system names a system in --architecture, which is not given");
     return 1;
 }
 
@@ -116,10 +118,10 @@ try
     // a coordinating document's edges for this system (architecture 0.2.0): the edges into it, the events it
     // publishes, and their examples run against DotnetCqrs.Edges
     SystemEdges? systemEdges = null;
-    if (architecture is not null)
+    if (architectures.Count > 0)
     {
-        systemEdges = ArchitectureEdges.For(architecture, system!, document, input!, overrides);
-        Console.WriteLine($"edges of \"{system}\" in \"{systemEdges.Architecture}\": {systemEdges.In.Count} in, {systemEdges.Out.Count} published event(s)");
+        systemEdges = ArchitectureEdges.ForViews(architectures, systemNames, document, input!, overrides);
+        Console.WriteLine($"edges of \"{systemEdges.System}\" in \"{systemEdges.Architecture}\": {systemEdges.In.Count} in, {systemEdges.Out.Count} published event(s)");
         foreach (var e in systemEdges.In)
             Console.WriteLine($"  in  {e.Id}: {e.FromSystem} {e.FromEvent} v{e.FromVersion} -> {e.Command} on {e.Aggregate}, its id from {e.TargetField}");
         foreach (var o in systemEdges.Out)

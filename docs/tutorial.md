@@ -721,6 +721,15 @@ carrier is named in the document or the generated code. A document's
 generates nothing: an expected event is never this system's own. The mapping
 refuses `expects` naming the document's own id.
 
+**A system in several coordinating documents (0.53.0).** `--architecture` is
+repeatable: a system linked in more than one view gets its edges from all of
+them (`ArchitectureEdges.ForViews`), the edges in, the events published (their
+fields together) and every example. `--system` is given once for all, once per
+document in order, or left out, when the system in each is the one that is this
+document (by its release's id, or its path). Two views giving one edge id
+different ends or translations are refused, naming the edge and both views, as
+eventmodelschema's checker refuses them; pocketcqrs v0.34.0 reads them the same.
+
 **A message names its sender by its document id (0.52.0, coordinating
 document 0.3.1).** `SystemEdgeTables.System` and each `Out` entry's system are
 this document's `id`, never the name a view gives it, and each `In` entry's

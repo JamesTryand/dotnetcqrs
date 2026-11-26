@@ -200,6 +200,94 @@ public static class ArchitectureEdges
     }
 
     /// <summary>
+    /// Reads one system's edges from several coordinating documents (views) at once, as pocketcqrs's
+    /// <c>emschema.EdgesForViews</c> does: a system may be linked in more than one, each held by whoever owns those
+    /// links. In each view the system is the one <paramref name="systems"/> names (one name for every view, or one per
+    /// view), else the one that is this document (named by its release's id, or by its path). Each view is read as
+    /// <see cref="For"/> reads it and the results are joined: the edges in, the events published (their fields
+    /// together) and the examples. Views may overlap but not contradict: an edge id is one link in every view that
+    /// holds it, the same ends and the same translation, as eventmodelschema's checker requires.
+    /// </summary>
+    public static SystemEdges ForViews(IReadOnlyList<string> architecturePaths, IReadOnlyList<string> systems,
+        Document document, string documentPath, IReadOnlyDictionary<string, string>? aggregateOverrides = null)
+    {
+        if (architecturePaths.Count == 0) throw new InvalidOperationException("no coordinating document given");
+        if (systems.Count > 1 && systems.Count != architecturePaths.Count)
+            throw new InvalidOperationException(
+                $"{systems.Count} system names for {architecturePaths.Count} coordinating documents: give one for all, or one per document");
+        var ids = new List<string>();
+        var ins = new List<EdgeIn>();
+        var inFrom = new Dictionary<string, (EdgeIn Edge, string View)>(StringComparer.Ordinal);
+        var outs = new SortedDictionary<(string Event, int Version), (string EventType, SortedSet<string> Fields)>();
+        var examples = new List<EdgeExampleResult>();
+        var report = new MappingReport();
+        for (var i = 0; i < architecturePaths.Count; i++)
+        {
+            var path = architecturePaths[i];
+            var system = systems.Count == 1 ? systems[0] : systems.Count > 1 ? systems[i] : SystemOf(path, document, documentPath);
+            var se = For(path, system, document, documentPath, aggregateOverrides);
+            ids.Add(se.Architecture);
+            foreach (var e in se.In)
+            {
+                if (inFrom.TryGetValue(e.Id, out var prev))
+                {
+                    if (!SameEdge(prev.Edge, e))
+                        report.Error($"edge \"{e.Id}\" is one link in \"{prev.View}\" and another in \"{se.Architecture}\": an edge id is the same link in every view");
+                    continue;
+                }
+                inFrom[e.Id] = (e, se.Architecture);
+                ins.Add(e);
+            }
+            foreach (var o in se.Out)
+            {
+                if (!outs.TryGetValue((o.Event, o.Version), out var known))
+                    known = outs[(o.Event, o.Version)] = (o.EventType, new SortedSet<string>(StringComparer.Ordinal));
+                known.Fields.UnionWith(o.Fields);
+            }
+            examples.AddRange(se.Examples);
+        }
+        if (report.Errors.Count > 0) throw new DocumentMappingException(report);
+        var outList = outs.Select(kv => new EdgeOut(kv.Value.EventType, document.Id, kv.Key.Event, kv.Key.Version,
+            kv.Value.Fields.ToList())).ToList();
+        return new SystemEdges(string.Join(", ", ids), document.Id,
+            ins.OrderBy(e => e.Id, StringComparer.Ordinal).ToList(), outList, examples);
+    }
+
+    static bool SameEdge(EdgeIn a, EdgeIn b) =>
+        a.Id == b.Id && a.FromSystem == b.FromSystem && a.FromEvent == b.FromEvent && a.FromVersion == b.FromVersion
+        && a.Aggregate == b.Aggregate && a.Command == b.Command && a.TargetField == b.TargetField
+        && a.Fields.Count == b.Fields.Count && a.Fields.All(kv => b.Fields.TryGetValue(kv.Key, out var v) && v == kv.Value);
+
+    /// <summary>The key a coordinating document names this document by: the system whose release names its id, or
+    /// whose document is the file at <paramref name="documentPath"/>. Exactly one.</summary>
+    static string SystemOf(string architecturePath, Document document, string documentPath)
+    {
+        var arch = JsonNode.Parse(File.ReadAllText(architecturePath)) as JsonObject
+            ?? throw new InvalidOperationException($"{architecturePath} is not a JSON object");
+        var archId = (string?)arch["id"] ?? "";
+        var dir = Path.GetDirectoryName(Path.GetFullPath(architecturePath))!;
+        var got = Path.GetFullPath(documentPath);
+        var found = new List<string>();
+        foreach (var (key, node) in arch["systems"] as JsonObject ?? [])
+        {
+            if (node is not JsonObject sys) continue;
+            if (sys["release"]?["system"] is JsonValue r && (string)r! == document.Id) found.Add(key);
+            else if (sys["document"]?["path"] is JsonValue p
+                     && string.Equals(Path.GetFullPath(Path.Combine(dir, (string)p!)), got, StringComparison.OrdinalIgnoreCase))
+                found.Add(key);
+        }
+        found.Sort(StringComparer.Ordinal);
+        return found.Count switch
+        {
+            1 => found[0],
+            0 => throw new InvalidOperationException(
+                $"the coordinating document \"{archId}\" names no system that is this document (\"{document.Id}\", {documentPath}): name it with --system"),
+            _ => throw new InvalidOperationException(
+                $"the coordinating document \"{archId}\" names this document as more than one system ({string.Join(", ", found)}): name one with --system"),
+        };
+    }
+
+    /// <summary>
     /// What a sender publishes from its own document alone, with no coordinating document: each public event whose
     /// marker lists its fields (schema 6.2.0), with exactly those, under the document's id. An event whose marker
     /// lists nothing publishes the fields some edge maps, and with no coordinating document there is none, so it
