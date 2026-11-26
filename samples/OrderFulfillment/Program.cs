@@ -40,7 +40,7 @@ await tasksProjection.InitAsync();
 // so InitAsync runs first.
 await readModelDb.InstallWriteGuardAsync([.. ordersProjection.Tables, .. tasksProjection.Tables]);
 
-var engine = new ConsumerEngine(eventStore, eventStore);
+var engine = new ConsumerEngine(eventStore, eventStore, logger: Console.Error.WriteLine);
 engine.Register(ordersProjection);
 engine.Register(tasksProjection);
 engine.Register(new ReactorConsumer(new FulfillmentReactor(), registry, msg => Console.WriteLine($"  [reactor] {msg}")));

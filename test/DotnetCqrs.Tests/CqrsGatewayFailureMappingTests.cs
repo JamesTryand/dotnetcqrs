@@ -125,6 +125,58 @@ public class CqrsGatewayFailureMappingTests : IAsyncDisposable
         Assert.Empty(await _store.LoadStreamAsync("task", "t1"));
     }
 
+    // A store whose append fails after the decision: the write may have committed, so the reply must not say retry
+    // as though nothing applied (dotnetcqrs-host's follow-up of 2026-09-27, done 2026-11-26).
+    private sealed class FailingAppendStore(IEventStore inner, Func<Exception> failure) : IEventStore
+    {
+        public Task<IReadOnlyList<Event>> AppendAsync(string aggregate, string aggregateId, long expectedSequence,
+            IReadOnlyList<NewEvent> events, CancellationToken ct = default) => throw failure();
+        public Task<IReadOnlyList<Event>> LoadStreamAsync(string aggregate, string aggregateId, CancellationToken ct = default) =>
+            inner.LoadStreamAsync(aggregate, aggregateId, ct);
+        public Task<IReadOnlyList<Event>> PollAsync(long after, int limit, CancellationToken ct = default) => inner.PollAsync(after, limit, ct);
+        public void Subscribe(Action<Event> handler) => inner.Subscribe(handler);
+        public Task<long> CheckpointAsync(string name, CancellationToken ct = default) => inner.CheckpointAsync(name, ct);
+        public Task SaveCheckpointAsync(string name, long position, CancellationToken ct = default) => inner.SaveCheckpointAsync(name, position, ct);
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    public static TheoryData<string> AppendFailures => ["db", "timeout", "cancelled"];
+
+    [Theory]
+    [MemberData(nameof(AppendFailures))]
+    public async Task A_failure_during_the_append_is_a_500_that_says_it_may_have_applied(string kind)
+    {
+        var registry = new DeciderRegistry(new FailingAppendStore(_store, () => MakeFailure(kind)));
+        registry.Register("task", TaskDecider());
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Services.AddSingleton(registry);
+        await using var app = builder.Build();
+        app.MapCqrsGateway();
+        await app.StartAsync();
+        using var client = app.GetTestServer().CreateClient();
+
+        var response = await client.PostAsync("/api/cqrs/task/t1/CreateTask", content: null);
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+
+        // the gateway contract (G3): 503 promises nothing applied; "may or may not have applied" is 500
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Equal("outcome unknown", problem.GetProperty("title").GetString());
+        Assert.Contains("may or may not have applied", problem.GetProperty("detail").GetString());
+        Assert.DoesNotContain(Secret, problem.GetRawText());
+    }
+
+    [Fact]
+    public async Task A_failure_before_the_append_is_still_a_503()
+    {
+        _protector.Failure = () => MakeFailure("db");
+
+        var (status, problem) = await PostAsync("/api/cqrs/task/t1/CreateTask");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, status);
+        Assert.DoesNotContain("may or may not", problem.GetProperty("detail").GetString());
+    }
+
     [Fact]
     public async Task A_known_wiring_fault_returns_500_not_400()
     {

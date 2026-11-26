@@ -117,7 +117,17 @@ public sealed class DeciderRegistry(IEventStore store)
             .Select(ne => ne with { Data = Materialize(ne), Payload = null, Metadata = MergeMeta(ne.Metadata, resolvedMeta) })
             .ToList();
 
-        return await store.AppendAsync(aggregate, aggregateId, stream.Count, withMeta, ct);
+        try
+        {
+            return await store.AppendAsync(aggregate, aggregateId, stream.Count, withMeta, ct);
+        }
+        catch (Exception ex) when (ex is not ConcurrencyException and not ReadOnlyStoreException
+                                   && InfrastructureFailure.IsInfrastructure(ex))
+        {
+            // The append itself failed: it may have committed before the failure was seen, so the outcome is not
+            // known (a concurrency conflict or a read-only store refused it before writing, and stay as they are).
+            throw new AppendOutcomeUnknownException(ex);
+        }
     }
 
     /// <summary>True when <paramref name="ex"/> was thrown by a decider's <c>Decide</c> during

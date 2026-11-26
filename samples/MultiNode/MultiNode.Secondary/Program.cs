@@ -28,7 +28,7 @@ var readModel = await SqliteReadModelStore.OpenAsync(readModelPath);
 var projection = new TasksProjection(readModel);
 await projection.InitAsync();
 
-var engine = new ConsumerEngine(replica, checkpoints);
+var engine = new ConsumerEngine(replica, checkpoints, logger: Console.Error.WriteLine);
 engine.Register(projection);
 
 var forwardClient = new HttpClient { BaseAddress = new Uri(primaryUrl) };

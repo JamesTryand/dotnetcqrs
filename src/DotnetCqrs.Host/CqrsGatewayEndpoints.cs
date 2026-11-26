@@ -435,11 +435,22 @@ public static class CqrsGatewayEndpoints
             // for the caller, and goes in detail verbatim.
             return (Results.Problem(ex.Message, statusCode: StatusCodes.Status400BadRequest), null);
         }
+        catch (AppendOutcomeUnknownException ex)
+        {
+            // The store failed while appending the decided events: they may have been stored. The gateway contract's
+            // answer for that is 500, "failed; it may or may not have applied; retry with the same idempotency key"
+            // (G3), never the 503 that promises nothing applied. Nothing is recorded under the key, so a retry is
+            // decided again against whatever the stream now holds.
+            LogFailure(httpContext, ex, aggregate, aggregateId, command);
+            return (Results.Problem("the event store failed while storing the command's events, so it may or may not " +
+                    "have applied; retry with the same Idempotency-Key, or check its outcome before sending it again",
+                statusCode: StatusCodes.Status500InternalServerError, title: "outcome unknown"), null);
+        }
         catch (Exception ex) when (InfrastructureFailure.IsInfrastructure(ex))
         {
-            // A dependency failed around Decide (loading, revealing/protecting PII,
-            // appending), so the command was never decided: 503, worth retrying. The
-            // body names the kind of failure only; the exception, which can carry hosts,
+            // A dependency failed around Decide before anything was written (loading, revealing or protecting
+            // PII), so the command was never decided: 503, worth retrying. (A failure of the append itself is caught
+            // above: it may have applied.) The body names the kind of failure only; the exception, which can carry hosts,
             // connection details or a ciphertext, goes to the server log.
             LogFailure(httpContext, ex, aggregate, aggregateId, command);
             httpContext.Response.Headers.RetryAfter = RetryAfterSeconds;

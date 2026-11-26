@@ -493,10 +493,11 @@ so a caller written for pocketcqrs works against dotnetcqrs unchanged.
 - **`409`:** the command lost a race for the stream and nothing was applied; send it again.
 - **`410`:** the subject was erased.
 - **`422`:** an `Idempotency-Key` reused for a different request.
-- **`503`:** not taken, nothing applied (a dependency down, a reader with no writer). It
-  carries `Retry-After` in seconds.
+- **`503`:** not taken, nothing applied (a dependency down before the decision, a reader with
+  no writer). It carries `Retry-After` in seconds.
 - **`500`, `502` and `504`:** it may or may not have been applied; send it again with the
-  same `Idempotency-Key`.
+  same `Idempotency-Key`. Since 0.53.1 a store that fails while appending the decided events is
+  a `500` titled "outcome unknown" (it was a `503`, which promised nothing applied).
 
 **`Idempotency-Key`** is an optional header, at most 200 characters. The same key with the
 same aggregate, id, command and body replays the first `200`, byte for byte, without
